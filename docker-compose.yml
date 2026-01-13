@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: some-postgres
+    environment:
+      POSTGRES_PASSWORD: secret
+      # 可选：预创建数据库和用户
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      # 持久化数据路径，自行调整宿主机目录
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
