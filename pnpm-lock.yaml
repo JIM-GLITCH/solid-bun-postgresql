@@ -51,6 +51,9 @@ importers:
       babel-preset-solid:
         specifier: ^1.9.10
         version: 1.9.10(@babel/core@7.28.5)(solid-js@1.9.9)
+      baseline-browser-mapping:
+        specifier: ^2.9.14
+        version: 2.9.14
       jsdom:
         specifier: ^25.0.1
         version: 25.0.1
@@ -730,8 +733,8 @@ packages:
       solid-js:
         optional: true
 
-  baseline-browser-mapping@2.8.18:
-    resolution: {integrity: sha512-UYmTpOBwgPScZpS4A+YbapwWuBwasxvO/2IOHArSsAhL/+ZdmATBXTex3t+l2hXwLVYK382ibr/nKoY9GKe86w==}
+  baseline-browser-mapping@2.9.14:
+    resolution: {integrity: sha512-B0xUquLkiGLgHhpPBqvl7GWegWBUNuujQ6kXd/r1U38ElPT6Ok8KZ8e+FpUGEc2ZoRQUzq/aUnaKFc/svWUGSg==}
     hasBin: true
 
   browserslist@4.26.3:
@@ -1994,11 +1997,11 @@ snapshots:
     optionalDependencies:
       solid-js: 1.9.9
 
-  baseline-browser-mapping@2.8.18: {}
+  baseline-browser-mapping@2.9.14: {}
 
   browserslist@4.26.3:
     dependencies:
-      baseline-browser-mapping: 2.8.18
+      baseline-browser-mapping: 2.9.14
       caniuse-lite: 1.0.30001751
       electron-to-chromium: 1.5.237
       node-releases: 2.0.25
