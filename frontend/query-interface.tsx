@@ -117,6 +117,26 @@ export default function QueryInterface() {
     }
   }
 
+  // 取消正在执行的查询
+  async function cancelQuery() {
+    try {
+      const sessionId = getSessionId();
+      const response = await fetch('/api/postgres/cancel-query', {
+        method: 'POST',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId })
+      });
+      const { success, message, error: err } = await response.json();
+      if (success) {
+        console.log("查询取消:", message);
+      } else {
+        console.warn("取消失败:", err || message);
+      }
+    } catch (e: any) {
+      console.error("取消请求失败:", e.message);
+    }
+  }
+
   // 格式化 SQL 值（处理字符串转义、null 等）
   function formatSqlValue(value: any): string {
     if (value === null || value === undefined) return 'NULL';
@@ -458,7 +478,7 @@ export default function QueryInterface() {
           onInput={e => setSql(e.currentTarget.value)}
           rows={8}
         />
-        <div>
+        <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
           <button
             onClick={runQuery}
             disabled={loading() || sql().trim().length === 0}
@@ -473,6 +493,21 @@ export default function QueryInterface() {
               cursor: loading() ? "not-allowed" : "pointer"
             }}
           >执行</button>
+          <Show when={loading()}>
+            <button
+              onClick={cancelQuery}
+              style={{
+                margin: "8px 0",
+                padding: "8px 18px",
+                "font-size": "16px",
+                "background-color": "#ef4444",
+                color: "#fff",
+                border: "none",
+                "border-radius": "4px",
+                cursor: "pointer"
+              }}
+            >中断查询</button>
+          </Show>
         </div>
       </div>
       {/* 结果显示部分 */}
