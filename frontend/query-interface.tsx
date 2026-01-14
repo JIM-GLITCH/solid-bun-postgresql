@@ -2,6 +2,7 @@ import { createSignal, For, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo } from "../backend/column-editable";
+import { getSessionId } from "./session";
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -92,10 +93,11 @@ export default function QueryInterface() {
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
     try {
+      const sessionId = getSessionId();
       const response = await fetch('/api/postgres/query', {
         method: 'POST',
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: sql() })
+        body: JSON.stringify({ query: sql(), sessionId })
       });
       const { error: err, result: data, columns } = await response.json();
       if (response.ok) {
@@ -188,11 +190,12 @@ export default function QueryInterface() {
     setError(null);
 
     try {
+      const sessionId = getSessionId();
       for (const update of pendingUpdates()) {
         const response = await fetch('/api/postgres/query', {
           method: 'POST',
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: update.sql })
+          body: JSON.stringify({ query: update.sql, sessionId })
         });
 
         if (!response.ok) {

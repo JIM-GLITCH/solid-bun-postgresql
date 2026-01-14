@@ -1,6 +1,7 @@
 // client/src/Postgres.tsx
 import { useNavigate } from '@solidjs/router';
 import { For, createSignal } from 'solid-js';
+import { getSessionId } from './session';
 export interface PostgresLoginParmas {
     host: string
     port: string
@@ -33,10 +34,11 @@ export default function Postgres() {
 
     const connect = async () => {
         console.log("connect")
+        const sessionId = getSessionId();
         const { sucess, error } = await (await fetch('/api/connect-postgres', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(form()),
+            body: JSON.stringify({ ...form(), sessionId }),
         })).json();
         if(sucess){
             navagate('/postgres/query-interface')
