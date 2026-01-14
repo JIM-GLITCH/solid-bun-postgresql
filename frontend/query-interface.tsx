@@ -24,6 +24,20 @@ export default function QueryInterface() {
   const [columnWidths, setColumnWidths] = createStore<number[]>([]);
   const [tableWidth, setTableWidth] = createSignal<number | null>(null);  // 表格总宽度
   const [modifiedCells, setModifiedCells] = createStore<boolean[][]>([]);  // 单元格修改状态
+  const [queryDuration, setQueryDuration] = createSignal<number | null>(null);  // 查询耗时（毫秒）
+
+  // 格式化查询耗时
+  function formatDuration(ms: number): string {
+    if (ms < 1000) {
+      return `${Math.round(ms)} ms`;
+    } else if (ms < 60000) {
+      return `${(ms / 1000).toFixed(2)} s`;
+    } else {
+      const minutes = Math.floor(ms / 60000);
+      const seconds = ((ms % 60000) / 1000).toFixed(1);
+      return `${minutes} m ${seconds} s`;
+    }
+  }
 
   // 判断值是否为数字类型
   function isNumericValue(value: any): boolean {
@@ -92,6 +106,8 @@ export default function QueryInterface() {
     setError(null);
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
+    setQueryDuration(null);  // 清空上次查询耗时
+    const startTime = performance.now();  // 记录开始时间
     try {
       const sessionId = getSessionId();
       const response = await fetch('/api/postgres/query', {
@@ -107,6 +123,8 @@ export default function QueryInterface() {
         setColumnWidths(columns.map(() => 120));
         // 初始化修改状态（全部为 false）
         setModifiedCells(data.map((row: any[]) => row.map(() => false)));
+        // 记录查询耗时
+        setQueryDuration(performance.now() - startTime);
       } else {
         setError(err || "查询失败");
       }
@@ -259,7 +277,14 @@ export default function QueryInterface() {
           "justify-content": "space-between",
           "align-items": "center"
         }}>
-          <span>查询结果：共 {result.length} 行，{columns().length} 列</span>
+          <span>
+            查询结果：共 {result.length} 行，{columns().length} 列
+            <Show when={queryDuration() !== null}>
+              <span style={{ "margin-left": "12px", color: "#10b981" }}>
+                耗时 {formatDuration(queryDuration()!)}
+              </span>
+            </Show>
+          </span>
           <div style={{ display: "flex", "align-items": "center", gap: "12px" }}>
             <span style={{ color: pendingUpdates().length > 0 ? "#f59e0b" : "#9ca3af" }}>
               {pendingUpdates().length} 个待保存的修改
