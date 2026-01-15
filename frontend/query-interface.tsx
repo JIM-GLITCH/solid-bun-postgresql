@@ -1,8 +1,16 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo } from "../backend/column-editable";
 import { getSessionId } from "./session";
+
+// SSE 消息类型
+interface SSEMessage {
+  type: 'notice' | 'error' | 'info' | 'warning' | 'query' | 'notification';
+  message: string;
+  timestamp: number;
+  detail?: string;
+}
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -13,7 +21,7 @@ interface PendingUpdate {
 }
 
 export default function QueryInterface() {
-  const [sql, setSql] = createSignal('select * from student order by id');
+  const [sql, setSql] = createSignal(`DO $$ BEGIN RAISE NOTICE 'Hello, world!'; END $$;`);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -25,6 +33,53 @@ export default function QueryInterface() {
   const [tableWidth, setTableWidth] = createSignal<number | null>(null);  // 表格总宽度
   const [modifiedCells, setModifiedCells] = createStore<boolean[][]>([]);  // 单元格修改状态
   const [queryDuration, setQueryDuration] = createSignal<number | null>(null);  // 查询耗时（毫秒）
+  const [notices, setNotices] = createSignal<SSEMessage[]>([]);  // 数据库通知消息
+  const [sseConnected, setSseConnected] = createSignal(false);  // SSE 连接状态
+  const [messagesCollapsed, setMessagesCollapsed] = createSignal(true);  // 消息面板折叠状态，默认折叠
+
+  // SSE 连接 - 依赖 EventSource 的自动重连机制
+  let eventSource: EventSource | null = null;
+
+  onMount(() => {
+    const sessionId = getSessionId();
+    eventSource = new EventSource(`/api/events?sessionId=${sessionId}`);
+    
+    eventSource.onopen = () => {
+      console.log('SSE 连接已建立');
+      setSseConnected(true);
+    };
+    
+    eventSource.onmessage = (event) => {
+      try {
+        const message: SSEMessage = JSON.parse(event.data);
+        console.log('收到 SSE 消息:', message);
+        setNotices(prev => [...prev.slice(-49), message]);
+      } catch (e) {
+        console.error('解析 SSE 消息失败:', e);
+      }
+    };
+    
+    eventSource.onerror = () => {
+      // EventSource 会自动重连，这里只更新状态
+      // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
+      if (eventSource?.readyState === EventSource.CONNECTING) {
+        console.log('SSE 重连中...');
+      }
+      setSseConnected(false);
+    };
+  });
+
+  onCleanup(() => {
+    if (eventSource) {
+      eventSource.close();
+      eventSource = null;
+    }
+  });
+
+  // 清除所有通知
+  function clearNotices() {
+    setNotices([]);
+  }
 
   // 格式化查询耗时
   function formatDuration(ms: number): string {
@@ -482,26 +537,26 @@ export default function QueryInterface() {
       display: "flex",
       "flex-direction": "column",
       height: "100vh",
-      padding: "24px"
+      padding: "24px",
+      overflow: "hidden"
     }}>
-      {/* SQL输入部分 */}
-      <div style={{ flex: 1, "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
+      {/* SQL输入部分 - 固定高度 */}
+      <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
         <textarea
           style={{
-            flex: 1,
+            height: "120px",
             width: "100%",
             "font-size": "16px",
             "font-family": "monospace",
             "border-radius": "4px",
             padding: "12px",
             border: "1px solid #d1d5db",
-            resize: "none",
+            resize: "vertical",
             "box-sizing": "border-box"
           }}
           placeholder="在这里输入SQL语句，例如：SELECT * FROM your_table;"
           value={sql()}
           onInput={e => setSql(e.currentTarget.value)}
-          rows={8}
         />
         <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
           <button
@@ -536,8 +591,128 @@ export default function QueryInterface() {
         </div>
       </div>
       {/* 结果显示部分 */}
-      <div style={{ flex: 1, "background-color": "#f9fafb", padding: "16px", "border-radius": "4px", overflow: "auto" }}>
+      <div style={{ flex: 1, "min-height": "200px", "background-color": "#f9fafb", padding: "16px", "border-radius": "4px", overflow: "auto" }}>
         {renderResult()}
+      </div>
+      
+      {/* 数据库通知消息区域 - 可折叠，固定高度不挤压上方内容 */}
+      <div style={{
+        "margin-top": "16px",
+        "background-color": "#1e293b",
+        "border-radius": "4px",
+        padding: "12px",
+        "flex-shrink": "0"
+      }}>
+        {/* 标题栏 - 固定不滚动 */}
+        <div style={{
+          display: "flex",
+          "justify-content": "space-between",
+          "align-items": "center",
+          cursor: "pointer",
+          "user-select": "none"
+        }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
+          <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+            <span style={{
+              color: "#94a3b8",
+              "font-size": "12px",
+              transition: "transform 0.2s",
+              transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
+            }}>▼</span>
+            <span style={{ color: "#94a3b8", "font-size": "13px", "font-weight": "600" }}>
+              数据库消息
+            </span>
+            <span style={{
+              width: "8px",
+              height: "8px",
+              "border-radius": "50%",
+              "background-color": sseConnected() ? "#22c55e" : "#ef4444"
+            }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
+            <Show when={notices().length > 0}>
+              <span style={{
+                color: "#64748b",
+                "font-size": "12px",
+                "background-color": "#475569",
+                padding: "1px 6px",
+                "border-radius": "10px"
+              }}>
+                {notices().length}
+              </span>
+            </Show>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); clearNotices(); }}
+            style={{
+              padding: "2px 8px",
+              "font-size": "12px",
+              "background-color": "#475569",
+              color: "#e2e8f0",
+              border: "none",
+              "border-radius": "4px",
+              cursor: "pointer"
+            }}
+          >
+            清除
+          </button>
+        </div>
+        
+        {/* 消息列表 - 可折叠、可滚动 */}
+        <Show when={!messagesCollapsed()}>
+          <div style={{
+            "margin-top": "8px",
+            "max-height": "180px",
+            "overflow-y": "auto"
+          }}>
+            <Show when={notices().length === 0}>
+              <div style={{ color: "#64748b", "font-size": "13px" }}>暂无消息</div>
+            </Show>
+            <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
+              <For each={notices()}>
+                {(notice) => {
+                  // 根据消息类型设置颜色
+                  const typeColors: Record<string, { bg: string; label: string; text: string }> = {
+                    error:        { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
+                    warning:      { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
+                    notice:       { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
+                    info:         { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
+                    query:        { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
+                    notification: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
+                  };
+                  const colors = typeColors[notice.type] || typeColors.info;
+                  
+                  return (
+                    <div style={{
+                      "font-family": "monospace",
+                      "font-size": "13px",
+                      "padding": "4px 8px",
+                      "background-color": colors.bg,
+                      "border-radius": "4px",
+                      display: "flex",
+                      gap: "8px",
+                      "flex-wrap": "wrap"
+                    }}>
+                      <span style={{ color: "#64748b", "flex-shrink": "0" }}>
+                        {new Date(notice.timestamp).toLocaleTimeString()}
+                      </span>
+                      <span style={{
+                        color: colors.label,
+                        "font-weight": "500",
+                        "flex-shrink": "0"
+                      }}>
+                        [{notice.type.toUpperCase()}]
+                      </span>
+                      <span style={{ color: colors.text }}>{notice.message}</span>
+                      {notice.detail && (
+                        <span style={{ color: "#9ca3af", "font-size": "12px", width: "100%", "padding-left": "70px" }}>
+                          ↳ {notice.detail}
+                        </span>
+                      )}
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+          </div>
+        </Show>
       </div>
     </div>
   );
