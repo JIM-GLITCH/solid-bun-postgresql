@@ -7,8 +7,8 @@ import { Client } from "pg";
 import Cursor from "pg-cursor";
 
 // SSE 消息类型
-interface SSEMessage {
-  type: 'notice' | 'error' | 'info' | 'warning' | 'query' | 'notification';
+export interface SSEMessage {
+  type: 'NOTICE' | 'ERROR' | 'INFO' | 'WARNING' | 'QUERY' | 'NOTIFICATION';
   message: string;
   timestamp: number;
   detail?: string;  // 额外详情
@@ -85,7 +85,7 @@ const server = serve({
             console.log(`[${sessionId}] SSE 连接建立，当前连接数: ${session.sseControllers.size}`);
 
             // 发送初始连接成功消息
-            const welcomeMsg = `data: ${JSON.stringify({ type: 'info', message: 'SSE 连接已建立', timestamp: Date.now() })}\n\n`;
+            const welcomeMsg = `data: ${JSON.stringify({ type: 'APP', message: 'SSE 连接已建立', timestamp: Date.now() })}\n\n`;
             controller.enqueue(new TextEncoder().encode(welcomeMsg));
 
             // 心跳：每 10 秒发送一次，保持连接活跃
@@ -147,20 +147,21 @@ const server = serve({
           client.on("error", (err) => {
             console.error(`[${sessionId}] 数据库错误:`, err);
             sendSSEMessage(sessionId, {
-              type: 'error',
+              type: 'ERROR',
               message: err.message || String(err),
               timestamp: Date.now()
             });
           });
 
           // 监听 NOTICE/WARNING 等消息
-          client.on("notice", (msg: any) => {
+          client.on("notice", (msg) => {
             console.log(`[${sessionId}] 数据库通知:`, msg);
             // PostgreSQL notice 包含 severity (NOTICE, WARNING, INFO, DEBUG, LOG)
-            const severity = msg.severity?.toLowerCase() || 'notice';
-            const type = severity === 'warning' ? 'warning' : 'notice';
+            console.log(msg.severity)
+            const severity = (msg.severity || 'NOTICE').toUpperCase();
+
             sendSSEMessage(sessionId, {
-              type,
+              type: severity as SSEMessage['type'],
               message: msg.message || String(msg),
               timestamp: Date.now(),
               detail: msg.detail || msg.hint || undefined
@@ -171,7 +172,7 @@ const server = serve({
           client.on("notification", (msg: any) => {
             console.log(`[${sessionId}] NOTIFY 消息:`, msg);
             sendSSEMessage(sessionId, {
-              type: 'notification',
+              type: 'NOTIFICATION',
               message: `[${msg.channel}] ${msg.payload || '(无内容)'}`,
               timestamp: Date.now()
             });
@@ -181,7 +182,7 @@ const server = serve({
           client.on("end", () => {
             console.log(`[${sessionId}] 数据库连接已断开`);
             sendSSEMessage(sessionId, {
-              type: 'warning',
+              type: 'WARNING',
               message: '数据库连接已断开',
               timestamp: Date.now()
             });
@@ -222,7 +223,7 @@ const server = serve({
           // 发送查询开始消息
           const startTime = Date.now();
           sendSSEMessage(sessionId, {
-            type: 'query',
+            type: 'QUERY',
             message: `执行查询: ${query.slice(0, 100)}${query.length > 100 ? '...' : ''}`,
             timestamp: startTime
           });
@@ -237,7 +238,7 @@ const server = serve({
           // 发送查询完成消息
           const commandInfo = result.command ? `${result.command} ` : '';
           sendSSEMessage(sessionId, {
-            type: 'info',
+            type: 'INFO',
             message: `${commandInfo}完成: ${result.rowCount ?? 0} 行，耗时 ${duration}ms`,
             timestamp: Date.now()
           });
@@ -255,7 +256,7 @@ const server = serve({
 
           // 发送查询错误消息
           sendSSEMessage(sessionId, {
-            type: 'error',
+            type: 'ERROR',
             message: `查询错误: ${e.message}`,
             timestamp: Date.now(),
             detail: e.detail || e.hint || undefined
@@ -430,7 +431,7 @@ const server = serve({
           console.log(`[${sessionId}] 保存成功, 影响行数: ${result.rowCount}`)
 
           sendSSEMessage(sessionId, {
-            type: 'info',
+            type: 'INFO',
             message: `保存成功: ${result.rowCount ?? 0} 行受影响`,
             timestamp: Date.now()
           });
@@ -440,7 +441,7 @@ const server = serve({
           console.error(`[${sessionId}] 保存失败:`, e.message);
 
           sendSSEMessage(sessionId, {
-            type: 'error',
+            type: 'ERROR',
             message: `保存失败: ${e.message}`,
             timestamp: Date.now(),
             detail: e.detail || e.hint || undefined

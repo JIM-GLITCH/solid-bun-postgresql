@@ -3,14 +3,7 @@ import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo } from "../backend/column-editable";
 import { getSessionId } from "./session";
-
-// SSE 消息类型
-interface SSEMessage {
-  type: 'notice' | 'error' | 'info' | 'warning' | 'query' | 'notification';
-  message: string;
-  timestamp: number;
-  detail?: string;
-}
+import { type SSEMessage } from "../server";
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -826,15 +819,15 @@ export default function QueryInterface() {
               <For each={notices()}>
                 {(notice) => {
                   // 根据消息类型设置颜色
-                  const typeColors: Record<string, { bg: string; label: string; text: string }> = {
-                    error: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
-                    warning: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
-                    notice: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
-                    info: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
-                    query: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
-                    notification: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
+                  const typeColors: Record<SSEMessage['type'], { bg: string; label: string; text: string }> = {
+                    ERROR: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
+                    WARNING: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
+                    NOTICE: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
+                    INFO: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
+                    QUERY: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
+                    NOTIFICATION: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
                   };
-                  const colors = typeColors[notice.type] || typeColors.info;
+                  const colors = typeColors[notice.type] || typeColors.INFO;
 
                   return (
                     <div style={{
@@ -855,7 +848,7 @@ export default function QueryInterface() {
                         "font-weight": "500",
                         "flex-shrink": "0"
                       }}>
-                        [{notice.type.toUpperCase()}]
+                        [{notice.type}]
                       </span>
                       <span style={{ color: colors.text }}>{notice.message}</span>
                       {notice.detail && (
