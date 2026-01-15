@@ -21,7 +21,7 @@ interface PendingUpdate {
 }
 
 export default function QueryInterface() {
-  const [sql, setSql] = createSignal(`DO $$ BEGIN RAISE NOTICE 'Hello, world!'; END $$;`);
+  const [sql, setSql] = createSignal(`select * from student`);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
@@ -36,19 +36,53 @@ export default function QueryInterface() {
   const [notices, setNotices] = createSignal<SSEMessage[]>([]);  // 数据库通知消息
   const [sseConnected, setSseConnected] = createSignal(false);  // SSE 连接状态
   const [messagesCollapsed, setMessagesCollapsed] = createSignal(true);  // 消息面板折叠状态，默认折叠
+  const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
+  const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
+
+  // 虚拟滚动相关状态
+  const [scrollTop, setScrollTop] = createSignal(0);
+  const [containerHeight, setContainerHeight] = createSignal(600);
+  const ROW_HEIGHT = 40; // 预估行高
+  const OVERSCAN = 10; // 预渲染行数
+
+  const visibleRange = () => {
+    const start = Math.floor(scrollTop() / ROW_HEIGHT);
+    const end = Math.ceil((scrollTop() + containerHeight()) / ROW_HEIGHT);
+    return {
+      start: Math.max(0, start - OVERSCAN),
+      end: Math.min(result.length, end + OVERSCAN)
+    };
+  };
+
+  const visibleRows = () => {
+    const { start, end } = visibleRange();
+    return result.slice(start, end).map((row, i) => ({ row, index: start + i }));
+  };
+
+  const totalHeight = () => result.length * ROW_HEIGHT;
+  const offsetY = () => visibleRange().start * ROW_HEIGHT;
 
   // SSE 连接 - 依赖 EventSource 的自动重连机制
   let eventSource: EventSource | null = null;
 
   onMount(() => {
+    // 监听窗口大小变化以更新容器高度
+    const updateHeight = () => {
+      const el = document.getElementById('table-container');
+      if (el) setContainerHeight(el.clientHeight);
+    };
+    window.addEventListener('resize', updateHeight);
+    updateHeight();
+    onCleanup(() => window.removeEventListener('resize', updateHeight));
+
     const sessionId = getSessionId();
     eventSource = new EventSource(`/api/events?sessionId=${sessionId}`);
-    
+
     eventSource.onopen = () => {
       console.log('SSE 连接已建立');
       setSseConnected(true);
     };
-    
+
     eventSource.onmessage = (event) => {
       try {
         const message: SSEMessage = JSON.parse(event.data);
@@ -58,7 +92,7 @@ export default function QueryInterface() {
         console.error('解析 SSE 消息失败:', e);
       }
     };
-    
+
     eventSource.onerror = () => {
       // EventSource 会自动重连，这里只更新状态
       // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
@@ -162,31 +196,105 @@ export default function QueryInterface() {
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
     setQueryDuration(null);  // 清空上次查询耗时
+    setHasMore(false);
+    setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
       const sessionId = getSessionId();
-      const response = await fetch('/api/postgres/query', {
+      const response = await fetch('/api/postgres/query-stream', {
         method: 'POST',
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: sql(), sessionId })
+        body: JSON.stringify({ query: sql(), sessionId, batchSize: 100 })
       });
-      const { error: err, result: data, columns } = await response.json();
-      if (response.ok) {
-        setResult(data);
-        setColumns(columns);
-        // 初始化列宽
-        setColumnWidths(columns.map(() => 120));
-        // 初始化修改状态（全部为 false）
-        setModifiedCells(data.map((row: any[]) => row.map(() => false)));
-        // 记录查询耗时
-        setQueryDuration(performance.now() - startTime);
-      } else {
-        setError(err || "查询失败");
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "查询失败");
       }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // 设置列信息
+      setColumns(data.columns || []);
+      setColumnWidths((data.columns || []).map(() => 120));
+
+      // 设置行数据
+      const rows = data.rows || [];
+      setResult(rows);
+
+      // 初始化修改状态矩阵
+      const colCount = (data.columns || []).length;
+      setModifiedCells(rows.map(() => Array(colCount).fill(false)));
+
+      // 记录是否还有更多数据
+      setHasMore(data.hasMore || false);
+
+      setQueryDuration(performance.now() - startTime);
+      console.log(`查询完成: ${rows.length} 行, hasMore: ${data.hasMore}`);
     } catch (e: any) {
       setError(e.message || "请求失败");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // 加载更多数据
+  async function loadMore() {
+    if (loadingMore() || !hasMore()) return;
+
+    setLoadingMore(true);
+    try {
+      const sessionId = getSessionId();
+      const response = await fetch('/api/postgres/query-stream-more', {
+        method: 'POST',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, batchSize: 100 })
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "加载失败");
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // 追加行数据
+      const newRows = data.rows || [];
+      if (newRows.length > 0) {
+        setResult(prev => [...prev, ...newRows]);
+
+        // 同步更新修改状态矩阵
+        const colCount = columns().length;
+        const newModifiedRows = newRows.map(() => Array(colCount).fill(false));
+        setModifiedCells(prev => [...prev, ...newModifiedRows]);
+      }
+
+      setHasMore(data.hasMore || false);
+      console.log(`加载更多: +${newRows.length} 行, hasMore: ${data.hasMore}`);
+    } catch (e: any) {
+      console.error("加载更多失败:", e.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  // 检测是否滚动到底部附近
+  function handleScroll(e: Event) {
+    const target = e.currentTarget as HTMLElement;
+    setScrollTop(target.scrollTop);
+
+    // 当滚动到距离底部 200px 时，加载更多
+    const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (scrollBottom < 200 && hasMore() && !loadingMore()) {
+      loadMore();
     }
   }
 
@@ -275,7 +383,7 @@ export default function QueryInterface() {
     setPendingUpdates(prev => prev.filter((_, i) => i !== index));
   }
 
-  // 执行所有待保存的 UPDATE
+  // 执行所有待保存的 UPDATE（使用 adminClient）
   async function saveAllChanges() {
     if (pendingUpdates().length === 0) return;
 
@@ -285,10 +393,10 @@ export default function QueryInterface() {
     try {
       const sessionId = getSessionId();
       for (const update of pendingUpdates()) {
-        const response = await fetch('/api/postgres/query', {
+        const response = await fetch('/api/postgres/save-changes', {
           method: 'POST',
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: update.sql, sessionId })
+          body: JSON.stringify({ sql: update.sql, sessionId })
         });
 
         if (!response.ok) {
@@ -323,17 +431,28 @@ export default function QueryInterface() {
       </div>);
     }
     return (
-      <div>
+      <div style={{ display: "flex", "flex-direction": "column", height: "100%" }}>
         <div style={{
           "margin-bottom": "12px",
           color: "#6b7280",
           "font-size": "14px",
           display: "flex",
           "justify-content": "space-between",
-          "align-items": "center"
+          "align-items": "center",
+          "flex-shrink": "0"
         }}>
           <span>
-            查询结果：共 {result.length} 行，{columns().length} 列
+            查询结果：{hasMore() ? "已加载" : "共"} {result.length} 行，{columns().length} 列
+            <Show when={hasMore()}>
+              <span style={{ "margin-left": "8px", color: "#3b82f6" }}>
+                (滚动加载更多)
+              </span>
+            </Show>
+            <Show when={loadingMore()}>
+              <span style={{ "margin-left": "8px", color: "#f59e0b" }}>
+                加载中...
+              </span>
+            </Show>
             <Show when={queryDuration() !== null}>
               <span style={{ "margin-left": "12px", color: "#10b981" }}>
                 耗时 {formatDuration(queryDuration()!)}
@@ -381,7 +500,8 @@ export default function QueryInterface() {
             padding: "12px",
             "background-color": "#fef3c7",
             "border-radius": "4px",
-            border: "1px solid #f59e0b"
+            border: "1px solid #f59e0b",
+            "flex-shrink": "0"
           }}>
             <div style={{ "font-weight": "bold", "margin-bottom": "8px", color: "#92400e" }}>
               待执行的 UPDATE SQL:
@@ -437,96 +557,132 @@ export default function QueryInterface() {
             </div>
           </div>
         </Show>
-        <div style={{ position: "relative", display: "inline-block" }}>
-        <table style={{
-          "border-collapse": "collapse",
-          width: tableWidth() ? `${tableWidth()}px` : "auto",
-          "min-width": "200px",
-          "table-layout": "fixed",
-          border: "1px solid #d1d5db"
-        }}>
-          <colgroup>
-            <For each={columns()}>
-              {(_, colIndex) => (
-                <col style={{ width: `${columnWidths[colIndex()] || 120}px` }} />
-              )}
-            </For>
-          </colgroup>
-          <thead>
-            <tr style={{ "background-color": "#f3f4f6" }}>
-              <For each={columns()}>
-                {(col, colIndex) => (
-                  <th
-                    scope="col"
-                    style={{
-                      padding: "8px 12px",
-                      "text-align": "center",
-                      "font-weight": "600",
-                      border: "1px solid #d1d5db",
-                      position: "relative",
-                      "user-select": "none"
-                    }}
-                  >
-                    {col.name}
-                    {/* 拖动调整列宽的手柄 */}
-                    <div
-                      onMouseDown={(e) => startResize(colIndex(), e)}
-                      style={{
-                        position: "absolute",
-                        right: "-3px",
-                        top: "0",
-                        bottom: "0",
-                        width: "6px",
-                        cursor: "col-resize",
-                        "background-color": "transparent",
-                        "z-index": "10"
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#2563eb")}
-                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                    />
-                  </th>
-                )}
-              </For>
-            </tr>
-          </thead>
-          <tbody>
-            <For each={result}>
-              {(row, rowIndex) => (
+
+        {/* 虚拟滚动表格容器 */}
+        <div
+          id="table-container"
+          onScroll={handleScroll}
+          style={{
+            flex: 1,
+            overflow: "auto",
+            position: "relative",
+            border: "1px solid #d1d5db",
+            "background-color": "#fff"
+          }}
+        >
+          {/* 撑开滚动条的占位层 */}
+          <div style={{ height: `${totalHeight()}px`, width: "100%", position: "absolute", top: 0, left: 0, "pointer-events": "none" }} />
+
+          <div style={{
+            position: "sticky",
+            top: 0,
+            left: 0,
+            width: "max-content",
+            "z-index": 10
+          }}>
+            <table style={{
+              "border-collapse": "collapse",
+              width: tableWidth() ? `${tableWidth()}px` : "auto",
+              "min-width": "100%",
+              "table-layout": "fixed",
+            }}>
+              <colgroup>
+                <For each={columns()}>
+                  {(_, colIndex) => (
+                    <col style={{ width: `${columnWidths[colIndex()] || 120}px` }} />
+                  )}
+                </For>
+              </colgroup>
+              <thead style={{ position: "sticky", top: 0, "z-index": 20, "background-color": "#f3f4f6" }}>
                 <tr>
-                  <For each={row}>
+                  <For each={columns()}>
                     {(col, colIndex) => (
-                      <EditableCell
-                        value={col}
-                        isEditable={columns()[colIndex()].isEditable}
-                        isModified={modifiedCells[rowIndex()]?.[colIndex()] ?? false}
-                        align={getAlignment(col)}
-                        onSave={(newValue) => {
-                          handleCellSave(rowIndex(), colIndex(), newValue);
+                      <th
+                        scope="col"
+                        style={{
+                          padding: "8px 12px",
+                          "text-align": "center",
+                          "font-weight": "600",
+                          border: "1px solid #d1d5db",
+                          position: "relative",
+                          "user-select": "none",
+                          height: `${ROW_HEIGHT}px`,
+                          "box-sizing": "border-box"
                         }}
-                      />
+                      >
+                        {col.name}
+                        <div
+                          onMouseDown={(e) => startResize(colIndex(), e)}
+                          style={{
+                            position: "absolute",
+                            right: "-3px",
+                            top: "0",
+                            bottom: "0",
+                            width: "6px",
+                            cursor: "col-resize",
+                            "background-color": "transparent",
+                            "z-index": "10"
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#2563eb")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        />
+                      </th>
                     )}
                   </For>
                 </tr>
-              )}
-            </For>
-          </tbody>
-        </table>
-        {/* 表格右边拖动调整整体宽度的手柄 */}
-        <div
-          onMouseDown={startTableResize}
-          style={{
-            position: "absolute",
-            right: "-4px",
-            top: "0",
-            bottom: "0",
-            width: "8px",
-            cursor: "ew-resize",
-            "background-color": "transparent",
-            "z-index": "20"
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#10b981")}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        />
+              </thead>
+              <tbody style={{
+                // 使用占位行来实现虚拟滚动，这样可以保持完美的表格布局
+              }}>
+                {/* 顶部占位行 */}
+                <tr style={{ height: `${offsetY()}px` }}>
+                  <td colSpan={columns().length} style={{ padding: 0, border: "none" }} />
+                </tr>
+
+                <For each={visibleRows()}>
+                  {({ row, index: rowIndex }) => (
+                    <tr style={{ height: `${ROW_HEIGHT}px`, "box-sizing": "border-box" }}>
+                      <For each={row}>
+                        {(col, colIndex) => (
+                          <EditableCell
+                            value={col}
+                            isEditable={columns()[colIndex()].isEditable}
+                            isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
+                            align={getAlignment(col)}
+                            onSave={(newValue) => {
+                              handleCellSave(rowIndex, colIndex(), newValue);
+                            }}
+                          />
+                        )}
+                      </For>
+                    </tr>
+                  )}
+                </For>
+
+                {/* 底部占位行 */}
+                <tr style={{ height: `${Math.max(0, totalHeight() - offsetY() - (visibleRows().length * ROW_HEIGHT))}px` }}>
+                  <td colSpan={columns().length} style={{ padding: 0, border: "none" }} />
+                </tr>
+              </tbody>
+            </table>
+
+            {/* 调整表格总宽度的手柄 */}
+            <div
+              onMouseDown={startTableResize}
+              style={{
+                position: "absolute",
+                right: "-4px",
+                top: "0",
+                bottom: "0",
+                width: "8px",
+                cursor: "ew-resize",
+                "background-color": "transparent",
+                "z-index": "20"
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#10b981")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+            />
+          </div>
         </div>
       </div>
     );
@@ -538,7 +694,8 @@ export default function QueryInterface() {
       "flex-direction": "column",
       height: "100vh",
       padding: "24px",
-      overflow: "hidden"
+      overflow: "hidden",
+      "box-sizing": "border-box"
     }}>
       {/* SQL输入部分 - 固定高度 */}
       <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
@@ -591,10 +748,10 @@ export default function QueryInterface() {
         </div>
       </div>
       {/* 结果显示部分 */}
-      <div style={{ flex: 1, "min-height": "200px", "background-color": "#f9fafb", padding: "16px", "border-radius": "4px", overflow: "auto" }}>
+      <div style={{ flex: 1, "min-height": "200px", "background-color": "#f9fafb", padding: "16px", "border-radius": "4px", overflow: "hidden", display: "flex", "flex-direction": "column" }}>
         {renderResult()}
       </div>
-      
+
       {/* 数据库通知消息区域 - 可折叠，固定高度不挤压上方内容 */}
       <div style={{
         "margin-top": "16px",
@@ -654,7 +811,7 @@ export default function QueryInterface() {
             清除
           </button>
         </div>
-        
+
         {/* 消息列表 - 可折叠、可滚动 */}
         <Show when={!messagesCollapsed()}>
           <div style={{
@@ -670,15 +827,15 @@ export default function QueryInterface() {
                 {(notice) => {
                   // 根据消息类型设置颜色
                   const typeColors: Record<string, { bg: string; label: string; text: string }> = {
-                    error:        { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
-                    warning:      { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
-                    notice:       { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
-                    info:         { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
-                    query:        { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
+                    error: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
+                    warning: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
+                    notice: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
+                    info: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
+                    query: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
                     notification: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
                   };
                   const colors = typeColors[notice.type] || typeColors.info;
-                  
+
                   return (
                     <div style={{
                       "font-family": "monospace",
