@@ -55,9 +55,10 @@ const server = serve({
     "/*": index,
     "/api/hello": { GET: () => Response.json({ message: "Hello from API" }) },
     // SSE 端点：用于向前端推送实时消息（如 PostgreSQL 的 notice 通知）
-    "/api/events?sessionid=:sessionId": {
+    "/api/events": {
       GET: (req) => {
-        const sessionId = req.params.sessionId;
+        const url = new URL(req.url.);
+        const sessionId = url.searchParams.get('sessionId');
         if (!sessionId) {
           return new Response('缺少 sessionId', { status: 400 });
         }
