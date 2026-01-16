@@ -8,7 +8,7 @@ await Bun.build({
     outdir: "./out",
     plugins: [SolidPlugin()],
     target: "bun",
-    // compile: true,
+    compile: true,
     sourcemap:true
 })
 console.log("build finished" )

@@ -1,9 +1,9 @@
 import { serve, } from "bun";
 import index from "./index.html";
 import type { PostgresLoginParmas } from "./frontend/postgres";
-import { connectPostgres } from "./backend/connect-postgres";
+import { connectPostgres, createPostgresPool } from "./backend/connect-postgres";
 import { calculateColumnEditable } from "./backend/column-editable";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
 // SSE 消息类型
@@ -16,8 +16,8 @@ export interface SSEMessage {
 
 // 每个 session 的连接信息
 interface SessionConnection {
-  client: Client;           // 主查询连接（用于执行用户的sql语句,只用这一个可以保证当前用户只在一个事务中操作）
-  adminClient: Client;      // 管理连接（用于取消查询,查询列信息等本软件执行的操作,避免使用client导致死锁，因为一个client只能同时执行一个查询）
+  userUsedClient: Client;           // 用户使用的客户端（用于执行用户的sql语句,只用这一个可以保证当前用户只在一个事务中操作）
+  backGroundPool: Pool;          // 后台查询连接池（用于取消查询,查询列信息等本软件执行的操作,使用 Pool 避免死锁）
   runningQueryPid?: number; // 当前正在执行查询的 PID
   sseControllers: Set<ReadableStreamDefaultController<Uint8Array>>; // SSE 连接控制器
   // 流式查询的 cursor 状态
@@ -132,16 +132,14 @@ const server = serve({
           // 如果该 session 已有连接，先关闭旧连接
           const existingSession = sessionMap.get(sessionId);
           if (existingSession) {
-            await existingSession.client.end().catch(() => { });
-            await existingSession.adminClient.end().catch(() => { });
+            await existingSession.userUsedClient.end().catch(() => { });
+            await existingSession.backGroundPool.end().catch(() => { });
             sessionMap.delete(sessionId);
           }
 
-          // 创建主查询连接和管理连接
-          const [client, adminClient] = await Promise.all([
-            connectPostgres(params),
-            connectPostgres(params)
-          ]);
+          // 创建主查询连接和管理连接池
+          const client = await connectPostgres(params);
+          const adminPool = createPostgresPool(params);
 
           // 监听数据库连接错误
           client.on("error", (err) => {
@@ -188,7 +186,7 @@ const server = serve({
             });
           });
 
-          sessionMap.set(sessionId, { client, adminClient, sseControllers: new Set() });
+          sessionMap.set(sessionId, { userUsedClient: client, backGroundPool: adminPool, sseControllers: new Set() });
           console.log(`[${sessionId}] 连接成功，当前 session 数: ${sessionMap.size}`)
           return Response.json({ sucess: true })
         } catch (e) {
@@ -210,7 +208,7 @@ const server = serve({
           return new Response(JSON.stringify({ error: "未找到数据库连接，请先连接数据库", sucess: false }), { status: 400, headers: { "Content-Type": "application/json" } })
         }
 
-        const { client } = session;
+        const { userUsedClient: client } = session;
 
         try {
           // 记录当前连接的 PID，用于后续可能的取消操作
@@ -281,7 +279,7 @@ const server = serve({
           return Response.json({ error: "未找到数据库连接，请先连接数据库", success: false }, { status: 400 })
         }
 
-        const { client, adminClient } = session;
+        const { userUsedClient: client, backGroundPool: adminPool } = session;
 
         // 如果有之前的 cursor，先关闭它
         if (session.cursor) {
@@ -312,7 +310,7 @@ const server = serve({
 
           // 获取并计算列信息
           const fields = (cursor as any)._result?.fields;
-          const columnsInfo = fields ? await calculateColumnEditable(adminClient, fields) : [];
+          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields) : [];
 
           const isDone = rows.length < batchSize;
 
@@ -423,11 +421,11 @@ const server = serve({
           return Response.json({ error: "未找到数据库连接，请先连接数据库", success: false }, { status: 400 })
         }
 
-        const { adminClient } = session;
+        const { backGroundPool: adminPool } = session;
 
         try {
-          console.log(`[${sessionId}] 执行保存修改 (adminClient): ${sql.slice(0, 100)}${sql.length > 100 ? '...' : ''}`)
-          const result = await adminClient.query(sql);
+          console.log(`[${sessionId}] 执行保存修改 (adminPool): ${sql.slice(0, 100)}${sql.length > 100 ? '...' : ''}`)
+          const result = await adminPool.query(sql);
           console.log(`[${sessionId}] 保存成功, 影响行数: ${result.rowCount}`)
 
           sendSSEMessage(sessionId, {
@@ -465,14 +463,14 @@ const server = serve({
           return Response.json({ error: "未找到数据库连接", success: false })
         }
 
-        const { adminClient, runningQueryPid } = session;
+        const { backGroundPool: adminPool, runningQueryPid } = session;
         if (!runningQueryPid) {
           return Response.json({ error: "没有正在执行的查询", success: false })
         }
 
         try {
-          // 使用管理连接执行取消命令
-          const result = await adminClient.query(`SELECT pg_cancel_backend($1)`, [runningQueryPid]);
+          // 使用管理连接池执行取消命令
+          const result = await adminPool.query(`SELECT pg_cancel_backend($1)`, [runningQueryPid]);
           const cancelled = result.rows[0]?.pg_cancel_backend;
 
           console.log(`[${sessionId}] 取消查询请求已发送, PID: ${runningQueryPid}, 结果: ${cancelled}`)
@@ -487,6 +485,143 @@ const server = serve({
           return new Response(JSON.stringify({ error: e.message, success: false }), { status: 500, headers: { "Content-Type": "application/json" } })
         }
       },
+    },
+    // Sidebar 专用的只读查询（使用 backGrouundPool，不阻塞用户操作）
+    "/api/postgres/query-readonly": {
+      POST: async (req) => {
+        const { sessionId, query, limit = 1000 } = await req.json() as { sessionId: string; query: string; limit?: number };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+        if (!query) return Response.json({ error: "缺少 query" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          // 添加 LIMIT 防止查询过多数据
+          const limitedQuery = query.trim().toLowerCase().includes('limit')
+            ? query
+            : `${query} LIMIT ${limit}`;
+
+          const result = await session.backGroundPool.query({ text: limitedQuery, rowMode: "array" });
+
+          // 简单返回列名和数据
+          const columns = result.fields.map(f => ({
+            name: f.name,
+            tableID: f.tableID,
+            columnID: f.columnID,
+            isEditable: false  // 只读查询不可编辑
+          }));
+
+          return Response.json({
+            rows: result.rows,
+            columns,
+            hasMore: false
+          });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
+    },
+    // 获取数据库结构：schemas
+    "/api/postgres/schemas": {
+      POST: async (req) => {
+        const { sessionId } = await req.json() as { sessionId: string };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          const result = await session.backGroundPool.query(`
+            SELECT schema_name 
+            FROM information_schema.schemata 
+            WHERE schema_name NOT LIKE 'pg_%' 
+              AND schema_name != 'information_schema'
+            ORDER BY schema_name
+          `);
+          return Response.json({ schemas: result.rows.map(r => r.schema_name) });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
+    },
+    // 获取指定 schema 下的表
+    "/api/postgres/tables": {
+      POST: async (req) => {
+        const { sessionId, schema } = await req.json() as { sessionId: string; schema: string };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+        if (!schema) return Response.json({ error: "缺少 schema" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          const result = await session.backGroundPool.query(`
+            SELECT table_name, table_type
+            FROM information_schema.tables 
+            WHERE table_schema = $1
+            ORDER BY table_type, table_name
+          `, [schema]);
+          return Response.json({
+            tables: result.rows.filter(r => r.table_type === 'BASE TABLE').map(r => r.table_name),
+            views: result.rows.filter(r => r.table_type === 'VIEW').map(r => r.table_name)
+          });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
+    },
+    // 获取表/视图的列信息
+    "/api/postgres/columns": {
+      POST: async (req) => {
+        const { sessionId, schema, table } = await req.json() as { sessionId: string; schema: string; table: string };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+        if (!schema || !table) return Response.json({ error: "缺少参数" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          const result = await session.backGroundPool.query(`
+            SELECT 
+              column_name,
+              data_type,
+              is_nullable,
+              column_default,
+              character_maximum_length
+            FROM information_schema.columns 
+            WHERE table_schema = $1 AND table_name = $2
+            ORDER BY ordinal_position
+          `, [schema, table]);
+          return Response.json({ columns: result.rows });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
+    },
+    // 获取表的索引信息
+    "/api/postgres/indexes": {
+      POST: async (req) => {
+        const { sessionId, schema, table } = await req.json() as { sessionId: string; schema: string; table: string };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          const result = await session.backGroundPool.query(`
+            SELECT 
+              indexname,
+              indexdef
+            FROM pg_indexes 
+            WHERE schemaname = $1 AND tablename = $2
+            ORDER BY indexname
+          `, [schema, table]);
+          return Response.json({ indexes: result.rows });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
     },
   },
 });

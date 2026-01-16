@@ -4,6 +4,7 @@ import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo } from "../backend/column-editable";
 import { getSessionId } from "./session";
 import { type SSEMessage } from "../server";
+import Sidebar from "./sidebar";
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -183,7 +184,7 @@ export default function QueryInterface() {
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  async function runQuery() {
+  async function runUserQuery() {
     setLoading(true);
     setError(null);
     setResult([]);  // 清空 store
@@ -404,7 +405,7 @@ export default function QueryInterface() {
       }
       // 清空待执行列表
       setPendingUpdates([]);
-      alert('保存成功！');
+      // alert('保存成功！');
     } catch (e: any) {
       setError(e.message || "保存失败");
     } finally {
@@ -681,188 +682,279 @@ export default function QueryInterface() {
     );
   }
 
+  // 处理从 Sidebar 发来的查询请求（使用只读 API，不阻塞用户操作）
+  async function handleQueryRequest(querySql: string) {
+    setSql(querySql);
+    setLoading(true);
+    setError(null);
+    setResult([]);
+    setPendingUpdates([]);
+    setQueryDuration(null);
+    setHasMore(false);
+    setModifiedCells([]);
+    
+    const startTime = performance.now();
+    try {
+      const sessionId = getSessionId();
+      const response = await fetch('/api/postgres/query-readonly', {
+        method: 'POST',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: querySql, sessionId, limit: 1000 })
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || "查询失败");
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setColumns(data.columns || []);
+      setColumnWidths((data.columns || []).map(() => 120));
+      
+      const rows = data.rows || [];
+      setResult(rows);
+      
+      const colCount = (data.columns || []).length;
+      setModifiedCells(rows.map(() => Array(colCount).fill(false)));
+      setHasMore(data.hasMore || false);
+      setQueryDuration(performance.now() - startTime);
+    } catch (e: any) {
+      setError(e.message || "请求失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div style={{
       display: "flex",
-      "flex-direction": "column",
       height: "100vh",
-      padding: "24px",
       overflow: "hidden",
-      "box-sizing": "border-box"
+      "background-color": "#f0f2f5"
     }}>
-      {/* SQL输入部分 - 固定高度 */}
-      <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
-        <textarea
-          style={{
-            height: "120px",
-            width: "100%",
-            "font-size": "16px",
-            "font-family": "monospace",
-            "border-radius": "4px",
-            padding: "12px",
-            border: "1px solid #d1d5db",
-            resize: "vertical",
-            "box-sizing": "border-box"
-          }}
-          placeholder="在这里输入SQL语句，例如：SELECT * FROM your_table;"
-          value={sql()}
-          onInput={e => setSql(e.currentTarget.value)}
-        />
-        <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
-          <button
-            onClick={runQuery}
-            disabled={loading() || sql().trim().length === 0}
+      {/* 侧边栏 */}
+      <Sidebar onQueryRequest={handleQueryRequest} />
+
+      {/* 主内容区 */}
+      <div style={{
+        flex: 1,
+        display: "flex",
+        "flex-direction": "column",
+        padding: "20px",
+        overflow: "hidden",
+        "box-sizing": "border-box"
+      }}>
+        {/* SQL输入部分 - 固定高度 */}
+        <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
+          <textarea
             style={{
-              margin: "8px 0",
-              padding: "8px 18px",
-              "font-size": "16px",
-              "background-color": "#2563eb",
-              color: "#fff",
-              border: "none",
-              "border-radius": "4px",
-              cursor: loading() ? "not-allowed" : "pointer"
+              height: "120px",
+              width: "100%",
+              "font-size": "14px",
+              "font-family": "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
+              "border-radius": "8px",
+              padding: "12px",
+              border: "1px solid #d1d5db",
+              resize: "vertical",
+              "box-sizing": "border-box",
+              "background-color": "#1e293b",
+              color: "#e2e8f0",
+              "line-height": "1.5"
             }}
-          >执行</button>
-          <Show when={loading()}>
+            placeholder="在这里输入SQL语句，例如：SELECT * FROM your_table;"
+            value={sql()}
+            onInput={e => setSql(e.currentTarget.value)}
+          />
+          <div style={{ display: "flex", gap: "8px", "align-items": "center", "margin-top": "8px" }}>
             <button
-              onClick={cancelQuery}
+              onClick={runUserQuery}
+              disabled={loading() || sql().trim().length === 0}
               style={{
-                margin: "8px 0",
-                padding: "8px 18px",
-                "font-size": "16px",
-                "background-color": "#ef4444",
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": loading() ? "#6b7280" : "#10b981",
                 color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: loading() ? "not-allowed" : "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+                transition: "background-color 0.2s ease"
+              }}
+            >
+              <span>▶</span> 执行
+            </button>
+            <Show when={loading()}>
+              <button
+                onClick={cancelQuery}
+                style={{
+                  padding: "10px 24px",
+                  "font-size": "14px",
+                  "font-weight": "500",
+                  "background-color": "#ef4444",
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "6px",
+                  cursor: "pointer",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "6px"
+                }}
+              >
+                <span>⏹</span> 中断
+              </button>
+            </Show>
+            <span style={{ 
+              "margin-left": "auto", 
+              color: "#6b7280", 
+              "font-size": "12px",
+              "font-family": "'JetBrains Mono', monospace" 
+            }}>
+              Ctrl+Enter 执行
+            </span>
+          </div>
+        </div>
+
+        {/* 结果显示部分 */}
+        <div style={{ 
+          flex: 1, 
+          "min-height": "200px", 
+          "background-color": "#fff", 
+          padding: "16px", 
+          "border-radius": "8px", 
+          overflow: "hidden", 
+          display: "flex", 
+          "flex-direction": "column",
+          "box-shadow": "0 1px 3px rgba(0,0,0,0.1)"
+        }}>
+          {renderResult()}
+        </div>
+
+        {/* 数据库通知消息区域 - 可折叠，固定高度不挤压上方内容 */}
+        <div style={{
+          "margin-top": "16px",
+          "background-color": "#1e293b",
+          "border-radius": "8px",
+          padding: "12px",
+          "flex-shrink": "0"
+        }}>
+          {/* 标题栏 - 固定不滚动 */}
+          <div style={{
+            display: "flex",
+            "justify-content": "space-between",
+            "align-items": "center",
+            cursor: "pointer",
+            "user-select": "none"
+          }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
+            <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+              <span style={{
+                color: "#94a3b8",
+                "font-size": "12px",
+                transition: "transform 0.2s",
+                transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
+              }}>▼</span>
+              <span style={{ color: "#94a3b8", "font-size": "13px", "font-weight": "600" }}>
+                数据库消息
+              </span>
+              <span style={{
+                width: "8px",
+                height: "8px",
+                "border-radius": "50%",
+                "background-color": sseConnected() ? "#22c55e" : "#ef4444"
+              }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
+              <Show when={notices().length > 0}>
+                <span style={{
+                  color: "#64748b",
+                  "font-size": "12px",
+                  "background-color": "#475569",
+                  padding: "1px 6px",
+                  "border-radius": "10px"
+                }}>
+                  {notices().length}
+                </span>
+              </Show>
+            </div>
+            <button
+              onClick={(e) => { e.stopPropagation(); clearNotices(); }}
+              style={{
+                padding: "2px 8px",
+                "font-size": "12px",
+                "background-color": "#475569",
+                color: "#e2e8f0",
                 border: "none",
                 "border-radius": "4px",
                 cursor: "pointer"
               }}
-            >中断查询</button>
+            >
+              清除
+            </button>
+          </div>
+
+          {/* 消息列表 - 可折叠、可滚动 */}
+          <Show when={!messagesCollapsed()}>
+            <div style={{
+              "margin-top": "8px",
+              "max-height": "180px",
+              "overflow-y": "auto"
+            }}>
+              <Show when={notices().length === 0}>
+                <div style={{ color: "#64748b", "font-size": "13px" }}>暂无消息</div>
+              </Show>
+              <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
+                <For each={notices()}>
+                  {(notice) => {
+                    // 根据消息类型设置颜色
+                    const typeColors: Record<SSEMessage['type'], { bg: string; label: string; text: string }> = {
+                      ERROR: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
+                      WARNING: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
+                      NOTICE: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
+                      INFO: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
+                      QUERY: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
+                      NOTIFICATION: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
+                    };
+                    const colors = typeColors[notice.type] || typeColors.INFO;
+
+                    return (
+                      <div style={{
+                        "font-family": "monospace",
+                        "font-size": "13px",
+                        "padding": "4px 8px",
+                        "background-color": colors.bg,
+                        "border-radius": "4px",
+                        display: "flex",
+                        gap: "8px",
+                        "flex-wrap": "wrap"
+                      }}>
+                        <span style={{ color: "#64748b", "flex-shrink": "0" }}>
+                          {new Date(notice.timestamp).toLocaleTimeString()}
+                        </span>
+                        <span style={{
+                          color: colors.label,
+                          "font-weight": "500",
+                          "flex-shrink": "0"
+                        }}>
+                          [{notice.type}]
+                        </span>
+                        <span style={{ color: colors.text }}>{notice.message}</span>
+                        {notice.detail && (
+                          <span style={{ color: "#9ca3af", "font-size": "12px", width: "100%", "padding-left": "70px" }}>
+                            ↳ {notice.detail}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  }}
+                </For>
+              </div>
+            </div>
           </Show>
         </div>
-      </div>
-      {/* 结果显示部分 */}
-      <div style={{ flex: 1, "min-height": "200px", "background-color": "#f9fafb", padding: "16px", "border-radius": "4px", overflow: "hidden", display: "flex", "flex-direction": "column" }}>
-        {renderResult()}
-      </div>
-
-      {/* 数据库通知消息区域 - 可折叠，固定高度不挤压上方内容 */}
-      <div style={{
-        "margin-top": "16px",
-        "background-color": "#1e293b",
-        "border-radius": "4px",
-        padding: "12px",
-        "flex-shrink": "0"
-      }}>
-        {/* 标题栏 - 固定不滚动 */}
-        <div style={{
-          display: "flex",
-          "justify-content": "space-between",
-          "align-items": "center",
-          cursor: "pointer",
-          "user-select": "none"
-        }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
-          <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
-            <span style={{
-              color: "#94a3b8",
-              "font-size": "12px",
-              transition: "transform 0.2s",
-              transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
-            }}>▼</span>
-            <span style={{ color: "#94a3b8", "font-size": "13px", "font-weight": "600" }}>
-              数据库消息
-            </span>
-            <span style={{
-              width: "8px",
-              height: "8px",
-              "border-radius": "50%",
-              "background-color": sseConnected() ? "#22c55e" : "#ef4444"
-            }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
-            <Show when={notices().length > 0}>
-              <span style={{
-                color: "#64748b",
-                "font-size": "12px",
-                "background-color": "#475569",
-                padding: "1px 6px",
-                "border-radius": "10px"
-              }}>
-                {notices().length}
-              </span>
-            </Show>
-          </div>
-          <button
-            onClick={(e) => { e.stopPropagation(); clearNotices(); }}
-            style={{
-              padding: "2px 8px",
-              "font-size": "12px",
-              "background-color": "#475569",
-              color: "#e2e8f0",
-              border: "none",
-              "border-radius": "4px",
-              cursor: "pointer"
-            }}
-          >
-            清除
-          </button>
-        </div>
-
-        {/* 消息列表 - 可折叠、可滚动 */}
-        <Show when={!messagesCollapsed()}>
-          <div style={{
-            "margin-top": "8px",
-            "max-height": "180px",
-            "overflow-y": "auto"
-          }}>
-            <Show when={notices().length === 0}>
-              <div style={{ color: "#64748b", "font-size": "13px" }}>暂无消息</div>
-            </Show>
-            <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
-              <For each={notices()}>
-                {(notice) => {
-                  // 根据消息类型设置颜色
-                  const typeColors: Record<SSEMessage['type'], { bg: string; label: string; text: string }> = {
-                    ERROR: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
-                    WARNING: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
-                    NOTICE: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
-                    INFO: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
-                    QUERY: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
-                    NOTIFICATION: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
-                  };
-                  const colors = typeColors[notice.type] || typeColors.INFO;
-
-                  return (
-                    <div style={{
-                      "font-family": "monospace",
-                      "font-size": "13px",
-                      "padding": "4px 8px",
-                      "background-color": colors.bg,
-                      "border-radius": "4px",
-                      display: "flex",
-                      gap: "8px",
-                      "flex-wrap": "wrap"
-                    }}>
-                      <span style={{ color: "#64748b", "flex-shrink": "0" }}>
-                        {new Date(notice.timestamp).toLocaleTimeString()}
-                      </span>
-                      <span style={{
-                        color: colors.label,
-                        "font-weight": "500",
-                        "flex-shrink": "0"
-                      }}>
-                        [{notice.type}]
-                      </span>
-                      <span style={{ color: colors.text }}>{notice.message}</span>
-                      {notice.detail && (
-                        <span style={{ color: "#9ca3af", "font-size": "12px", width: "100%", "padding-left": "70px" }}>
-                          ↳ {notice.detail}
-                        </span>
-                      )}
-                    </div>
-                  );
-                }}
-              </For>
-            </div>
-          </div>
-        </Show>
       </div>
     </div>
   );

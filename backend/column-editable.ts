@@ -1,4 +1,7 @@
-import type { Client, FieldDef } from "pg";
+import type { Client, Pool, FieldDef } from "pg";
+
+// 支持 Client 或 Pool 查询
+type QueryClient = Client | Pool;
 
 export interface ColumnEditableInfo {
   name: string;
@@ -22,7 +25,7 @@ interface UniqueConstraintInfo {
 /**
  * 查询指定表的唯一约束信息
  */
-async function getUniqueConstraints(client: Client, tableOids: number[]): Promise<UniqueConstraintInfo[]> {
+async function getUniqueConstraints(client: QueryClient, tableOids: number[]): Promise<UniqueConstraintInfo[]> {
   if (tableOids.length === 0) return [];
 
   const query = `
@@ -55,7 +58,7 @@ async function getUniqueConstraints(client: Client, tableOids: number[]): Promis
 /**
  * 查询列的名称映射（tableOid + columnNumber -> columnName）
  */
-async function getColumnNames(client: Client, tableOids: number[]): Promise<Map<string, string>> {
+async function getColumnNames(client: QueryClient, tableOids: number[]): Promise<Map<string, string>> {
   if (tableOids.length === 0) return new Map();
 
   const query = `
@@ -80,7 +83,7 @@ async function getColumnNames(client: Client, tableOids: number[]): Promise<Map<
 /**
  * 查询表名映射（tableOid -> tableName）
  */
-async function getTableNames(client: Client, tableOids: number[]): Promise<Map<number, { tableName: string; schemaName: string }>> {
+async function getTableNames(client: QueryClient, tableOids: number[]): Promise<Map<number, { tableName: string; schemaName: string }>> {
   if (tableOids.length === 0) return new Map();
 
   const query = `
@@ -110,7 +113,7 @@ async function getTableNames(client: Client, tableOids: number[]): Promise<Map<n
  * 3. 唯一约束的所有列都必须在当前查询结果中
  */
 export async function calculateColumnEditable(
-  client: Client,
+  client: QueryClient,
   fields: FieldDef[]
 ): Promise<ColumnEditableInfo[]> {
   // 收集所有涉及的表 OID（排除计算列，tableID = 0）
