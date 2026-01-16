@@ -56,7 +56,7 @@ function getSession(sessionId: string): SessionConnection | undefined {
 }
 
 const server = serve({
-  development: true,
+  // development: true,
   idleTimeout: 120,  // SSE 连接需要较长的空闲超时（秒），默认是 10 秒
   routes: {
     "/*": index,
