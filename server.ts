@@ -59,7 +59,7 @@ const server = serve({
   // development: true,
   idleTimeout: 120,  // SSE 连接需要较长的空闲超时（秒），默认是 10 秒
   routes: {
-    "/*": index,
+    "/": index,  // Hash 路由只需要这一行，所有前端路由由 # 后的部分处理
     "/api/hello": { GET: () => Response.json({ message: "Hello from API" }) },
     // SSE 端点：用于向前端推送实时消息（如 PostgreSQL 的 notice 通知）
     "/api/events": {
@@ -624,6 +624,28 @@ const server = serve({
       }
     },
   },
+  // 处理未被 routes 匹配的请求
+  async fetch(req) {
+    const url = new URL(req.url);
+    const pathname = url.pathname;
+    
+    // 尝试作为静态文件处理（检查常见的静态资源扩展名）
+    const ext = pathname.split('.').pop()?.toLowerCase();
+    const staticExts = ['js', 'ts', 'tsx', 'jsx', 'css', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'map'];
+    
+    if (ext && staticExts.includes(ext)) {
+      // 尝试返回静态文件
+      const file = Bun.file(`.${pathname}`);
+      if (await file.exists()) {
+        return new Response(file);
+      }
+    }
+    
+    // 对于未匹配的路由，返回 404
+    // 注意：前端路由需要在 routes 中显式配置（使用 index），
+    // 因为 Bun 需要处理 HTML 中的 TypeScript 引用
+    return new Response("Not Found", { status: 404 });
+  }
 });
 
 console.log(`Server running at http://localhost:${server.port}`);
