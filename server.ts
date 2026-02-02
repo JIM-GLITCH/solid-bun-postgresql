@@ -310,7 +310,7 @@ const server = serve({
 
           // 获取并计算列信息
           const fields = (cursor as any)._result?.fields;
-          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields) : [];
+          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields,query) : [];
 
           const isDone = rows.length < batchSize;
 

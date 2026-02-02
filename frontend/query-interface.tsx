@@ -15,7 +15,7 @@ interface PendingUpdate {
 }
 
 export default function QueryInterface() {
-  const [sql, setSql] = createSignal(`select * from student`);
+  const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
