@@ -1,10 +1,11 @@
-import { createSignal, For, Show, onMount, onCleanup } from "solid-js";
+import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo } from "../backend/column-editable";
 import { getSessionId } from "./session";
 import { type SSEMessage } from "../server";
 import Sidebar from "./sidebar";
+import VisualQueryBuilder from "./visual-query-builder";
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -32,6 +33,7 @@ export default function QueryInterface() {
   const [messagesCollapsed, setMessagesCollapsed] = createSignal(true);  // 消息面板折叠状态，默认折叠
   const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
+  const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
 
   // 虚拟滚动相关状态
   const [scrollTop, setScrollTop] = createSignal(0);
@@ -810,6 +812,25 @@ export default function QueryInterface() {
                 <span>⏹</span> 中断
               </button>
             </Show>
+            <button
+              onClick={() => setShowQueryBuilder(!showQueryBuilder())}
+              style={{
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": showQueryBuilder() ? "#3b82f6" : "#6366f1",
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+                transition: "background-color 0.2s ease"
+              }}
+            >
+              <span>🔧</span> {showQueryBuilder() ? "关闭构建器" : "可视化构建"}
+            </button>
             <span style={{ 
               "margin-left": "auto", 
               color: "#6b7280", 
@@ -820,6 +841,42 @@ export default function QueryInterface() {
             </span>
           </div>
         </div>
+
+        {/* Visual Query Builder */}
+        <Show when={showQueryBuilder()}>
+          <div style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            "background-color": "rgba(0, 0, 0, 0.5)",
+            "z-index": 100,
+            display: "flex",
+            "justify-content": "center",
+            "align-items": "center",
+            padding: "20px",
+          }}>
+            <div style={{
+              width: "100%",
+              height: "100%",
+              "max-width": "1600px",
+              "max-height": "900px",
+              "border-radius": "12px",
+              overflow: "hidden",
+              "box-shadow": "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
+            }}>
+              <VisualQueryBuilder 
+                onExecuteQuery={(generatedSql) => {
+                  setSql(generatedSql);
+                  setShowQueryBuilder(false);
+                  runUserQuery();
+                }}
+                onClose={() => setShowQueryBuilder(false)}
+              />
+            </div>
+          </div>
+        </Show>
 
         {/* 结果显示部分 */}
         <div style={{ 

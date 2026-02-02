@@ -623,6 +623,69 @@ const server = serve({
         }
       }
     },
+    // 获取表的外键信息
+    "/api/postgres/foreign-keys": {
+      POST: async (req) => {
+        const { sessionId, schema, table } = await req.json() as { sessionId: string; schema: string; table: string };
+        if (!sessionId) return Response.json({ error: "缺少 sessionId" }, { status: 400 });
+
+        const session = getSession(sessionId);
+        if (!session) return Response.json({ error: "未找到数据库连接" }, { status: 400 });
+
+        try {
+          // 获取从该表出发的外键（该表引用其他表）
+          const outgoingResult = await session.backGroundPool.query(`
+            SELECT
+              tc.constraint_name,
+              tc.table_schema AS source_schema,
+              tc.table_name AS source_table,
+              kcu.column_name AS source_column,
+              ccu.table_schema AS target_schema,
+              ccu.table_name AS target_table,
+              ccu.column_name AS target_column
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_schema = $1
+              AND tc.table_name = $2
+          `, [schema, table]);
+
+          // 获取指向该表的外键（其他表引用该表）
+          const incomingResult = await session.backGroundPool.query(`
+            SELECT
+              tc.constraint_name,
+              tc.table_schema AS source_schema,
+              tc.table_name AS source_table,
+              kcu.column_name AS source_column,
+              ccu.table_schema AS target_schema,
+              ccu.table_name AS target_table,
+              ccu.column_name AS target_column
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND ccu.table_schema = $1
+              AND ccu.table_name = $2
+          `, [schema, table]);
+
+          return Response.json({ 
+            outgoing: outgoingResult.rows,  // 该表引用其他表
+            incoming: incomingResult.rows   // 其他表引用该表
+          });
+        } catch (e: any) {
+          return Response.json({ error: e.message }, { status: 500 });
+        }
+      }
+    },
   },
   // 处理未被 routes 匹配的请求
   async fetch(req) {
