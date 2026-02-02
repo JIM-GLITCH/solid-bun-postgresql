@@ -59,11 +59,31 @@ const server = serve({
   // development: true,
   idleTimeout: 120,  // SSE 连接需要较长的空闲超时（秒），默认是 10 秒
   routes: {
-    "/": index,  // Hash 路由只需要这一行，所有前端路由由 # 后的部分处理
+    "/index": index,
+    "/": {
+      GET: async (req, server) => {
+        // 根据当前服务器的 hostname 和 port 构建完整 URL
+        const protocol = 'http';  // 可以根据需要改为 'https'
+        const hostname = server.hostname || 'localhost';
+        const port = server.port;
+        const baseUrl = `${protocol}://${hostname}:${port}`;
+        const url = `${baseUrl}/index`;
+        
+        const htmlContent = await (await fetch(url)).text();
+        return new Response(htmlContent, {
+          headers: {
+            'Content-Type': 'text/html',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',  // 禁用缓存
+            'Pragma': 'no-cache',
+            'Expires': '0'
+          }
+        });
+      }
+    },
     "/api/hello": { GET: () => Response.json({ message: "Hello from API" }) },
     // SSE 端点：用于向前端推送实时消息（如 PostgreSQL 的 notice 通知）
     "/api/events": {
-      GET: (req) => {
+      GET: (req: { url: string | URL; }) => {
         const url = new URL(req.url);
         const sessionId = url.searchParams.get('sessionId');
         if (!sessionId) {
@@ -310,7 +330,7 @@ const server = serve({
 
           // 获取并计算列信息
           const fields = (cursor as any)._result?.fields;
-          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields,query) : [];
+          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, query) : [];
 
           const isDone = rows.length < batchSize;
 
@@ -677,7 +697,7 @@ const server = serve({
               AND ccu.table_name = $2
           `, [schema, table]);
 
-          return Response.json({ 
+          return Response.json({
             outgoing: outgoingResult.rows,  // 该表引用其他表
             incoming: incomingResult.rows   // 其他表引用该表
           });
@@ -691,11 +711,21 @@ const server = serve({
   async fetch(req) {
     const url = new URL(req.url);
     const pathname = url.pathname;
-    
+
+    // 如果是 chunk 文件请求（浏览器缓存了旧的构建版本），返回 404
+    // 这样浏览器会重新请求正确的 TSX 文件
+    if (pathname.startsWith('/chunk-') && pathname.endsWith('.js')) {
+      return new Response("Chunk file not found. Please clear browser cache.", {
+        status: 404,
+        headers: { 'Content-Type': 'text/plain' }
+      });
+    }
+
     // 尝试作为静态文件处理（检查常见的静态资源扩展名）
+    // 注意：在 development 模式下，Bun 会自动处理 TSX/TS 文件
     const ext = pathname.split('.').pop()?.toLowerCase();
-    const staticExts = ['js', 'ts', 'tsx', 'jsx', 'css', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'map'];
-    
+    const staticExts = ['js', 'css', 'json', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'map'];
+
     if (ext && staticExts.includes(ext)) {
       // 尝试返回静态文件
       const file = Bun.file(`.${pathname}`);
@@ -703,7 +733,7 @@ const server = serve({
         return new Response(file);
       }
     }
-    
+
     // 对于未匹配的路由，返回 404
     // 注意：前端路由需要在 routes 中显式配置（使用 index），
     // 因为 Bun 需要处理 HTML 中的 TypeScript 引用
