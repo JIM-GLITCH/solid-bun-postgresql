@@ -4,7 +4,11 @@
   "description": "",
   "type": "module",
   "scripts": {
-    "dev":"bun ./dev.ts"
+    "dev":"bun ./dev.ts",
+    "deploy":"bun ./deploy.ts",
+    "build-win":"bun ./build-win.ts",
+    "build-linux":"bun ./build-linux.ts"
+
   },
   "license": "MIT",
   "devDependencies": {
