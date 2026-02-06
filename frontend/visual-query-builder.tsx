@@ -274,9 +274,15 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     const foreignKeys = await loadTableForeignKeys(schema, name);
     const tableId = generateId();
 
-    // 生成别名（计算同名表的数量）
-    const existingCount = queryState.tables.filter(t => t.name === name).length;
-    const alias = existingCount > 0 ? `${name.charAt(0)}${existingCount + 1}` : name.charAt(0);
+    // 生成别名（基于首字母并确保在画布上唯一，避免不同表同首字母冲突）
+    const base = name.charAt(0).toLowerCase();
+    const existingAliases = new Set(queryState.tables.map(t => t.alias));
+    let alias = base;
+    if (existingAliases.has(alias)) {
+      let i = 2;
+      while (existingAliases.has(`${base}${i}`)) i++;
+      alias = `${base}${i}`;
+    }
 
     // 获取现有表的副本（在添加新表之前）
     const existingTables = [...queryState.tables];
