@@ -867,6 +867,7 @@ export default function QueryInterface() {
               "box-shadow": "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
             }}>
               <VisualQueryBuilder 
+                initialSql={sql().trim() || undefined}
                 onExecuteQuery={(generatedSql) => {
                   setSql(generatedSql);
                   setShowQueryBuilder(false);

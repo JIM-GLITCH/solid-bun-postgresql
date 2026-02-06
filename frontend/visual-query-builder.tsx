@@ -1,6 +1,7 @@
 import { createSignal, For, Show, onMount, onCleanup, createEffect, createMemo } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { getSessionId } from "./session";
+import { parseSqlToVisualDescriptor } from "./sql-to-visual";
 
 // ================== 类型定义 ==================
 
@@ -73,6 +74,8 @@ interface QueryState {
 interface VisualQueryBuilderProps {
   onExecuteQuery?: (sql: string) => void;
   onClose?: () => void;
+  /** 打开时用该 SQL 生成可视化图（从 SQL 生成图） */
+  initialSql?: string;
 }
 
 // ================== 工具函数 ==================
@@ -136,6 +139,14 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
   // 右侧面板拖拽排序状态
   const [dragSortItem, setDragSortItem] = createSignal<{ type: 'column' | 'where' | 'sort' | 'table'; id: string } | null>(null);
   const [dragOverItem, setDragOverItem] = createSignal<string | null>(null);
+
+  // 从 SQL 导入：弹窗与状态
+  const [showImportSql, setShowImportSql] = createSignal(false);
+  const [importSqlText, setImportSqlText] = createSignal('');
+  const [importSqlError, setImportSqlError] = createSignal<string | null>(null);
+  const [applyingSql, setApplyingSql] = createSignal(false);
+  const [initialSqlApplied, setInitialSqlApplied] = createSignal(false);
+  const [showBestEffortHint, setShowBestEffortHint] = createSignal(false);
 
   // 加载可用的表
   async function loadAvailableTables() {
@@ -232,8 +243,163 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     }
   }
 
+  /** 将解析后的 SQL 描述应用到当前查询状态（从 SQL 生成可视化图） */
+  async function applyParsedDescriptor(descriptor: ReturnType<typeof parseSqlToVisualDescriptor>) {
+    if (descriptor.error || descriptor.tables.length === 0) {
+      setImportSqlError(descriptor.error ?? '未解析到任何表');
+      return;
+    }
+    setApplyingSql(true);
+    setImportSqlError(null);
+    try {
+      const aliasToId = new Map<string, string>();
+      const tables: CanvasTable[] = [];
+      const TABLE_SPACING = 280;
+      const START_Y = 80;
+
+      for (let i = 0; i < descriptor.tables.length; i++) {
+        const t = descriptor.tables[i];
+        const tableId = generateId();
+        aliasToId.set(t.alias.toLowerCase(), tableId);
+        let columns: TableColumn[] = [];
+        try {
+          columns = await loadTableColumns(t.schema, t.name);
+        } catch {
+          // 表可能不存在于当前库，保留空列列表
+        }
+        tables.push({
+          id: tableId,
+          schema: t.schema,
+          name: t.name,
+          alias: t.alias,
+          columns,
+          position: { x: i * TABLE_SPACING, y: START_Y },
+          selectedColumns: new Set(),
+          joinType: t.joinType,
+        });
+      }
+
+      const primaryTableId = tables[0]?.id;
+
+      const joinConditions: JoinCondition[] = [];
+      for (const jc of descriptor.joinConditions) {
+        const leftId = aliasToId.get(jc.leftAlias.toLowerCase());
+        const rightId = aliasToId.get(jc.rightAlias.toLowerCase());
+        if (leftId && rightId) {
+          const leftTable = tables.find(t => t.id === leftId);
+          const rightTable = tables.find(t => t.id === rightId);
+          joinConditions.push({
+            id: generateId(),
+            leftTableId: leftId,
+            leftColumn: `${jc.leftAlias}.${jc.leftColumn}`,
+            rightTableId: rightId,
+            rightColumn: `${jc.rightAlias}.${jc.rightColumn}`,
+            operator: jc.operator,
+          });
+        }
+      }
+
+      const selectedColumns: SelectedColumn[] = [];
+      for (const sc of descriptor.selectedColumns) {
+        const tableId = sc.tableAlias ? aliasToId.get(sc.tableAlias.toLowerCase()) : undefined;
+        const table = tableId ? tables.find(t => t.id === tableId) : undefined;
+        const columnName = sc.columnName || (sc.expression ? 'expr' : '');
+        if (table && columnName === '*') {
+          for (const col of table.columns) {
+            selectedColumns.push({
+              id: generateId(),
+              tableId: table.id,
+              columnName: col.name,
+              alias: '',
+              aggregation: sc.aggregation ?? '',
+              isGroupBy: false,
+            });
+          }
+        } else if (table && (table.columns.some(c => c.name === columnName) || sc.expression)) {
+          selectedColumns.push({
+            id: generateId(),
+            tableId: table.id,
+            columnName: columnName || (table.columns[0]?.name ?? ''),
+            alias: sc.alias ?? '',
+            expression: sc.expression,
+            aggregation: sc.aggregation ?? '',
+            isGroupBy: false,
+          });
+        } else if (table && !columnName && sc.expression) {
+          selectedColumns.push({
+            id: generateId(),
+            tableId: table.id,
+            columnName: table.columns[0]?.name ?? '',
+            alias: sc.alias ?? '',
+            expression: sc.expression,
+            aggregation: sc.aggregation ?? '',
+            isGroupBy: false,
+          });
+        }
+      }
+
+      const whereConditions: WhereCondition[] = descriptor.whereConditions.map(w => ({
+        id: generateId(),
+        leftOperand: w.leftOperand,
+        operator: w.operator,
+        rightOperand: w.rightOperand,
+        logicalOperator: w.logicalOperator,
+      }));
+
+      const sortColumns: SortColumn[] = descriptor.sortColumns.map(s => ({
+        id: generateId(),
+        column: s.column,
+        direction: s.direction,
+      }));
+
+      setQueryState(produce(draft => {
+        draft.tables = tables;
+        draft.selectedColumns = selectedColumns;
+        draft.whereConditions = whereConditions;
+        draft.joinConditions = joinConditions;
+        draft.sortColumns = sortColumns;
+        draft.distinct = descriptor.distinct;
+        draft.limit = descriptor.limit;
+        draft.primaryTableId = primaryTableId;
+      }));
+
+      if (descriptor.bestEffortHint) {
+        setShowBestEffortHint(true);
+      }
+      setShowImportSql(false);
+      setImportSqlText('');
+    } catch (e) {
+      setImportSqlError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplyingSql(false);
+    }
+  }
+
+  /** 从输入的 SQL 字符串解析并应用到画布 */
+  function applySqlFromText(sql: string) {
+    const descriptor = parseSqlToVisualDescriptor(sql.trim());
+    applyParsedDescriptor(descriptor);
+  }
+
   onMount(() => {
     loadAvailableTables();
+  });
+
+  // 当传入 initialSql 时，首次挂载后解析并应用（仅执行一次）
+  createEffect(() => {
+    const sql = props.initialSql?.trim();
+    if (!sql || initialSqlApplied()) return;
+    setInitialSqlApplied(true);
+    const descriptor = parseSqlToVisualDescriptor(sql);
+    if (descriptor.error) {
+      setImportSqlError(descriptor.error);
+      return;
+    }
+    if (descriptor.tables.length === 0) {
+      setImportSqlError('未解析到任何表，请确保 SQL 包含 FROM 子句');
+      return;
+    }
+    applyParsedDescriptor(descriptor);
   });
 
   // 切换 schema 展开状态
@@ -1365,6 +1531,20 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
         <span style={{ "font-size": '16px', "font-weight": '600' }}>🔧 Visual Query Builder</span>
         <div style={{ flex: 1 }} />
         <button
+          onClick={() => { setImportSqlError(null); setImportSqlText(''); setShowImportSql(true); }}
+          style={{
+            padding: '8px 16px',
+            "background-color": '#334155',
+            color: '#e2e8f0',
+            border: 'none',
+            "border-radius": '6px',
+            cursor: 'pointer',
+            "font-size": '13px',
+          }}
+        >
+          📥 从 SQL 导入
+        </button>
+        <button
           onClick={executeQuery}
           disabled={queryState.tables.length === 0}
           style={{
@@ -1398,6 +1578,150 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
           </button>
         </Show>
       </div>
+
+      <Show when={importSqlError()}>
+        <div style={{
+          padding: '8px 16px',
+          "background-color": 'rgba(248, 113, 113, 0.15)',
+          color: '#f87171',
+          "font-size": '13px',
+          "border-bottom": '1px solid #334155',
+        }}>
+          {importSqlError()}
+          <button
+            type="button"
+            onClick={() => setImportSqlError(null)}
+            style={{
+              "margin-left": '12px',
+              padding: '2px 8px',
+              background: 'transparent',
+              color: '#f87171',
+              border: '1px solid currentColor',
+              "border-radius": '4px',
+              cursor: 'pointer',
+            }}
+          >
+            关闭
+          </button>
+        </div>
+      </Show>
+
+      <Show when={showBestEffortHint()}>
+        <div style={{
+          padding: '8px 16px',
+          "background-color": 'rgba(245, 158, 11, 0.15)',
+          color: '#f59e0b',
+          "font-size": '13px',
+          "border-bottom": '1px solid #334155',
+          display: 'flex',
+          "align-items": 'center',
+          "justify-content": 'space-between',
+        }}>
+          <span>我们已经尽力解析并生成可视化图，请核对后使用。</span>
+          <button
+            type="button"
+            onClick={() => setShowBestEffortHint(false)}
+            style={{
+              padding: '2px 8px',
+              background: 'transparent',
+              color: '#f59e0b',
+              border: '1px solid currentColor',
+              "border-radius": '4px',
+              cursor: 'pointer',
+              "flex-shrink": 0,
+            }}
+          >
+            知道了
+          </button>
+        </div>
+      </Show>
+
+      {/* 从 SQL 导入 弹窗 */}
+      <Show when={showImportSql()}>
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            "background-color": 'rgba(0,0,0,0.6)',
+            "z-index": 200,
+            display: 'flex',
+            "align-items": 'center',
+            "justify-content": 'center',
+            padding: '20px',
+          }}
+          onClick={(e) => e.target === e.currentTarget && !applyingSql() && setShowImportSql(false)}
+        >
+          <div
+            style={{
+              width: '100%',
+              "max-width": '560px',
+              "background-color": '#1e293b',
+              "border-radius": '12px',
+              padding: '20px',
+              "box-shadow": '0 25px 50px -12px rgba(0,0,0,0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ "font-size": '16px', "font-weight": '600', "margin-bottom": '12px', color: '#e2e8f0' }}>
+              📥 从 SQL 生成可视化图
+            </div>
+            <p style={{ "font-size": '12px', color: '#94a3b8', "margin-bottom": '12px' }}>
+              粘贴一条 SELECT 语句，将自动解析 FROM、JOIN、WHERE、ORDER BY、LIMIT 等并生成画布。
+            </p>
+            <textarea
+              value={importSqlText()}
+              onInput={(e) => { setImportSqlText(e.currentTarget.value); setImportSqlError(null); }}
+              placeholder="例如：&#10;SELECT a.id, a.name, b.id FROM student a LEFT JOIN student b ON a.id = b.id"
+              style={{
+                width: '100%',
+                height: '140px',
+                "box-sizing": 'border-box',
+                padding: '12px',
+                "font-size": '13px',
+                "font-family": "'JetBrains Mono', monospace",
+                "background-color": '#0f172a',
+                color: '#e2e8f0',
+                border: '1px solid #334155',
+                "border-radius": '8px',
+                resize: 'vertical',
+              }}
+            />
+            <Show when={importSqlError()}>
+              <div style={{ color: '#f87171', "font-size": '12px', "margin-top": '8px' }}>{importSqlError()}</div>
+            </Show>
+            <div style={{ display: 'flex', "justify-content": 'flex-end', gap: '8px', "margin-top": '16px' }}>
+              <button
+                onClick={() => setShowImportSql(false)}
+                disabled={applyingSql()}
+                style={{
+                  padding: '8px 16px',
+                  "background-color": '#475569',
+                  color: '#fff',
+                  border: 'none',
+                  "border-radius": '6px',
+                  cursor: applyingSql() ? 'not-allowed' : 'pointer',
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={() => applySqlFromText(importSqlText())}
+                disabled={applyingSql() || !importSqlText().trim()}
+                style={{
+                  padding: '8px 16px',
+                  "background-color": '#10b981',
+                  color: '#fff',
+                  border: 'none',
+                  "border-radius": '6px',
+                  cursor: applyingSql() || !importSqlText().trim() ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {applyingSql() ? '解析中...' : '确认导入'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
 
       {/* 主内容区 */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
