@@ -972,9 +972,10 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
       targetColumnName: string;
     }[] = [];
 
-    const TABLE_WIDTH = 200;
-    const HEADER_HEIGHT = 40;  // 表头高度
-    const COLUMN_HEIGHT = 28;  // 每列高度
+    // 默认回退尺寸（当无法从 DOM 测量时使用）
+    const FALLBACK_TABLE_WIDTH = 200;
+    const FALLBACK_HEADER_HEIGHT = 40;  // 表头高度
+    const FALLBACK_COLUMN_HEIGHT = 28;  // 每列高度
 
     // 获取表的顺序索引（用于比较）
     const getTableOrderIndex = (tableId: string): number => {
@@ -1003,29 +1004,59 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
         const sourceColName = sourceColParts[sourceColParts.length - 1];
         const targetColName = targetColParts[targetColParts.length - 1];
 
-        // 找到列在表中的索引
-        const sourceColIndex = sourceTable.columns.findIndex(c => c.name === sourceColName);
-        const targetColIndex = targetTable.columns.findIndex(c => c.name === targetColName);
+        // 优先使用 DOM 的 offsetTop/offsetHeight 来测量列中心位置（更稳定、无缩放抖动），无法获取时回退到常量估算
+        function measureColumnCenter(tableObj: CanvasTable, colName: string): number | null {
+          const canvas = canvasRef();
+          if (!canvas) return null;
+          const tableEl = canvas.querySelector(`.canvas-table[data-table-id="${tableObj.id}"]`) as HTMLElement | null;
+          if (!tableEl) return null;
 
-        // 计算列的 Y 位置（表头 + 列索引 * 列高度 + 列高度的一半）
-        const sourceY = sourceTable.position.y + HEADER_HEIGHT +
-          (sourceColIndex >= 0 ? sourceColIndex : 0) * COLUMN_HEIGHT + COLUMN_HEIGHT / 2;
-        const targetY = targetTable.position.y + HEADER_HEIGHT +
-          (targetColIndex >= 0 ? targetColIndex : 0) * COLUMN_HEIGHT + COLUMN_HEIGHT / 2;
+          const colEl = tableEl.querySelector(`.column-item[data-column-name="${colName}"]`) as HTMLElement | null;
+          if (!colEl) return null;
 
-        // 计算 X 位置（根据表的相对位置决定从哪边连接）
-        const sourceCenterX = sourceTable.position.x + TABLE_WIDTH / 2;
-        const targetCenterX = targetTable.position.x + TABLE_WIDTH / 2;
+          // offsetTop/offsetHeight 是在未被 transform 缩放前的布局值，和 table.position.* 在同一坐标空间
+          const offsetTop = colEl.offsetTop;
+          const height = colEl.offsetHeight || FALLBACK_COLUMN_HEIGHT;
+
+          return tableObj.position.y + offsetTop + height / 2;
+        }
+
+        const measuredSourceY = measureColumnCenter(sourceTable, sourceColName);
+        const measuredTargetY = measureColumnCenter(targetTable, targetColName);
+
+        const sourceY = measuredSourceY != null
+          ? measuredSourceY
+          : sourceTable.position.y + FALLBACK_HEADER_HEIGHT +
+              (sourceTable.columns.findIndex(c => c.name === sourceColName) >= 0 ? sourceTable.columns.findIndex(c => c.name === sourceColName) : 0) * FALLBACK_COLUMN_HEIGHT + FALLBACK_COLUMN_HEIGHT / 2;
+
+        const targetY = measuredTargetY != null
+          ? measuredTargetY
+          : targetTable.position.y + FALLBACK_HEADER_HEIGHT +
+              (targetTable.columns.findIndex(c => c.name === targetColName) >= 0 ? targetTable.columns.findIndex(c => c.name === targetColName) : 0) * FALLBACK_COLUMN_HEIGHT + FALLBACK_COLUMN_HEIGHT / 2;
+
+        // 计算 X 位置（根据表的相对位置决定从哪边连接），优先使用 DOM 测量宽度
+        const canvasEl = canvasRef();
+        let sourceTableWidth = FALLBACK_TABLE_WIDTH;
+        let targetTableWidth = FALLBACK_TABLE_WIDTH;
+        if (canvasEl) {
+          const sourceEl = canvasEl.querySelector(`.canvas-table[data-table-id="${sourceTable.id}"]`) as HTMLElement | null;
+          const targetEl = canvasEl.querySelector(`.canvas-table[data-table-id="${targetTable.id}"]`) as HTMLElement | null;
+          if (sourceEl && sourceEl.offsetWidth) sourceTableWidth = sourceEl.offsetWidth;
+          if (targetEl && targetEl.offsetWidth) targetTableWidth = targetEl.offsetWidth;
+        }
+
+        const sourceCenterX = sourceTable.position.x + sourceTableWidth / 2;
+        const targetCenterX = targetTable.position.x + targetTableWidth / 2;
 
         let sourceX: number, targetX: number;
         if (sourceCenterX < targetCenterX) {
           // source 表在左边，从 source 右边连到 target 左边
-          sourceX = sourceTable.position.x + TABLE_WIDTH;
+          sourceX = sourceTable.position.x + sourceTableWidth;
           targetX = targetTable.position.x;
         } else {
           // source 表在右边，从 source 左边连到 target 右边
           sourceX = sourceTable.position.x;
-          targetX = targetTable.position.x + TABLE_WIDTH;
+          targetX = targetTable.position.x + targetTableWidth;
         }
 
         lines.push({
@@ -1093,6 +1124,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     return (
       <div
         class="canvas-table"
+        data-table-id={table.id}
         style={{
           position: 'absolute',
           left: `${table.position.x}px`,
@@ -1122,7 +1154,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
         }}
       >
         {/* 表头 */}
-        <div style={{
+        <div class="table-header" style={{
           padding: '8px 10px',
           "background-color": isPrimaryTable() ? '#78350f' : '#334155',
           "border-radius": '7px 7px 0 0',
@@ -1201,13 +1233,11 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
           </button>
         </div>
 
-        {/* 列列表 */}
+        {/* 列列表（显示全部列，去掉内部滚动） */}
         <div style={{
-          "max-height": '200px',
-          "overflow-y": 'auto',
           padding: '4px 0',
         }}>
-          <For each={table.columns}>
+            <For each={table.columns}>
             {(col) => {
               // 使用函数形式以确保响应式更新
               const isColumnSelected = () => queryState.selectedColumns.some(
@@ -1226,9 +1256,10 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
                 return start && start.tableId !== table.id;
               };
 
-              return (
+                return (
                 <div
                   class="column-item"
+                  data-column-name={col.name}
                   draggable={true}
                   onDragStart={(e) => {
                     e.stopPropagation();

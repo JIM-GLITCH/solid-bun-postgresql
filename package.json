@@ -3,7 +3,9 @@
   "version": "0.0.0",
   "description": "",
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "dev":"bun ./dev.ts"
+  },
   "license": "MIT",
   "devDependencies": {
     "@babel/core": "^7.28.5",
