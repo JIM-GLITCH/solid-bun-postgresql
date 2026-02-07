@@ -2,6 +2,7 @@
 import { useNavigate } from '@solidjs/router';
 import { For, createSignal } from 'solid-js';
 import { getSessionId } from './session';
+import { connectPostgres } from './api';
 
 const fields = [
     { key: 'host', label: 'host', desc: '数据库主机名或 IP', example: 'localhost' },
@@ -29,15 +30,10 @@ export default function Postgres() {
     const connect = async () => {
         console.log("connect")
         const sessionId = getSessionId();
-        const { sucess, error } = await (await fetch('/api/connect-postgres', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...form(), sessionId }),
-        })).json();
+        const { sucess, error } = await connectPostgres(sessionId, form());
         if(sucess){
             navagate('/postgres/query-interface')
         }
-
     }
     return (
         <>

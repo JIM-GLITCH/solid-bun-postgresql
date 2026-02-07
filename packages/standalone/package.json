@@ -1,0 +1,22 @@
+{
+  "name": "@project/standalone",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run ./dev.ts",
+    "build:linux": "bun run ./build-linux.ts",
+    "build:win": "bun run ./build-win.ts",
+    "deploy": "bun run ./deploy.ts"
+  },
+  "dependencies": {
+    "@project/backend": "workspace:*",
+    "@project/shared": "workspace:*",
+    "pg": "^8.16.3",
+    "pg-cursor": "^2.15.3"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.16.0",
+    "@types/pg-cursor": "^2.7.2",
+    "bun-plugin-solid": "^1.0.0"
+  }
+}

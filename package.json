@@ -5,10 +5,11 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "bun ./dev.ts",
-    "deploy": "bun ./deploy.ts",
-    "build-win": "bun ./build-win.ts",
-    "build-linux": "bun ./build-linux.ts"
+    "dev": "bun packages/standalone/dev.ts",
+    "deploy": "bun packages/standalone/deploy.ts",
+    "build-win": "bun packages/standalone/build-win.ts",
+    "build-linux": "bun packages/standalone/build-linux.ts",
+    "build:vscode": "pnpm --filter vscode-extension build"
   },
   "license": "MIT",
   "devDependencies": {

@@ -1,2 +1,2 @@
 [serve.static]
-plugins = ["./solid-plugin.ts"]
+plugins = ["./packages/standalone/solid-plugin.ts"]

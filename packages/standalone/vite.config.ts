@@ -9,11 +9,8 @@ export default defineConfig({
   assetsInclude: ["**/*.html"],
   test: {
     server: {
-      deps: {
-        // external:["bun"]
-      }
-    },
-    // include:["frontend/**/*.test.tsx"]
+      deps: {}
+    }
   },
   base: './',
   plugins: [devtools(), solidPlugin()],

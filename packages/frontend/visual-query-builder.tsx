@@ -2,6 +2,7 @@ import { createSignal, For, Show, onMount, onCleanup, createEffect, createMemo }
 import { createStore, produce } from "solid-js/store";
 import { getSessionId } from "./session";
 import { parseSqlToVisualDescriptor } from "./sql-to-visual";
+import { getSchemas, getTables, getColumns, getForeignKeys } from "./api";
 
 // ================== 类型定义 ==================
 
@@ -153,22 +154,12 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     setLoadingTables(true);
     try {
       const sessionId = getSessionId();
-      const schemasRes = await fetch("/api/postgres/schemas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
-      });
-      const schemasData = await schemasRes.json();
+      const schemasData = await getSchemas(sessionId);
 
       if (schemasData.schemas) {
         const schemaList: { schema: string; tables: string[] }[] = [];
         for (const schema of schemasData.schemas) {
-          const tablesRes = await fetch("/api/postgres/tables", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId, schema }),
-          });
-          const tablesData = await tablesRes.json();
+          const tablesData = await getTables(sessionId, schema);
           schemaList.push({
             schema,
             tables: [...(tablesData.tables || []), ...(tablesData.views || [])],
@@ -192,12 +183,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
 
     try {
       const sessionId = getSessionId();
-      const res = await fetch("/api/postgres/columns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, schema, table }),
-      });
-      const data = await res.json();
+      const data = await getColumns(sessionId, schema, table);
 
       const columns: TableColumn[] = (data.columns || []).map((col: any) => ({
         name: col.column_name,
@@ -223,12 +209,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
 
     try {
       const sessionId = getSessionId();
-      const res = await fetch("/api/postgres/foreign-keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, schema, table }),
-      });
-      const data = await res.json();
+      const data = await getForeignKeys(sessionId, schema, table);
 
       const fkInfo = {
         outgoing: data.outgoing || [],

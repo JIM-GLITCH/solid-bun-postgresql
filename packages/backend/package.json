@@ -5,7 +5,11 @@
   "main": "./connect-postgres.ts",
   "exports": {
     "./connect-postgres": "./connect-postgres.ts",
-    "./column-editable": "./column-editable.ts"
+    "./column-editable": "./column-editable.ts",
+    "./api-handlers": "./api-handlers.ts",
+    "./api-core": "./api-core.ts",
+    "./api-handlers-http": "./api-handlers-http.ts",
+    "./api-handlers-vscode": "./api-handlers-vscode.ts"
   },
   "dependencies": {
     "@project/shared": "workspace:*",

@@ -1,6 +1,7 @@
 import { createSignal, For, Show, onMount } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { getSessionId } from "./session";
+import { getSchemas, getTables, getColumns, getIndexes } from "./api";
 
 // 数据库对象类型
 type NodeType = "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
@@ -93,12 +94,7 @@ export default function Sidebar(props: SidebarProps) {
   async function loadSchemas() {
     const sessionId = getSessionId();
     try {
-      const res = await fetch("/api/postgres/schemas", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
-      });
-      const data = await res.json();
+      const data = await getSchemas(sessionId);
       if (data.schemas) {
         const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => ({
           id: `schema:${schema}`,
@@ -124,12 +120,7 @@ export default function Sidebar(props: SidebarProps) {
   async function loadTables(schema: string) {
     const sessionId = getSessionId();
     try {
-      const res = await fetch("/api/postgres/tables", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, schema }),
-      });
-      const data = await res.json();
+      const data = await getTables(sessionId, schema);
 
       const tablesId = `tables:${schema}`;
       const viewsId = `views:${schema}`;
@@ -169,12 +160,7 @@ export default function Sidebar(props: SidebarProps) {
   async function loadColumns(schema: string, table: string) {
     const sessionId = getSessionId();
     try {
-      const res = await fetch("/api/postgres/columns", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, schema, table }),
-      });
-      const data = await res.json();
+      const data = await getColumns(sessionId, schema, table);
 
       const columnsId = `columns:${schema}.${table}`;
       const columnChildren: TreeNode[] = (data.columns || []).map((col: any) => ({
@@ -196,12 +182,7 @@ export default function Sidebar(props: SidebarProps) {
   async function loadIndexes(schema: string, table: string) {
     const sessionId = getSessionId();
     try {
-      const res = await fetch("/api/postgres/indexes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, schema, table }),
-      });
-      const data = await res.json();
+      const data = await getIndexes(sessionId, schema, table);
 
       const indexesId = `indexes:${schema}.${table}`;
       const indexChildren: TreeNode[] = (data.indexes || []).map((idx: any) => ({

@@ -3,6 +3,7 @@ import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import { type ColumnEditableInfo, type SSEMessage } from "@project/shared";
 import { getSessionId } from "./session";
+import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import Sidebar from "./sidebar";
 import VisualQueryBuilder from "./visual-query-builder";
 
@@ -57,9 +58,7 @@ export default function QueryInterface() {
   const totalHeight = () => result.length * ROW_HEIGHT;
   const offsetY = () => visibleRange().start * ROW_HEIGHT;
 
-  // SSE 连接 - 依赖 EventSource 的自动重连机制
-  let eventSource: EventSource | null = null;
-
+  // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
   onMount(() => {
     // 监听窗口大小变化以更新容器高度
     const updateHeight = () => {
@@ -71,38 +70,16 @@ export default function QueryInterface() {
     onCleanup(() => window.removeEventListener('resize', updateHeight));
 
     const sessionId = getSessionId();
-    eventSource = new EventSource(`/api/events?sessionId=${sessionId}`);
+    setSseConnected(true); // HttpTransport 使用 EventSource，连接建立即视为就绪
+    const unsubscribe = subscribeEvents(sessionId, (message) => {
+      console.log('收到消息:', message);
+      setNotices(prev => [...prev.slice(-49), message]);
+    });
 
-    eventSource.onopen = () => {
-      console.log('SSE 连接已建立');
-      setSseConnected(true);
-    };
-
-    eventSource.onmessage = (event) => {
-      try {
-        const message: SSEMessage = JSON.parse(event.data);
-        console.log('收到 SSE 消息:', message);
-        setNotices(prev => [...prev.slice(-49), message]);
-      } catch (e) {
-        console.error('解析 SSE 消息失败:', e);
-      }
-    };
-
-    eventSource.onerror = () => {
-      // EventSource 会自动重连，这里只更新状态
-      // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
-      if (eventSource?.readyState === EventSource.CONNECTING) {
-        console.log('SSE 重连中...');
-      }
+    onCleanup(() => {
+      unsubscribe();
       setSseConnected(false);
-    };
-  });
-
-  onCleanup(() => {
-    if (eventSource) {
-      eventSource.close();
-      eventSource = null;
-    }
+    });
   });
 
   // 清除所有通知
@@ -196,18 +173,7 @@ export default function QueryInterface() {
     const startTime = performance.now();  // 记录开始时间
     try {
       const sessionId = getSessionId();
-      const response = await fetch('/api/postgres/query-stream', {
-        method: 'POST',
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: sql(), sessionId, batchSize: 100 })
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "查询失败");
-      }
-
-      const data = await response.json();
+      const data = await queryStream(sessionId, sql(), 100);
 
       if (data.error) {
         throw new Error(data.error);
@@ -244,18 +210,7 @@ export default function QueryInterface() {
     setLoadingMore(true);
     try {
       const sessionId = getSessionId();
-      const response = await fetch('/api/postgres/query-stream-more', {
-        method: 'POST',
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, batchSize: 100 })
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "加载失败");
-      }
-
-      const data = await response.json();
+      const data = await queryStreamMore(sessionId, 100);
 
       if (data.error) {
         throw new Error(data.error);
@@ -294,15 +249,10 @@ export default function QueryInterface() {
   }
 
   // 取消正在执行的查询
-  async function cancelQuery() {
+  async function doCancelQuery() {
     try {
       const sessionId = getSessionId();
-      const response = await fetch('/api/postgres/cancel-query', {
-        method: 'POST',
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId })
-      });
-      const { success, message, error: err } = await response.json();
+      const { success, message, error: err } = await cancelQuery(sessionId);
       if (success) {
         console.log("查询取消:", message);
       } else {
@@ -388,15 +338,9 @@ export default function QueryInterface() {
     try {
       const sessionId = getSessionId();
       for (const update of pendingUpdates()) {
-        const response = await fetch('/api/postgres/save-changes', {
-          method: 'POST',
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sql: update.sql, sessionId })
-        });
-
-        if (!response.ok) {
-          const { error: err } = await response.json();
-          throw new Error(err || `执行失败: ${update.sql}`);
+        const res = await saveChanges(sessionId, update.sql);
+        if (!res.success && res.error) {
+          throw new Error(res.error || `执行失败: ${update.sql}`);
         }
       }
 
@@ -697,18 +641,7 @@ export default function QueryInterface() {
     const startTime = performance.now();
     try {
       const sessionId = getSessionId();
-      const response = await fetch('/api/postgres/query-readonly', {
-        method: 'POST',
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: querySql, sessionId, limit: 1000 })
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || "查询失败");
-      }
-
-      const data = await response.json();
+      const data = await queryReadonly(sessionId, querySql, 1000);
       if (data.error) {
         throw new Error(data.error);
       }
@@ -793,7 +726,7 @@ export default function QueryInterface() {
             </button>
             <Show when={loading()}>
               <button
-                onClick={cancelQuery}
+                onClick={doCancelQuery}
                 style={{
                   padding: "10px 24px",
                   "font-size": "14px",
