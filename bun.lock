@@ -5,6 +5,8 @@
     "": {
       "name": "vite-template-solid",
       "dependencies": {
+        "@project/backend": "workspace:*",
+        "@project/shared": "workspace:*",
         "@solidjs/router": "^0.15.4",
         "@types/jsdom": "^27.0.0",
         "@types/pg": "^8.16.0",
@@ -30,6 +32,36 @@
         "vite-plugin-solid": "2.11.9",
         "vitest": "^4.0.15",
       },
+    },
+    "packages/backend": {
+      "name": "@project/backend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@project/shared": "workspace:*",
+        "pg": "^8.16.3",
+        "pg-cursor": "^2.15.3",
+        "pgsql-ast-parser": "^12.0.2",
+      },
+      "devDependencies": {
+        "@types/pg": "^8.16.0",
+        "@types/pg-cursor": "^2.7.2",
+      },
+    },
+    "packages/frontend": {
+      "name": "@project/frontend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@project/shared": "workspace:*",
+        "@solidjs/router": "^0.15.4",
+        "solid-js": "^1.9.5",
+      },
+      "devDependencies": {
+        "pgsql-ast-parser": "^12.0.2",
+      },
+    },
+    "packages/shared": {
+      "name": "@project/shared",
+      "version": "0.0.0",
     },
   },
   "packages": {
@@ -158,6 +190,12 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "3.1.2", "@jridgewell/sourcemap-codec": "1.5.5" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@nothing-but/utils": ["@nothing-but/utils@0.17.0", "", {}, "sha512-TuCHcHLOqDL0SnaAxACfuRHBNRgNJcNn9X0GiH5H3YSDBVquCr3qEIG3FOQAuMyZCbu9w8nk2CHhOsn7IvhIwQ=="],
+
+    "@project/backend": ["@project/backend@workspace:packages/backend"],
+
+    "@project/frontend": ["@project/frontend@workspace:packages/frontend"],
+
+    "@project/shared": ["@project/shared@workspace:packages/shared"],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.52.5", "", { "os": "android", "cpu": "arm" }, "sha512-8c1vW4ocv3UOMp9K+gToY5zL2XiiVw3k7f1ksf4yO1FlDFQ1C2u72iACFnSOceJFsWskc2WZNqeRhFRPzv+wtQ=="],
 

@@ -1,14 +1,14 @@
 {
-  "name": "vite-template-solid",
+  "name": "solid-project",
   "version": "0.0.0",
   "description": "",
   "type": "module",
+  "workspaces": ["packages/*"],
   "scripts": {
-    "dev":"bun ./dev.ts",
-    "deploy":"bun ./deploy.ts",
-    "build-win":"bun ./build-win.ts",
-    "build-linux":"bun ./build-linux.ts"
-
+    "dev": "bun ./dev.ts",
+    "deploy": "bun ./deploy.ts",
+    "build-win": "bun ./build-win.ts",
+    "build-linux": "bun ./build-linux.ts"
   },
   "license": "MIT",
   "devDependencies": {
@@ -28,6 +28,8 @@
     "vitest": "^4.0.15"
   },
   "dependencies": {
+    "@project/backend": "workspace:*",
+    "@project/shared": "workspace:*",
     "@solidjs/router": "^0.15.4",
     "@types/jsdom": "^27.0.0",
     "@types/pg": "^8.16.0",

@@ -1,8 +1,8 @@
-import { serve, } from "bun";
+import { serve } from "bun";
 import index from "./index.html";
-import type { PostgresLoginParmas } from "./frontend/postgres";
-import { connectPostgres, createPostgresPool } from "./backend/connect-postgres";
-import { calculateColumnEditable } from "./backend/column-editable";
+import type { PostgresLoginParams } from "@project/shared";
+import { connectPostgres, createPostgresPool } from "@project/backend/connect-postgres";
+import { calculateColumnEditable } from "@project/backend/column-editable";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
@@ -140,7 +140,7 @@ const server = serve({
     },
     "/api/connect-postgres": {
       POST: async (req) => {
-        const data = await req.json() as PostgresLoginParmas & { sessionId: string }
+        const data = await req.json() as PostgresLoginParams & { sessionId: string }
         const { sessionId, ...params } = data;
         console.log(`[${sessionId}] 连接请求:`, params)
 

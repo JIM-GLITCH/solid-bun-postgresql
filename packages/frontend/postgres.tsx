@@ -2,13 +2,7 @@
 import { useNavigate } from '@solidjs/router';
 import { For, createSignal } from 'solid-js';
 import { getSessionId } from './session';
-export interface PostgresLoginParmas {
-    host: string
-    port: string
-    database: string
-    username: string
-    password: string
-}
+
 const fields = [
     { key: 'host', label: 'host', desc: '数据库主机名或 IP', example: 'localhost' },
     { key: 'port', label: 'port', desc: '数据库端口', example: '5432' },

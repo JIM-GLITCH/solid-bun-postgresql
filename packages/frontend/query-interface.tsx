@@ -1,9 +1,8 @@
 import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
-import { type ColumnEditableInfo } from "../backend/column-editable";
+import { type ColumnEditableInfo, type SSEMessage } from "@project/shared";
 import { getSessionId } from "./session";
-import { type SSEMessage } from "../server";
 import Sidebar from "./sidebar";
 import VisualQueryBuilder from "./visual-query-builder";
 

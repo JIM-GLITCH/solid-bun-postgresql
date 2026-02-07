@@ -1,0 +1,13 @@
+{
+  "name": "@project/frontend",
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@project/shared": "workspace:*",
+    "@solidjs/router": "^0.15.4",
+    "solid-js": "^1.9.5"
+  },
+  "devDependencies": {
+    "pgsql-ast-parser": "^12.0.2"
+  }
+}

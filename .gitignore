@@ -1,6 +1,7 @@
+# Build
 out
-t.ts
 dist
+*.ts.buildinfo
 .wrangler
 .output
 .vercel
@@ -12,18 +13,20 @@ app.config.timestamp_*.js
 .env
 .env*.local
 
-# dependencies
-/node_modules
+# Dependencies
+node_modules
 
 # IDEs and editors
-/.idea
+.idea
 .project
 .classpath
 *.launch
 .settings/
 
-# Temp
-gitignore
+# Logs & cache
+*.log
+.cache
+coverage/
 
 # System Files
 .DS_Store
