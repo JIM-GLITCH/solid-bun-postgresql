@@ -1,2 +1,2 @@
 [serve.static]
-plugins = ["./packages/standalone/solid-plugin.ts"]
+plugins = ["./bunfig-solid-plugin.ts"]
