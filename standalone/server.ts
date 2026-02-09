@@ -12,26 +12,7 @@ const apiRoutes = createApiRoutes();
 const server = serve({
   idleTimeout: 120,
   routes: {
-    "/index": index,
-    "/": {
-      GET: async (req, server) => {
-        const protocol = "http";
-        const hostname = server.hostname || "localhost";
-        const port = server.port;
-        const baseUrl = `${protocol}://${hostname}:${port}`;
-        const url = `${baseUrl}/index`;
-
-        const htmlContent = await (await fetch(url)).text();
-        return new Response(htmlContent, {
-          headers: {
-            "Content-Type": "text/html",
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-          },
-        });
-      },
-    },
+    "/": index,
     ...apiRoutes,
   },
   async fetch(req) {

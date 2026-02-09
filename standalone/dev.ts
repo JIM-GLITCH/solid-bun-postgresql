@@ -6,6 +6,7 @@ $`docker compose up`
   .catch((e: Error) => { console.error(e) });
 
 // 启动后端服务 热更新（从项目根运行）
-$`bun run --hot ./standalone/server.ts`
+const root = import.meta.dir;
+$`bun run --hot ${root}/server.ts`
   .quiet(false)
   .catch((e: Error) => { console.error(e) });
