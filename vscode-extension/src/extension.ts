@@ -25,16 +25,14 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
     {
       enableScripts: true,
       retainContextWhenHidden: true,
-      localResourceRoots: [
-        vscode.Uri.joinPath(context.extensionUri, "out"),
-        vscode.Uri.joinPath(context.extensionUri, "media"),
-      ],
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")],
     }
   );
 
   const webview = panel.webview;
   webview.onDidReceiveMessage(createVscodeMessageHandler(webview));
 
+  // HTML 来自 src/index.html，构建时复制到 out/index.html
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(context.extensionUri, "out", "index-webview.js")
   );

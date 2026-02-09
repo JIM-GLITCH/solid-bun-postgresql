@@ -2,18 +2,49 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes" />
   <meta http-equiv="Content-Security-Policy" content="{{CSP}}" />
   <title>DB Player</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-    #root { height: 100%; overflow: hidden; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { transform-origin: 0 0; }
+    body {
+      color: #1e1e1e;
+      background: #ffffff;
+      font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+      font-size: var(--vscode-font-size, 13px);
+      -webkit-font-smoothing: antialiased;
+    }
+    #root { height: 100%; overflow: hidden; color: inherit; background: inherit; }
+    a { color: #0066cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    input, button, select, textarea { color: #1e1e1e; background: #fff; }
     .err { padding: 1em; color: #c00; font-family: sans-serif; white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    (function() {
+      var scale = 1;
+      var min = 0.5, max = 3;
+      function apply() {
+        document.body.style.transform = "scale(" + scale + ")";
+        document.body.style.width = (100 / scale) + "%";
+        document.body.style.height = (100 / scale) + "%";
+      }
+      document.addEventListener("wheel", function(e) {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          scale += e.deltaY > 0 ? -0.1 : 0.1;
+          scale = Math.max(min, Math.min(max, scale));
+          apply();
+        }
+      }, { passive: false });
+    })();
+  </script>
   <script type="module" src="{{SCRIPT_URI}}"></script>
 </body>
 </html>
