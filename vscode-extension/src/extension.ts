@@ -14,7 +14,19 @@ export function activate(context: vscode.ExtensionContext) {
   );
 }
 
-export function deactivate() { }
+export function deactivate() {}
+
+/** 脱敏后用于日志，避免把密码或密文打到输出 */
+function redactPayload(msg: unknown): unknown {
+  if (msg && typeof msg === "object" && "payload" in msg && typeof (msg as any).payload === "object") {
+    const p = (msg as any).payload as Record<string, unknown>;
+    const copy = { ...p };
+    if ("password" in copy && copy.password) copy.password = "<redacted>";
+    if ("passwordEncrypted" in copy && copy.passwordEncrypted) copy.passwordEncrypted = "<redacted>";
+    return { ...msg, payload: copy };
+  }
+  return msg;
+}
 
 async function openDbPlayerWebview(context: vscode.ExtensionContext) {
   const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -30,7 +42,13 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
   );
 
   const webview = panel.webview;
-  webview.onDidReceiveMessage(createVscodeMessageHandler(webview));
+  const output = vscode.window.createOutputChannel("DB Player");
+  const baseHandler = createVscodeMessageHandler(webview);
+  webview.onDidReceiveMessage((message: unknown) => {
+    const safe = redactPayload(message);
+    output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
+    baseHandler(message as any);
+  });
 
   // HTML 来自 src/index.html，构建时复制到 out/index.html
   const scriptUri = webview.asWebviewUri(
