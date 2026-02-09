@@ -3,13 +3,16 @@
   "version": "0.0.0",
   "description": "",
   "type": "module",
-  "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "bun packages/standalone/dev.ts",
-    "deploy": "bun packages/standalone/deploy.ts",
-    "build-win": "bun packages/standalone/build-win.ts",
-    "build-linux": "bun packages/standalone/build-linux.ts",
-    "build:vscode": "pnpm --filter vscode-extension build"
+    "dev": "bun standalone/dev.ts",
+    "deploy": "bun standalone/deploy.ts",
+    "build-win": "bun standalone/build-win.ts",
+    "build-linux": "bun standalone/build-linux.ts",
+    "standalone:dev": "bun run standalone/dev.ts",
+    "standalone:build:linux": "bun run standalone/build-linux.ts",
+    "standalone:build:win": "bun run standalone/build-win.ts",
+    "standalone:deploy": "bun run standalone/deploy.ts",
+    "build-extension": "bun run vscode-extension/build.ts"
   },
   "license": "MIT",
   "devDependencies": {
@@ -26,11 +29,17 @@
     "solid-devtools": "^0.34.3",
     "typescript": "^5.7.2",
     "vite-plugin-solid": "2.11.9",
-    "vitest": "^4.0.15"
+    "vitest": "^4.0.15",
+    "@types/vscode": "^1.109.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "20.x",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "eslint": "^9.25.1",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2"
   },
   "dependencies": {
-    "@project/backend": "workspace:*",
-    "@project/shared": "workspace:*",
     "@solidjs/router": "^0.15.4",
     "@types/jsdom": "^27.0.0",
     "@types/pg": "^8.16.0",

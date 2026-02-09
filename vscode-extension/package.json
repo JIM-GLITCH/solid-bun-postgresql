@@ -1,0 +1,35 @@
+{
+  "name": "db-player",
+  "displayName": "DB Player",
+  "description": "Database client (Postgres) in webview",
+  "version": "0.0.1",
+  "engines": { "vscode": "^1.109.0" },
+  "categories": ["Other"],
+  "activationEvents": ["*"],
+  "main": "./out/extension.js",
+  "scripts": {
+    "vscode:prepublish": "bun run compile",
+    "compile": "cd .. && bun run vscode-extension/build.ts",
+    "watch": "cd .. && bun run vscode-extension/build.ts"
+  },
+  "dependencies": {
+    "pg": "^8.16.3",
+    "pg-cursor": "^2.15.3",
+    "pgsql-ast-parser": "^12.0.2"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.109.0",
+    "@types/node": "20.x",
+    "bun-plugin-solid": "^1.0.0",
+    "typescript": "^5.8.3"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "db-player.helloWorld",
+        "title": "Open DB Player",
+        "category": "DB Player"
+      }
+    ]
+  }
+}
