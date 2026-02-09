@@ -48,4 +48,5 @@ export class HttpTransport implements IApiTransport {
       eventSource.close();
     };
   }
+
 }

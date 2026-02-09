@@ -3,10 +3,11 @@
  * 支持不同运行环境：Web (fetch+SSE) / VSCode (postMessage)
  */
 
-import type { PostgresLoginParams, SSEMessage } from "./types";
+import type { PostgresLoginParams, SSEMessage, ConnectPostgresRequest } from "./types";
 
 /** API 方法名 */
 export type ApiMethod =
+  | "get-public-key"
   | "connect-postgres"
   | "postgres/query"
   | "postgres/query-stream"
@@ -22,14 +23,15 @@ export type ApiMethod =
 
 /** 请求载荷（不含 sessionId，由调用方注入） */
 export type ApiRequestPayload = {
-  "connect-postgres": PostgresLoginParams;
+  "get-public-key": { sessionId?: string };
+  "connect-postgres": ConnectPostgresRequest;
   "postgres/query": { query: string };
   "postgres/query-stream": { query: string; batchSize?: number };
   "postgres/query-stream-more": { batchSize?: number };
   "postgres/save-changes": { sql: string };
-  "postgres/cancel-query": Record<string, never>;
+  "postgres/cancel-query": {};
   "postgres/query-readonly": { query: string; limit?: number };
-  "postgres/schemas": Record<string, never>;
+  "postgres/schemas": {};
   "postgres/tables": { schema: string };
   "postgres/columns": { schema: string; table: string };
   "postgres/indexes": { schema: string; table: string };

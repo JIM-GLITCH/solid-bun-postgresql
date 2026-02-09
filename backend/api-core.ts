@@ -3,8 +3,9 @@
  * 供 api-handlers-http 和 api-handlers-vscode 共同调用
  */
 
-import type { PostgresLoginParams, ApiMethod, ApiRequestPayload } from "../shared/src";
+import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgresRequest } from "../shared/src";
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
+import { decryptPassword, getPublicKeyPem } from "./crypto";
 import { calculateColumnEditable } from "./column-editable";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
@@ -64,6 +65,11 @@ export async function handleApiRequest<M extends ApiMethod>(
   method: M,
   payload: ApiRequestPayload[M] & { sessionId: string }
 ): Promise<unknown> {
+  switch (method) {
+    case "get-public-key":
+      return { publicKey: getPublicKeyPem() };
+  }
+
   const { sessionId } = payload;
   const getS = () => {
     const s = getSession(sessionId);
@@ -73,8 +79,13 @@ export async function handleApiRequest<M extends ApiMethod>(
 
   switch (method) {
     case "connect-postgres": {
-      const params = payload as PostgresLoginParams & { sessionId: string };
-      const { sessionId: sid, ...connectParams } = params;
+      const params = payload as ConnectPostgresRequest & { sessionId: string };
+      const { sessionId: sid, password, passwordEncrypted, ...rest } = params;
+      const resolvedPassword =
+        typeof passwordEncrypted === "string" && passwordEncrypted
+          ? decryptPassword(passwordEncrypted)
+          : (password ?? "");
+      const connectParams: PostgresLoginParams = { ...rest, password: resolvedPassword };
 
       const existingSession = sessionMap.get(sid);
       if (existingSession) {

@@ -3,27 +3,27 @@ import { useNavigate } from '@solidjs/router';
 import { For, createSignal } from 'solid-js';
 import { getSessionId } from './session';
 import { connectPostgres } from './api';
+import type { PostgresLoginParams } from '../shared/src';
 
-const fields = [
+const fields: Array<{ key: keyof PostgresLoginParams; label: string; desc: string; example: string }> = [
     { key: 'host', label: 'host', desc: '数据库主机名或 IP', example: 'localhost' },
     { key: 'port', label: 'port', desc: '数据库端口', example: '5432' },
     { key: 'database', label: 'database', desc: '数据库名称', example: 'mydb' },
     { key: 'username', label: 'username', desc: '数据库用户', example: 'postgres' },
     { key: 'password', label: 'password', desc: '数据库密码', example: 'secret' },
-    // { key: 'ssl', label: 'ssl', desc: '是否启用 SSL（可选）', example: 'true/false' },
 ];
 
-const initForm = () =>
-    fields.reduce<Record<string, string>>((acc, f) => {
+const initForm = (): PostgresLoginParams =>
+    fields.reduce<PostgresLoginParams>((acc, f) => {
         acc[f.key] = f.example ?? '';
         return acc;
-    }, {});
+    }, {} as PostgresLoginParams);
 
 export default function Postgres() {
     const navagate = useNavigate()
-    const [form, setForm] = createSignal<Record<string, string>>(initForm());
+    const [form, setForm] = createSignal<PostgresLoginParams>(initForm());
 
-    const onChange = (key: string, value: string) => {
+    const onChange = (key: keyof PostgresLoginParams, value: string) => {
         setForm((prev) => ({ ...prev, [key]: value }));
     };
 

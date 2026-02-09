@@ -34,6 +34,7 @@ function postApi<M extends ApiMethod>(
 
 /** POST API 路由配置：path -> method，少数需特殊错误格式的单独标注 */
 const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean; status200?: boolean }> = [
+  { path: "/api/get-public-key", method: "get-public-key" },
   { path: "/api/connect-postgres", method: "connect-postgres", useSucess: true, status200: true },
   { path: "/api/postgres/query-stream", method: "postgres/query-stream" },
   { path: "/api/postgres/query-stream-more", method: "postgres/query-stream-more" },
