@@ -2,7 +2,6 @@
   "name": "solid-project",
   "version": "0.0.0",
   "description": "",
-  "type": "module",
   "scripts": {
     "dev": "bun standalone/dev.ts",
     "deploy": "bun standalone/deploy.ts",

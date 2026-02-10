@@ -1,71 +1,48 @@
-# db-player README
+# DB Player（VSCode 扩展）
 
-This is the README for your extension "db-player". After writing up a brief description, we recommend including the following sections.
+在 VS Code 内以 Webview 形式运行的 PostgreSQL 客户端，与仓库中的 Standalone 版本共用同一套前端与后端逻辑。
 
-## Features
+## 功能
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- 连接 PostgreSQL（host / port / database / 用户名 / 密码，密码经 RSA 加密后传输）
+- SQL 查询与结果表格展示、流式加载
+- 表格单元格可视化编辑、变更预览与保存
+- 侧边栏 schema / 表 / 列 / 索引 / 外键浏览
 
-For example if there is an image subfolder under your extension project workspace:
+## 要求
 
-\!\[feature X\]\(images/feature-x.png\)
+- VS Code `^1.109.0`
+- 项目依赖在**仓库根目录**安装（见下方「开发」）
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## 使用
 
-## Requirements
+1. 安装并启用本扩展（或从源码运行，见「开发」）。
+2. 命令面板（`Ctrl+Shift+P` / `Cmd+Shift+P`）输入 **「Open DB Player」** 或 **「DB Player: Hello World」**。
+3. 在打开的 Webview 中填写数据库连接信息并连接，即可执行 SQL 与编辑数据。
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+## 开发
 
-## Extension Settings
+依赖与构建均在**仓库根目录**完成，本目录仅保留扩展清单与源码。
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+```bash
+# 在仓库根目录
+bun install
+bun run build-extension
+```
 
-For example:
+- **调试扩展**：在 VS Code 中打开本仓库，按 **F5** 启动扩展开发主机，再执行命令「Open DB Player」。
+- **查看 Webview 消息**：输出面板 → 下拉选择 **「DB Player」**，可看到 `[webview→ext]` 的请求日志（密码等已脱敏）。
 
-This extension contributes the following settings:
+## 目录说明
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+| 路径                 | 说明                                       |
+| -------------------- | ------------------------------------------ |
+| `src/extension.ts` | 扩展入口、Webview 创建与消息派发           |
+| `src/index.html`   | Webview 的 HTML 模板                       |
+| `build.ts`         | 构建脚本：打包前端与 extension 到 `out/` |
+| `package.json`     | 扩展清单（无依赖，依赖在根 package.json）  |
 
-## Known Issues
+## 与 Standalone 的关系
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+- 前端：同一套 Solid 应用，通过 `transport` 在 **HTTP（Standalone）** 与 **postMessage（本扩展）** 间切换。
+- 后端：扩展侧使用 `backend/api-handlers-vscode` 接收 Webview 消息并调用 `api-core`，与 HTTP 版共用业务逻辑。
