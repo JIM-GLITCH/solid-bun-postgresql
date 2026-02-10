@@ -16,3 +16,4 @@ export function setTransport(t: IApiTransport): void {
 }
 
 export { HttpTransport } from "./http-transport";
+export { TauriTransport } from "./tauri-transport";

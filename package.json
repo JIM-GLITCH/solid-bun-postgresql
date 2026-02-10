@@ -11,7 +11,8 @@
     "standalone:build:linux": "bun run standalone/build-linux.ts",
     "standalone:build:win": "bun run standalone/build-win.ts",
     "standalone:deploy": "bun run standalone/deploy.ts",
-    "build-extension": "bun run vscode-extension/build.ts"
+    "build-extension": "bun run vscode-extension/build.ts",
+    "build-stdio": "bun run tauri-app/build.ts"
   },
   "license": "MIT",
   "devDependencies": {
@@ -40,6 +41,8 @@
   },
   "dependencies": {
     "@solidjs/router": "^0.15.4",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2",
     "@types/jsdom": "^27.0.0",
     "@types/pg": "^8.16.0",
     "bun-plugin-solid": "^1.0.0",

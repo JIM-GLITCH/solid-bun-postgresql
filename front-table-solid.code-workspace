@@ -1,0 +1,17 @@
+{
+  "folders": [
+    {
+      "name": "solid-project",
+      "path": "."
+    },
+    {
+      "name": "tauri-app (Rust)",
+      "path": "tauri-app/src-tauri"
+    }
+  ],
+  "settings": {
+    "rust-analyzer.linkedProjects": [
+      "tauri-app/src-tauri/Cargo.toml"
+    ]
+  }
+}
