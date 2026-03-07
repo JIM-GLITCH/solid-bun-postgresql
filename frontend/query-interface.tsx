@@ -1,7 +1,8 @@
-import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
+import { createSignal, For, Show, onMount, onCleanup, createEffect } from "solid-js";
 import { createStore } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
+import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
 import { getSessionId } from "./session";
@@ -93,16 +94,32 @@ export default function QueryInterface() {
   const totalHeight = () => result.length * ROW_HEIGHT;
   const offsetY = () => visibleRange().start * ROW_HEIGHT;
 
+  const [tableContainerRef, setTableContainerRef] = createSignal<HTMLDivElement | null>(null);
+
+  // 使用 ResizeObserver 正确追踪表格容器高度，解决加载完成后表格不显示的问题
+  createEffect(() => {
+    const el = tableContainerRef();
+    if (!el) return;
+    const updateHeight = () => {
+      const h = el.clientHeight;
+      setContainerHeight(Math.max(h, 200)); // 最小 200px，避免 0 导致 visibleRows 为空
+    };
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(updateHeight); // 等布局完成后再测量
+    });
+    ro.observe(el);
+    updateHeight(); // 立即测量一次
+    onCleanup(() => ro.disconnect());
+  });
+
   // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
   onMount(() => {
-    // 监听窗口大小变化以更新容器高度
-    const updateHeight = () => {
-      const el = document.getElementById('table-container');
-      if (el) setContainerHeight(el.clientHeight);
+    const onResize = () => {
+      const el = tableContainerRef();
+      if (el) setContainerHeight(Math.max(el.clientHeight, 200));
     };
-    window.addEventListener('resize', updateHeight);
-    updateHeight();
-    onCleanup(() => window.removeEventListener('resize', updateHeight));
+    window.addEventListener('resize', onResize);
+    onCleanup(() => window.removeEventListener('resize', onResize));
 
     const sessionId = getSessionId();
     setSseConnected(true); // HttpTransport 使用 EventSource，连接建立即视为就绪
@@ -299,7 +316,7 @@ export default function QueryInterface() {
   }
 
   // 生成 UPDATE SQL（使用共享的 formatSqlValue 以兼容 timestamp 精度等）
-  function generateUpdateSql(rowIndex: number, colIndex: number, newValue: string): string {
+  function generateUpdateSql(rowIndex: number, colIndex: number, newValue: string | null): string {
     const colInfo = columns()[colIndex];
     const row = result[rowIndex];
 
@@ -524,6 +541,7 @@ export default function QueryInterface() {
 
         {/* 虚拟滚动表格容器 */}
         <div
+          ref={(el) => setTableContainerRef(el)}
           id="table-container"
           onScroll={handleScroll}
           style={{
@@ -607,24 +625,27 @@ export default function QueryInterface() {
               }}>
                 {/* 顶部占位行 */}
                 <tr style={{ height: `${offsetY()}px` }}>
-                  <td colSpan={columns().length} style={{ padding: 0, border: "none" }} />
+                  <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
                 </tr>
 
                 <For each={visibleRows()}>
                   {({ row, index: rowIndex }) => (
                     <tr style={{ height: `${ROW_HEIGHT}px`, "box-sizing": "border-box" }}>
-                      <For each={row}>
-                        {(col, colIndex) => (
-                          <EditableCell
-                            value={col}
-                            isEditable={columns()[colIndex()].isEditable}
-                            isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
-                            align={getAlignment(col)}
-                            onSave={(newValue) => {
-                              handleCellSave(rowIndex, colIndex(), newValue);
-                            }}
-                          />
-                        )}
+                      <For each={columns()}>
+                        {(colInfo, colIndex) => {
+                          const col = row[colIndex()];
+                          return (
+                            <EditableCell
+                              value={col}
+                              isEditable={colInfo.isEditable}
+                              isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
+                              align={getAlignment(col)}
+                              onSave={(newValue) => {
+                                handleCellSave(rowIndex, colIndex(), newValue);
+                              }}
+                            />
+                          );
+                        }}
                       </For>
                     </tr>
                   )}
@@ -632,7 +653,7 @@ export default function QueryInterface() {
 
                 {/* 底部占位行 */}
                 <tr style={{ height: `${Math.max(0, totalHeight() - offsetY() - (visibleRows().length * ROW_HEIGHT))}px` }}>
-                  <td colSpan={columns().length} style={{ padding: 0, border: "none" }} />
+                  <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
                 </tr>
               </tbody>
             </table>
@@ -735,27 +756,24 @@ export default function QueryInterface() {
           "box-sizing": "border-box",
         }}
       >
-        {/* SQL输入部分 - 固定高度 */}
+        {/* SQL 输入部分 - Monaco Editor */}
         <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
-          <textarea
-            style={{
-              height: "120px",
-              width: "100%",
-              "font-size": "14px",
-              "font-family": "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
-              "border-radius": "8px",
-              padding: "12px",
-              border: "1px solid #d1d5db",
-              resize: "vertical",
-              "box-sizing": "border-box",
-              "background-color": "#1e293b",
-              color: "#e2e8f0",
-              "line-height": "1.5"
-            }}
-            placeholder="在这里输入SQL语句，例如：SELECT * FROM your_table;"
-            value={sql()}
-            onInput={e => setSql(e.currentTarget.value)}
-          />
+          <div style={{
+            height: "140px",
+            "min-height": "120px",
+            "border-radius": "8px",
+            overflow: "hidden",
+            border: "1px solid #334155",
+            "background-color": "#1e293b",
+            "box-shadow": "0 1px 3px rgba(0,0,0,0.12)",
+          }}>
+            <SqlEditor
+              value={sql()}
+              onChange={setSql}
+              onRun={runUserQuery}
+              style={{ height: "100%" }}
+            />
+          </div>
           <div style={{ display: "flex", gap: "8px", "align-items": "center", "margin-top": "8px" }}>
             <button
               onClick={runUserQuery}

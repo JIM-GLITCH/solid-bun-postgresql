@@ -8,7 +8,7 @@ import { encryptWithPublicKey } from "./crypto";
 
 const api = () => getTransport();
 
-/** 连接数据库（密码在传输前用后端公钥加密，不以明文发送） */
+/** 连接数据库（密码在前端加密后传输，不以明文发送） */
 export async function connectPostgres(sessionId: string, params: PostgresLoginParams) {
   const transport = api();
   const keyRes = await transport.request("get-public-key", { sessionId: "" });
