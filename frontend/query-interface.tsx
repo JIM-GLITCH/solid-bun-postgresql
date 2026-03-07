@@ -1,5 +1,6 @@
 import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
 import { createStore } from "solid-js/store";
+import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellToEditable, formatSqlValue as formatSqlValueShared } from "../shared/src";
@@ -7,6 +8,39 @@ import { getSessionId } from "./session";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import Sidebar from "./sidebar";
 import VisualQueryBuilder from "./visual-query-builder";
+
+function SidebarPanel(props: { onQueryRequest: (sql: string) => void }) {
+  const panel = Resizable.usePanelContext();
+  return (
+    <Show
+      when={!panel.collapsed()}
+      fallback={
+        <button
+          onClick={() => panel.expand()}
+          title="展开侧边栏"
+          style={{
+            width: "100%",
+            padding: "8px",
+            border: "none",
+            background: "none",
+            color: "#6e7681",
+            cursor: "pointer",
+            "font-size": "14px",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
+          onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
+        >
+          »
+        </button>
+      }
+    >
+      <Sidebar
+        onQueryRequest={props.onQueryRequest}
+        onCollapse={() => panel.collapse()}
+      />
+    </Show>
+  );
+}
 
 // 待执行的 UPDATE 语句
 interface PendingUpdate {
@@ -655,24 +689,45 @@ export default function QueryInterface() {
   }
 
   return (
-    <div style={{
-      display: "flex",
-      height: "100vh",
-      overflow: "hidden",
-      "background-color": "#f0f2f5"
-    }}>
-      {/* 侧边栏 */}
-      <Sidebar onQueryRequest={handleQueryRequest} />
-
-      {/* 主内容区 */}
-      <div style={{
-        flex: 1,
+    <Resizable
+      initialSizes={[0.18, 0.82]}
+      style={{
         display: "flex",
-        "flex-direction": "column",
-        padding: "20px",
+        height: "100vh",
         overflow: "hidden",
-        "box-sizing": "border-box"
-      }}>
+        "background-color": "#f0f2f5",
+      }}
+    >
+      <Resizable.Panel
+        minSize={0.08}
+        collapsible
+        collapsedSize={0.02}
+        style={{
+          overflow: "hidden",
+          "background-color": "#0d1117",
+          "border-right": "1px solid #21262d",
+        }}
+      >
+        <SidebarPanel onQueryRequest={handleQueryRequest} />
+      </Resizable.Panel>
+      <Resizable.Handle
+        aria-label="调整侧边栏宽度"
+        style={{
+          width: "6px",
+          "flex-shrink": 0,
+          "background-color": "transparent",
+        }}
+      />
+      <Resizable.Panel
+        minSize={0.3}
+        style={{
+          overflow: "hidden",
+          display: "flex",
+          "flex-direction": "column",
+          padding: "20px",
+          "box-sizing": "border-box",
+        }}
+      >
         {/* SQL输入部分 - 固定高度 */}
         <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
           <textarea
@@ -936,7 +991,7 @@ export default function QueryInterface() {
             </div>
           </Show>
         </div>
-      </div>
-    </div>
+      </Resizable.Panel>
+    </Resizable>
   );
 }

@@ -27,6 +27,7 @@ interface TreeState {
 interface SidebarProps {
   onTableSelect?: (schema: string, table: string) => void;
   onQueryRequest?: (sql: string) => void;
+  onCollapse?: () => void;
 }
 
 // 图标组件
@@ -425,7 +426,7 @@ export default function Sidebar(props: SidebarProps) {
   return (
     <div
       style={{
-        width: "280px",
+        width: "100%",
         height: "100%",
         "background-color": "#0d1117",
         "border-right": "1px solid #21262d",
@@ -456,24 +457,44 @@ export default function Sidebar(props: SidebarProps) {
         >
           Database Navigator
         </span>
-        <button
-          onClick={loadSchemas}
-          style={{
-            "margin-left": "auto",
-            background: "none",
-            border: "none",
-            color: "#6e7681",
-            cursor: "pointer",
-            padding: "4px",
-            "border-radius": "4px",
-            "font-size": "14px",
-          }}
-          title="刷新"
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
-        >
-          🔄
-        </button>
+        <div style={{ "margin-left": "auto", display: "flex", gap: "4px" }}>
+          <button
+            onClick={loadSchemas}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#6e7681",
+              cursor: "pointer",
+              padding: "4px",
+              "border-radius": "4px",
+              "font-size": "14px",
+            }}
+            title="刷新"
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
+          >
+            🔄
+          </button>
+          <Show when={props.onCollapse}>
+            <button
+              onClick={() => props.onCollapse?.()}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#6e7681",
+                cursor: "pointer",
+                padding: "4px",
+                "border-radius": "4px",
+                "font-size": "14px",
+              }}
+              title="收起侧边栏"
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
+            >
+              ◀
+            </button>
+          </Show>
+        </div>
       </div>
 
       {/* 搜索框 */}
