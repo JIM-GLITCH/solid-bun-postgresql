@@ -42,6 +42,18 @@ export const PG_OID = {
   varbit: 1562,
 } as const;
 
+import { PG_OID_TO_NAME } from "./pg-type-oids.js";
+
+export function getDataTypeName(dataTypeOid?: number): string {
+  if (dataTypeOid == null) return "";
+  const raw = PG_OID_TO_NAME[dataTypeOid] ?? `oid:${dataTypeOid}`;
+  // 数组类型：_xxx → xxx[]，更符合 SQL 习惯（如 text[]、int4[]）
+  if (raw.startsWith("_") && raw.length > 1) {
+    return raw.slice(1) + "[]";
+  }
+  return raw;
+}
+
 /** 数字类型 OID */
 const NUMERIC_OIDS = new Set([
   PG_OID.int2,

@@ -3,7 +3,7 @@ import { createStore } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellToEditable, formatSqlValue as formatSqlValueShared } from "../shared/src";
+import { formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
 import { getSessionId } from "./session";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import Sidebar from "./sidebar";
@@ -570,11 +570,18 @@ export default function QueryInterface() {
                           border: "1px solid #d1d5db",
                           position: "relative",
                           "user-select": "none",
-                          height: `${ROW_HEIGHT}px`,
+                          "min-height": `${ROW_HEIGHT}px`,
                           "box-sizing": "border-box"
                         }}
                       >
-                        {col.name}
+                        <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
+                          <span>{col.name}</span>
+                          {getDataTypeName(col.dataTypeOid) && (
+                            <span style={{ "font-size": "11px", color: "#6b7280", "font-weight": "400" }}>
+                              {getDataTypeName(col.dataTypeOid)}
+                            </span>
+                          )}
+                        </div>
                         <div
                           onMouseDown={(e) => startResize(colIndex(), e)}
                           style={{
