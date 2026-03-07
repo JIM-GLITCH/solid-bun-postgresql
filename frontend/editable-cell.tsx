@@ -1,24 +1,40 @@
-import { createSignal, createEffect, Show } from "solid-js";
+import { createSignal, createEffect, Show, onCleanup } from "solid-js";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 
 interface EditableCellProps {
   value: any;
   isEditable: boolean;
   isModified?: boolean;
-  onSave?: (newValue: string) => void;
+  onSave?: (newValue: string | null) => void;
   align?: "left" | "right" | "center";
 }
 
 export default function EditableCell(props: EditableCellProps) {
   const [isEditing, setIsEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
+  const [menuPos, setMenuPos] = createSignal<{ x: number; y: number } | null>(null);
   let inputRef: HTMLInputElement | undefined;
+  let menuRef: HTMLDivElement | null = null;
 
-  // 监听编辑状态变化，自动聚焦
   createEffect(() => {
-    if (isEditing()) {
-      inputRef?.focus();
-    }
+    if (isEditing()) inputRef?.focus();
+  });
+
+  function closeMenu() {
+    setMenuPos(null);
+  }
+  createEffect(() => {
+    if (!menuPos()) return;
+    const h = (e: MouseEvent) => {
+      if (menuRef?.contains(e.target as Node)) return;
+      closeMenu();
+    };
+    document.addEventListener("click", h, true);
+    document.addEventListener("contextmenu", h, true);
+    onCleanup(() => {
+      document.removeEventListener("click", h, true);
+      document.removeEventListener("contextmenu", h, true);
+    });
   });
 
   function startEditing() {
@@ -27,10 +43,20 @@ export default function EditableCell(props: EditableCellProps) {
     setIsEditing(true);
   }
 
-  function saveValue() {
-    if (!isEditing()) return;
-    setIsEditing(false);
-    props.onSave?.(editValue());
+  function saveValue(value?: string | null) {
+    if (isEditing()) setIsEditing(false);
+    props.onSave?.(value !== undefined ? value : editValue());
+  }
+
+  function handleContextMenu(e: MouseEvent) {
+    if (!props.isEditable) return;
+    e.preventDefault();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  }
+
+  function handleSetNull() {
+    closeMenu();
+    saveValue(null);
   }
 
   function cancelEditing() {
@@ -52,6 +78,7 @@ export default function EditableCell(props: EditableCellProps) {
   return (
     <td
       onDblClick={startEditing}
+      onContextMenu={handleContextMenu}
       style={{
         cursor: props.isEditable ? "pointer" : "default",
         padding: "8px 12px",
@@ -77,7 +104,7 @@ export default function EditableCell(props: EditableCellProps) {
           value={editValue()}
           onInput={(e) => setEditValue(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
-          onBlur={saveValue}
+          onBlur={() => saveValue()}
           style={{
             width: "100%",
             padding: "2px 4px",
@@ -92,6 +119,49 @@ export default function EditableCell(props: EditableCellProps) {
             "min-width": "calc(100% + 12px)"
           }}
         />
+      </Show>
+      <Show when={menuPos()}>
+        {(pos) => (
+          <div
+            ref={(el) => (menuRef = el)}
+            role="menu"
+            style={{
+              position: "fixed",
+              left: `${pos().x}px`,
+              top: `${pos().y}px`,
+              "z-index": 10000,
+              background: "#fff",
+              border: "1px solid #e5e7eb",
+              "border-radius": "4px",
+              "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
+              "min-width": "120px",
+              padding: "4px 0",
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSetNull();
+              }}
+              style={{
+                display: "block",
+                width: "100%",
+                padding: "6px 12px",
+                border: "none",
+                background: "none",
+                "text-align": "left",
+                cursor: "pointer",
+                "font-size": "inherit",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+            >
+              Set null
+            </button>
+          </div>
+        )}
       </Show>
     </td>
   );

@@ -2,7 +2,7 @@ import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared } from "../shared/src";
+import { formatCellToEditable, formatSqlValue as formatSqlValueShared } from "../shared/src";
 import { getSessionId } from "./session";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import Sidebar from "./sidebar";
@@ -279,11 +279,12 @@ export default function QueryInterface() {
     return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid)} WHERE ${whereConditions.join(" AND ")}`;
   }
 
-  // 处理单元格保存
-  function handleCellSave(rowIndex: number, colIndex: number, newValue: string) {
+  // 处理单元格保存（newValue 为 null 表示设为 SQL NULL）
+  function handleCellSave(rowIndex: number, colIndex: number, newValue: string | null) {
     const currentValue = result[rowIndex][colIndex];
 
-    if (formatCellToEditable(currentValue) === newValue) return;
+    if (newValue === null && (currentValue === null || currentValue === undefined)) return;
+    if (newValue !== null && formatCellToEditable(currentValue) === newValue) return;
 
     // 查找是否已有该单元格的更新记录（保留最初的原始值）
     const existingUpdate = pendingUpdates().find(u => u.rowIndex === rowIndex && u.colIndex === colIndex);

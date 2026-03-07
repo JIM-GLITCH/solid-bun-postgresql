@@ -126,7 +126,7 @@ export function formatSqlValue(value: unknown, dataTypeOid?: number): string {
   // 用户输入为字符串时，按列类型处理
   if (typeof value === "string") {
     const trimmed = value.trim();
-    const isNumeric = dataTypeOid !== undefined && NUMERIC_OIDS.has(dataTypeOid);
+    const isNumeric = dataTypeOid !== undefined && NUMERIC_OIDS.has(dataTypeOid as any);
     if (isNumeric && trimmed !== "" && !Number.isNaN(Number(trimmed))) return trimmed;
     if (dataTypeOid === PG_OID.bool) {
       if (/^(t|true|yes|y|1)$/i.test(trimmed)) return "TRUE";
@@ -135,7 +135,7 @@ export function formatSqlValue(value: unknown, dataTypeOid?: number): string {
   }
 
   // 日期时间：保持原字符串，确保微秒精度不丢失；按 OID 选择正确 cast
-  const isDateTime = dataTypeOid !== undefined && DATE_TIME_OIDS.has(dataTypeOid);
+  const isDateTime = dataTypeOid !== undefined && DATE_TIME_OIDS.has(dataTypeOid as any);
   if (isDateTime || value instanceof Date) {
     const str = value instanceof Date ? value.toISOString() : String(value);
     const escaped = str.replace(/'/g, "''");
