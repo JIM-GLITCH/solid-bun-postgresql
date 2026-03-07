@@ -5,13 +5,8 @@
       "path": "."
     },
     {
-      "name": "tauri-app (Rust)",
-      "path": "tauri-app/src-tauri"
+      "name": "electrobun-app",
+      "path": "electrobun-app"
     }
-  ],
-  "settings": {
-    "rust-analyzer.linkedProjects": [
-      "tauri-app/src-tauri/Cargo.toml"
-    ]
-  }
+  ]
 }

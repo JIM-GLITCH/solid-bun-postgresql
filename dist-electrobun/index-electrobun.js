@@ -16,7 +16,7 @@ var __toESM = (mod, isNodeMode, target) => {
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 
-// ../node_modules/moo/moo.js
+// node_modules/moo/moo.js
 var require_moo = __commonJS((exports, module) => {
   (function(root, factory) {
     if (typeof define === "function" && define.amd) {
@@ -566,7 +566,7 @@ Use (?: … ) instead`);
   });
 });
 
-// ../node_modules/nearley/lib/nearley.js
+// node_modules/nearley/lib/nearley.js
 var require_nearley = __commonJS((exports, module) => {
   (function(root, factory) {
     if (typeof module === "object" && module.exports) {
@@ -1004,7 +1004,7 @@ var require_nearley = __commonJS((exports, module) => {
   });
 });
 
-// ../node_modules/pgsql-ast-parser/index.js
+// node_modules/pgsql-ast-parser/index.js
 var require_pgsql_ast_parser = __commonJS((exports) => {
   (function(e, a) {
     for (var i in a)
@@ -7262,7 +7262,7 @@ var require_pgsql_ast_parser = __commonJS((exports) => {
   ]));
 });
 
-// ../node_modules/solid-js/dist/dev.js
+// node_modules/solid-js/dist/dev.js
 var sharedConfig = {
   context: undefined,
   registry: undefined,
@@ -8351,7 +8351,7 @@ if (globalThis) {
     console.warn("You appear to have multiple instances of Solid. This can lead to unexpected behavior.");
 }
 
-// ../node_modules/solid-js/web/dist/dev.js
+// node_modules/solid-js/web/dist/dev.js
 var booleans = [
   "allowfullscreen",
   "async",
@@ -9024,7 +9024,331 @@ var voidFn = () => {
 var RequestContext = Symbol();
 var isServer = false;
 
-// ../frontend/transport/http-transport.ts
+// node_modules/electrobun/dist/api/shared/rpc.ts
+var MAX_ID = 10000000000;
+var DEFAULT_MAX_REQUEST_TIME = 1000;
+function missingTransportMethodError(methods, action) {
+  const methodsString = methods.map((m) => `"${m}"`).join(", ");
+  return new Error(`This RPC instance cannot ${action} because the transport did not provide one or more of these methods: ${methodsString}`);
+}
+function createRPC(options = {}) {
+  let debugHooks = {};
+  let transport = {};
+  let requestHandler = undefined;
+  function setTransport(newTransport) {
+    if (transport.unregisterHandler)
+      transport.unregisterHandler();
+    transport = newTransport;
+    transport.registerHandler?.(handler);
+  }
+  function setRequestHandler(h) {
+    if (typeof h === "function") {
+      requestHandler = h;
+      return;
+    }
+    requestHandler = (method, params) => {
+      const handlerFn = h[method];
+      if (handlerFn)
+        return handlerFn(params);
+      const fallbackHandler = h._;
+      if (!fallbackHandler)
+        throw new Error(`The requested method has no handler: ${String(method)}`);
+      return fallbackHandler(method, params);
+    };
+  }
+  const { maxRequestTime = DEFAULT_MAX_REQUEST_TIME } = options;
+  if (options.transport)
+    setTransport(options.transport);
+  if (options.requestHandler)
+    setRequestHandler(options.requestHandler);
+  if (options._debugHooks)
+    debugHooks = options._debugHooks;
+  let lastRequestId = 0;
+  function getRequestId() {
+    if (lastRequestId <= MAX_ID)
+      return ++lastRequestId;
+    return lastRequestId = 0;
+  }
+  const requestListeners = new Map;
+  const requestTimeouts = new Map;
+  function requestFn(method, ...args) {
+    const params = args[0];
+    return new Promise((resolve, reject) => {
+      if (!transport.send)
+        throw missingTransportMethodError(["send"], "make requests");
+      const requestId = getRequestId();
+      const request2 = {
+        type: "request",
+        id: requestId,
+        method,
+        params
+      };
+      requestListeners.set(requestId, { resolve, reject });
+      if (maxRequestTime !== Infinity)
+        requestTimeouts.set(requestId, setTimeout(() => {
+          requestTimeouts.delete(requestId);
+          reject(new Error("RPC request timed out."));
+        }, maxRequestTime));
+      debugHooks.onSend?.(request2);
+      transport.send(request2);
+    });
+  }
+  const request = new Proxy(requestFn, {
+    get: (target, prop, receiver) => {
+      if (prop in target)
+        return Reflect.get(target, prop, receiver);
+      return (params) => requestFn(prop, params);
+    }
+  });
+  const requestProxy = request;
+  function sendFn(message, ...args) {
+    const payload = args[0];
+    if (!transport.send)
+      throw missingTransportMethodError(["send"], "send messages");
+    const rpcMessage = {
+      type: "message",
+      id: message,
+      payload
+    };
+    debugHooks.onSend?.(rpcMessage);
+    transport.send(rpcMessage);
+  }
+  const send = new Proxy(sendFn, {
+    get: (target, prop, receiver) => {
+      if (prop in target)
+        return Reflect.get(target, prop, receiver);
+      return (payload) => sendFn(prop, payload);
+    }
+  });
+  const sendProxy = send;
+  const messageListeners = new Map;
+  const wildcardMessageListeners = new Set;
+  function addMessageListener(message, listener) {
+    if (!transport.registerHandler)
+      throw missingTransportMethodError(["registerHandler"], "register message listeners");
+    if (message === "*") {
+      wildcardMessageListeners.add(listener);
+      return;
+    }
+    if (!messageListeners.has(message))
+      messageListeners.set(message, new Set);
+    messageListeners.get(message).add(listener);
+  }
+  function removeMessageListener(message, listener) {
+    if (message === "*") {
+      wildcardMessageListeners.delete(listener);
+      return;
+    }
+    messageListeners.get(message)?.delete(listener);
+    if (messageListeners.get(message)?.size === 0)
+      messageListeners.delete(message);
+  }
+  async function handler(message) {
+    debugHooks.onReceive?.(message);
+    if (!("type" in message))
+      throw new Error("Message does not contain a type.");
+    if (message.type === "request") {
+      if (!transport.send || !requestHandler)
+        throw missingTransportMethodError(["send", "requestHandler"], "handle requests");
+      const { id, method, params } = message;
+      let response;
+      try {
+        response = {
+          type: "response",
+          id,
+          success: true,
+          payload: await requestHandler(method, params)
+        };
+      } catch (error) {
+        if (!(error instanceof Error))
+          throw error;
+        response = {
+          type: "response",
+          id,
+          success: false,
+          error: error.message
+        };
+      }
+      debugHooks.onSend?.(response);
+      transport.send(response);
+      return;
+    }
+    if (message.type === "response") {
+      const timeout = requestTimeouts.get(message.id);
+      if (timeout != null)
+        clearTimeout(timeout);
+      const { resolve, reject } = requestListeners.get(message.id) ?? {};
+      if (!message.success)
+        reject?.(new Error(message.error));
+      else
+        resolve?.(message.payload);
+      return;
+    }
+    if (message.type === "message") {
+      for (const listener of wildcardMessageListeners)
+        listener(message.id, message.payload);
+      const listeners = messageListeners.get(message.id);
+      if (!listeners)
+        return;
+      for (const listener of listeners)
+        listener(message.payload);
+      return;
+    }
+    throw new Error(`Unexpected RPC message type: ${message.type}`);
+  }
+  const proxy = { send: sendProxy, request: requestProxy };
+  return {
+    setTransport,
+    setRequestHandler,
+    request,
+    requestProxy,
+    send,
+    sendProxy,
+    addMessageListener,
+    removeMessageListener,
+    proxy
+  };
+}
+function defineElectrobunRPC(_side, config) {
+  const rpcOptions = {
+    maxRequestTime: config.maxRequestTime,
+    requestHandler: {
+      ...config.handlers.requests,
+      ...config.extraRequestHandlers
+    },
+    transport: {
+      registerHandler: () => {}
+    }
+  };
+  const rpc = createRPC(rpcOptions);
+  const messageHandlers = config.handlers.messages;
+  if (messageHandlers) {
+    rpc.addMessageListener("*", (messageName, payload) => {
+      const globalHandler = messageHandlers["*"];
+      if (globalHandler) {
+        globalHandler(messageName, payload);
+      }
+      const messageHandler = messageHandlers[messageName];
+      if (messageHandler) {
+        messageHandler(payload);
+      }
+    });
+  }
+  return rpc;
+}
+
+// node_modules/electrobun/dist/api/browser/index.ts
+var WEBVIEW_ID = window.__electrobunWebviewId;
+var RPC_SOCKET_PORT = window.__electrobunRpcSocketPort;
+
+class Electroview {
+  bunSocket;
+  rpc;
+  rpcHandler;
+  constructor(config) {
+    this.rpc = config.rpc;
+    this.init();
+  }
+  init() {
+    this.initSocketToBun();
+    window.__electrobun.receiveMessageFromBun = this.receiveMessageFromBun.bind(this);
+    if (this.rpc) {
+      this.rpc.setTransport(this.createTransport());
+    }
+  }
+  initSocketToBun() {
+    const socket = new WebSocket(`ws://localhost:${RPC_SOCKET_PORT}/socket?webviewId=${WEBVIEW_ID}`);
+    this.bunSocket = socket;
+    socket.addEventListener("open", () => {});
+    socket.addEventListener("message", async (event) => {
+      const message = event.data;
+      if (typeof message === "string") {
+        try {
+          const encryptedPacket = JSON.parse(message);
+          const decrypted = await window.__electrobun_decrypt(encryptedPacket.encryptedData, encryptedPacket.iv, encryptedPacket.tag);
+          this.rpcHandler?.(JSON.parse(decrypted));
+        } catch (err) {
+          console.error("Error parsing bun message:", err);
+        }
+      } else if (message instanceof Blob) {} else {
+        console.error("UNKNOWN DATA TYPE RECEIVED:", event.data);
+      }
+    });
+    socket.addEventListener("error", (event) => {
+      console.error("Socket error:", event);
+    });
+    socket.addEventListener("close", (_event) => {});
+  }
+  createTransport() {
+    const that = this;
+    return {
+      send(message) {
+        try {
+          const messageString = JSON.stringify(message);
+          that.bunBridge(messageString);
+        } catch (error) {
+          console.error("bun: failed to serialize message to webview", error);
+        }
+      },
+      registerHandler(handler) {
+        that.rpcHandler = handler;
+      }
+    };
+  }
+  async bunBridge(msg) {
+    if (this.bunSocket?.readyState === WebSocket.OPEN) {
+      try {
+        const { encryptedData, iv, tag } = await window.__electrobun_encrypt(msg);
+        const encryptedPacket = {
+          encryptedData,
+          iv,
+          tag
+        };
+        const encryptedPacketString = JSON.stringify(encryptedPacket);
+        this.bunSocket.send(encryptedPacketString);
+        return;
+      } catch (error) {
+        console.error("Error sending message to bun via socket:", error);
+      }
+    }
+    window.__electrobunBunBridge?.postMessage(msg);
+  }
+  receiveMessageFromBun(msg) {
+    if (this.rpcHandler) {
+      this.rpcHandler(msg);
+    }
+  }
+  static defineRPC(config) {
+    return defineElectrobunRPC("webview", {
+      ...config,
+      extraRequestHandlers: {
+        evaluateJavascriptWithResponse: ({ script }) => {
+          return new Promise((resolve) => {
+            try {
+              const resultFunction = new Function(script);
+              const result = resultFunction();
+              if (result instanceof Promise) {
+                result.then((resolvedResult) => {
+                  resolve(resolvedResult);
+                }).catch((error) => {
+                  console.error("bun: async script execution failed", error);
+                  resolve(String(error));
+                });
+              } else {
+                resolve(result);
+              }
+            } catch (error) {
+              console.error("bun: failed to eval script", error);
+              resolve(String(error));
+            }
+          });
+        }
+      }
+    });
+  }
+}
+
+// frontend/transport/http-transport.ts
 var API_BASE = "";
 
 class HttpTransport {
@@ -9060,171 +9384,45 @@ class HttpTransport {
     };
   }
 }
-// ../node_modules/@tauri-apps/api/external/tslib/tslib.es6.js
-function __classPrivateFieldGet(receiver, state, kind, f) {
-  if (kind === "a" && !f)
-    throw new TypeError("Private accessor was defined without a getter");
-  if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver))
-    throw new TypeError("Cannot read private member from an object whose class did not declare it");
-  return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
-}
-function __classPrivateFieldSet(receiver, state, value2, kind, f) {
-  if (kind === "m")
-    throw new TypeError("Private method is not writable");
-  if (kind === "a" && !f)
-    throw new TypeError("Private accessor was defined without a setter");
-  if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver))
-    throw new TypeError("Cannot write private member to an object whose class did not declare it");
-  return kind === "a" ? f.call(receiver, value2) : f ? f.value = value2 : state.set(receiver, value2), value2;
+// frontend/transport/electrobun-transport.ts
+var eventCallbacks = new Map;
+function handleBackendEvent(payload) {
+  if (payload.error && payload.sessionId) {
+    const cbs = eventCallbacks.get(payload.sessionId);
+    cbs?.forEach((cb) => cb({ type: "ERROR", message: payload.error, timestamp: Date.now() }));
+    return;
+  }
+  if (payload.data && payload.sessionId) {
+    const cbs = eventCallbacks.get(payload.sessionId);
+    cbs?.forEach((cb) => cb(payload.data));
+  }
 }
 
-// ../node_modules/@tauri-apps/api/core.js
-var _Channel_onmessage;
-var _Channel_nextMessageIndex;
-var _Channel_pendingMessages;
-var _Channel_messageEndIndex;
-var _Resource_rid;
-var SERIALIZE_TO_IPC_FN = "__TAURI_TO_IPC_KEY__";
-function transformCallback(callback, once = false) {
-  return window.__TAURI_INTERNALS__.transformCallback(callback, once);
-}
-
-class Channel {
-  constructor(onmessage) {
-    _Channel_onmessage.set(this, undefined);
-    _Channel_nextMessageIndex.set(this, 0);
-    _Channel_pendingMessages.set(this, []);
-    _Channel_messageEndIndex.set(this, undefined);
-    __classPrivateFieldSet(this, _Channel_onmessage, onmessage || (() => {}), "f");
-    this.id = transformCallback((rawMessage) => {
-      const index = rawMessage.index;
-      if ("end" in rawMessage) {
-        if (index == __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")) {
-          this.cleanupCallback();
-        } else {
-          __classPrivateFieldSet(this, _Channel_messageEndIndex, index, "f");
-        }
-        return;
-      }
-      const message = rawMessage.message;
-      if (index == __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")) {
-        __classPrivateFieldGet(this, _Channel_onmessage, "f").call(this, message);
-        __classPrivateFieldSet(this, _Channel_nextMessageIndex, __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") + 1, "f");
-        while (__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") in __classPrivateFieldGet(this, _Channel_pendingMessages, "f")) {
-          const message2 = __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")];
-          __classPrivateFieldGet(this, _Channel_onmessage, "f").call(this, message2);
-          delete __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f")];
-          __classPrivateFieldSet(this, _Channel_nextMessageIndex, __classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") + 1, "f");
-        }
-        if (__classPrivateFieldGet(this, _Channel_nextMessageIndex, "f") === __classPrivateFieldGet(this, _Channel_messageEndIndex, "f")) {
-          this.cleanupCallback();
-        }
-      } else {
-        __classPrivateFieldGet(this, _Channel_pendingMessages, "f")[index] = message;
-      }
-    });
-  }
-  cleanupCallback() {
-    window.__TAURI_INTERNALS__.unregisterCallback(this.id);
-  }
-  set onmessage(handler) {
-    __classPrivateFieldSet(this, _Channel_onmessage, handler, "f");
-  }
-  get onmessage() {
-    return __classPrivateFieldGet(this, _Channel_onmessage, "f");
-  }
-  [(_Channel_onmessage = new WeakMap, _Channel_nextMessageIndex = new WeakMap, _Channel_pendingMessages = new WeakMap, _Channel_messageEndIndex = new WeakMap, SERIALIZE_TO_IPC_FN)]() {
-    return `__CHANNEL__:${this.id}`;
-  }
-  toJSON() {
-    return this[SERIALIZE_TO_IPC_FN]();
-  }
-}
-async function invoke(cmd, args = {}, options) {
-  return window.__TAURI_INTERNALS__.invoke(cmd, args, options);
-}
-_Resource_rid = new WeakMap;
-
-// ../node_modules/@tauri-apps/api/event.js
-var TauriEvent;
-(function(TauriEvent2) {
-  TauriEvent2["WINDOW_RESIZED"] = "tauri://resize";
-  TauriEvent2["WINDOW_MOVED"] = "tauri://move";
-  TauriEvent2["WINDOW_CLOSE_REQUESTED"] = "tauri://close-requested";
-  TauriEvent2["WINDOW_DESTROYED"] = "tauri://destroyed";
-  TauriEvent2["WINDOW_FOCUS"] = "tauri://focus";
-  TauriEvent2["WINDOW_BLUR"] = "tauri://blur";
-  TauriEvent2["WINDOW_SCALE_FACTOR_CHANGED"] = "tauri://scale-change";
-  TauriEvent2["WINDOW_THEME_CHANGED"] = "tauri://theme-changed";
-  TauriEvent2["WINDOW_CREATED"] = "tauri://window-created";
-  TauriEvent2["WEBVIEW_CREATED"] = "tauri://webview-created";
-  TauriEvent2["DRAG_ENTER"] = "tauri://drag-enter";
-  TauriEvent2["DRAG_OVER"] = "tauri://drag-over";
-  TauriEvent2["DRAG_DROP"] = "tauri://drag-drop";
-  TauriEvent2["DRAG_LEAVE"] = "tauri://drag-leave";
-})(TauriEvent || (TauriEvent = {}));
-async function _unlisten(event, eventId) {
-  window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener(event, eventId);
-  await invoke("plugin:event|unlisten", {
-    event,
-    eventId
-  });
-}
-async function listen(event, handler, options) {
-  var _a;
-  const target = typeof (options === null || options === undefined ? undefined : options.target) === "string" ? { kind: "AnyLabel", label: options.target } : (_a = options === null || options === undefined ? undefined : options.target) !== null && _a !== undefined ? _a : { kind: "Any" };
-  return invoke("plugin:event|listen", {
-    event,
-    target,
-    handler: transformCallback(handler)
-  }).then((eventId) => {
-    return async () => _unlisten(event, eventId);
-  });
-}
-
-// ../frontend/transport/tauri-transport.ts
-class TauriTransport {
+class ElectrobunTransport {
   async request(method, payload) {
-    const result = await invoke("api_request", { method, payload });
-    return result;
+    const fn = window.__electrobunApiRequest;
+    if (!fn)
+      throw new Error("Electrobun RPC 未就绪，请确保在桌面应用内运行");
+    return fn(method, payload);
   }
   subscribeEvents(sessionId, callback) {
-    const holder = { unlisten: null, cancelled: false };
-    listen("backend-event", (event) => {
-      const payload = event.payload;
-      if (payload.sessionId !== sessionId)
-        return;
-      if (payload.error) {
-        callback({
-          type: "ERROR",
-          message: payload.error,
-          timestamp: Date.now()
-        });
-        return;
-      }
-      if (payload.data)
-        callback(payload.data);
-    }).then((fn) => {
-      holder.unlisten = fn;
-      if (holder.cancelled)
-        fn();
-    });
-    invoke("api_request", {
-      method: "subscribe-events",
-      payload: { sessionId }
-    }).catch(() => {});
+    let set = eventCallbacks.get(sessionId);
+    if (!set) {
+      set = new Set;
+      eventCallbacks.set(sessionId, set);
+    }
+    set.add(callback);
+    this.request("subscribe-events", { sessionId }).catch(() => {});
     return () => {
-      holder.cancelled = true;
-      invoke("api_request", {
-        method: "unsubscribe-events",
-        payload: { sessionId }
-      }).catch(() => {});
-      holder.unlisten?.();
+      set?.delete(callback);
+      if (set?.size === 0)
+        eventCallbacks.delete(sessionId);
+      this.request("unsubscribe-events", { sessionId }).catch(() => {});
     };
   }
 }
 
-// ../frontend/transport/index.ts
+// frontend/transport/index.ts
 var transport = new HttpTransport;
 function getTransport() {
   return transport;
@@ -9233,7 +9431,7 @@ function setTransport(t) {
   transport = t;
 }
 
-// ../node_modules/solid-js/store/dist/dev.js
+// node_modules/solid-js/store/dist/dev.js
 var $RAW = Symbol("store-raw");
 var $NODE = Symbol("store-node");
 var $HAS = Symbol("store-has");
@@ -9516,7 +9714,7 @@ function produce(fn) {
   };
 }
 
-// ../node_modules/@solidjs/router/dist/index.js
+// node_modules/@solidjs/router/dist/index.js
 function createBeforeLeave() {
   let listeners = new Set;
   function subscribe(listener) {
@@ -10703,7 +10901,7 @@ function A(props) {
   })();
 }
 
-// ../frontend/login.tsx
+// frontend/login.tsx
 function ChooseDatabase() {
   return createComponent(A, {
     href: "/postgres",
@@ -10711,7 +10909,7 @@ function ChooseDatabase() {
   });
 }
 
-// ../frontend/app.tsx
+// frontend/app.tsx
 var _tmpl$2 = /* @__PURE__ */ template(`<main>`);
 function App() {
   const columnNames = [{
@@ -10744,7 +10942,7 @@ function App() {
   })();
 }
 
-// ../frontend/session.ts
+// frontend/session.ts
 function generateSessionId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
     return crypto.randomUUID();
@@ -10764,7 +10962,7 @@ function getSessionId() {
   return sessionId;
 }
 
-// ../frontend/crypto.ts
+// frontend/crypto.ts
 function pemToBinary(pem) {
   const lines = pem.split(`
 `).filter((l) => l && !l.includes("-----"));
@@ -10783,7 +10981,7 @@ async function encryptWithPublicKey(pemPublicKey, plaintext) {
   return b64;
 }
 
-// ../frontend/api.ts
+// frontend/api.ts
 var api = () => getTransport();
 async function connectPostgres(sessionId, params) {
   const transport2 = api();
@@ -10832,7 +11030,7 @@ function subscribeEvents(sessionId, callback) {
   return api().subscribeEvents(sessionId, callback);
 }
 
-// ../frontend/postgres.tsx
+// frontend/postgres.tsx
 var _tmpl$3 = /* @__PURE__ */ template(`<table><thead><tr><th>字段</th><th>说明</th><th>示例</th></tr></thead><tbody>`);
 var _tmpl$22 = /* @__PURE__ */ template(`<button>连接`);
 var _tmpl$32 = /* @__PURE__ */ template(`<tr><td></td><td></td><td><input placeholder=请输入值>`);
@@ -10909,7 +11107,7 @@ function Postgres() {
 }
 delegateEvents(["click", "input"]);
 
-// ../frontend/editable-cell.tsx
+// frontend/editable-cell.tsx
 var _tmpl$4 = /* @__PURE__ */ template(`<input type=text style="width:100%;padding:2px 4px;border:2px solid #2563eb;border-radius:2px;font-size:inherit;font-family:inherit;box-sizing:border-box;outline:none;margin:-4px -6px;min-width:calc(100% + 12px)">`);
 var _tmpl$23 = /* @__PURE__ */ template(`<td style="padding:8px 12px;border:1px solid #e5e7eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">`);
 var _tmpl$33 = /* @__PURE__ */ template(`<span>`);
@@ -10988,7 +11186,7 @@ function EditableCell(props) {
 }
 delegateEvents(["dblclick", "input", "keydown"]);
 
-// ../frontend/sidebar.tsx
+// frontend/sidebar.tsx
 var _tmpl$5 = /* @__PURE__ */ template(`<span style=margin-right:6px;font-size:14px>`);
 var _tmpl$24 = /* @__PURE__ */ template(`<span style="font-size:10px;color:#6e7681;background-color:#21262d;padding:1px 6px;border-radius:10px;margin-left:4px">`);
 var _tmpl$34 = /* @__PURE__ */ template(`<div style=overflow:hidden>`);
@@ -11443,7 +11641,7 @@ function Sidebar(props) {
 }
 delegateEvents(["click", "contextmenu", "input"]);
 
-// ../frontend/sql-to-visual.ts
+// frontend/sql-to-visual.ts
 var import_pgsql_ast_parser = __toESM(require_pgsql_ast_parser(), 1);
 var AST_JOIN_TO_OUR = {
   "INNER JOIN": "INNER",
@@ -11752,7 +11950,7 @@ function parseSqlToVisualDescriptor(sql) {
   }
 }
 
-// ../frontend/visual-query-builder.tsx
+// frontend/visual-query-builder.tsx
 var _tmpl$11 = /* @__PURE__ */ template(`<div class=canvas-table style=position:absolute;width:200px;background-color:#1e293b;border-radius:8px;cursor:move;user-select:none;pointer-events:auto><div class=table-header style="padding:8px 10px;border-radius:7px 7px 0 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;font-weight:600;font-size:12px;color:#e2e8f0"><div style=display:flex;align-items:center;flex-wrap:wrap;gap:4px;min-width:0;flex:1><span style="color:#0f172a;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:700;flex-shrink:0"></span><span><span style=color:#94a3b8;margin-left:3px;font-weight:normal;font-size:11px>(<!>)</span></span></div><button style="background:none;border:none;color:#94a3b8;cursor:pointer;padding:2px 4px;border-radius:4px;flex-shrink:0">✕</button></div><div style="padding:4px 0">`);
 var _tmpl$25 = /* @__PURE__ */ template(`<span style="color:#0f172a;padding:2px 5px;border-radius:3px;font-size:9px;font-weight:600;flex-shrink:0"> JOIN`);
 var _tmpl$35 = /* @__PURE__ */ template(`<div class=column-item style="padding:6px 12px;font-size:12px;cursor:grab;display:flex;align-items:center;gap:6px;transition:background-color 0.15s"><span style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;border-radius:3px;border:1px solid #475569;font-size:10px">✓</span><span style=flex:1></span><span style=color:#64748b;font-size:10px></span><span title="拖拽到其他表的列创建 JOIN"style=color:#64748b;font-size:10px;opacity:0.5>\uD83D\uDD17`);
@@ -13760,7 +13958,7 @@ ${joinKeyword} ${table.schema}.${table.name} ${table.alias}`;
 }
 delegateEvents(["mousedown", "contextmenu", "click", "input", "mousemove", "mouseup"]);
 
-// ../frontend/query-interface.tsx
+// frontend/query-interface.tsx
 var _tmpl$41 = /* @__PURE__ */ template(`<div style=padding:16px;text-align:center>查询中...`);
 var _tmpl$210 = /* @__PURE__ */ template(`<div style=color:red;padding:16px>`);
 var _tmpl$310 = /* @__PURE__ */ template(`<span style=margin-left:8px;color:#3b82f6>(滚动加载更多)`);
@@ -14410,8 +14608,22 @@ function QueryInterface() {
 }
 delegateEvents(["click", "mousedown", "input"]);
 
-// ../frontend/index-tauri.tsx
-setTransport(new TauriTransport);
+// frontend/index-electrobun.tsx
+var rpc = Electroview.defineRPC({
+  handlers: {
+    messages: {
+      backend_event: (payload) => handleBackendEvent(payload)
+    }
+  }
+});
+var electroview = new Electroview({
+  rpc
+});
+window.__electrobunApiRequest = (method, payload) => electroview.rpc.request.api_request({
+  method,
+  payload
+});
+setTransport(new ElectrobunTransport);
 var root = document.getElementById("root");
 if (root) {
   render(() => createComponent(HashRouter, {

@@ -12,10 +12,16 @@
     "standalone:build:win": "bun run standalone/build-win.ts",
     "standalone:deploy": "bun run standalone/deploy.ts",
     "build-extension": "bun run vscode-extension/build.ts",
-    "build-stdio": "bun run tauri-app/build.ts"
+    "electrobun:start": "bun run build:electrobun && bunx electrobun dev",
+    "build:electrobun": "bun run build:electrobun:frontend && bun install && bunx electrobun build",
+    "build:electrobun:frontend": "bun run electrobun-app/build.ts",
+    "electrobun:package:canary": "bun run build:electrobun:frontend && bunx electrobun build --env=canary",
+    "electrobun:package:stable": "bun run build:electrobun:frontend && bunx electrobun build --env=stable",
+    "electrobun:portable": "bun run electrobun-app/package-portable.ts"
   },
   "license": "MIT",
   "devDependencies": {
+    "electrobun": "^1.15.1",
     "@babel/core": "^7.28.5",
     "@babel/preset-typescript": "^7.28.5",
     "@dschz/bun-plugin-solid": "^1.0.4",
@@ -41,8 +47,6 @@
   },
   "dependencies": {
     "@solidjs/router": "^0.15.4",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
     "@types/jsdom": "^27.0.0",
     "@types/pg": "^8.16.0",
     "bun-plugin-solid": "^1.0.0",

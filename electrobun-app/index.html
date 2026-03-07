@@ -3,15 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
+    <title>Front Table</title>
     <style>
       *, *::before, *::after { box-sizing: border-box; }
       html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
       #root { height: 100%; overflow: hidden; }
+      /* 高 DPI 显示优化：改善字体和边缘清晰度 */
+      html {
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
+      }
     </style>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="./index-tauri.js" defer></script>
+    <script type="module" src="../frontend/index-electrobun.tsx"></script>
   </body>
 </html>
