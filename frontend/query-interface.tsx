@@ -2,6 +2,7 @@ import { createSignal, For, Show, onMount, onCleanup, lazy } from "solid-js";
 import { createStore } from "solid-js/store";
 import EditableCell from "./editable-cell";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared } from "../shared/src";
 import { getSessionId } from "./session";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import Sidebar from "./sidebar";
@@ -263,37 +264,26 @@ export default function QueryInterface() {
     }
   }
 
-  // 格式化 SQL 值（处理字符串转义、null 等）
-  function formatSqlValue(value: any): string {
-    if (value === null || value === undefined) return 'NULL';
-    if (typeof value === 'number') return String(value);
-    if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
-    // 字符串需要转义单引号
-    return `'${String(value).replace(/'/g, "''")}'`;
-  }
-
-  // 生成 UPDATE SQL
+  // 生成 UPDATE SQL（使用共享的 formatSqlValue 以兼容 timestamp 精度等）
   function generateUpdateSql(rowIndex: number, colIndex: number, newValue: string): string {
     const colInfo = columns()[colIndex];
     const row = result[rowIndex];
 
-    // 构建 WHERE 条件
-    const whereConditions = colInfo.uniqueKeyColumns!.map(keyColName => {
-      // 找到唯一键列在 columns 中的索引
-      const keyColIndex = columns().findIndex(c => c.columnName === keyColName);
+    const whereConditions = colInfo.uniqueKeyColumns!.map((keyColName, i) => {
+      const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
       const keyValue = row[keyColIndex];
-      return `${keyColName} = ${formatSqlValue(keyValue)}`;
+      const keyOid = columns()[keyColIndex]?.dataTypeOid;
+      return `${keyColName} = ${formatSqlValueShared(keyValue, keyOid)}`;
     });
 
-    return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValue(newValue)} WHERE ${whereConditions.join(' AND ')}`;
+    return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid)} WHERE ${whereConditions.join(" AND ")}`;
   }
 
   // 处理单元格保存
   function handleCellSave(rowIndex: number, colIndex: number, newValue: string) {
     const currentValue = result[rowIndex][colIndex];
 
-    // 如果值没有变化，不生成 UPDATE
-    if (String(currentValue) === newValue) return;
+    if (formatCellToEditable(currentValue) === newValue) return;
 
     // 查找是否已有该单元格的更新记录（保留最初的原始值）
     const existingUpdate = pendingUpdates().find(u => u.rowIndex === rowIndex && u.colIndex === colIndex);

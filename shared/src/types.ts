@@ -26,6 +26,8 @@ export interface ColumnEditableInfo {
   tableID: number;
   columnID: number;
   isEditable: boolean;
+  /** PostgreSQL 类型 OID，用于格式化显示与 SQL 值（timestamp 精度等） */
+  dataTypeOid?: number;
   tableName?: string;
   columnName?: string;
   uniqueKeyColumns?: string[];

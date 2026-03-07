@@ -1,5 +1,5 @@
 /**
- * Electrobun 前端构建：用 Bun 替代 Vite，输出到 dist-electrobun/
+ * Electrobun 前端构建：用 Bun 替代 Vite，输出到 electrobun-app/dist-electrobun/
  */
 import { join } from "path";
 import { mkdir, writeFile } from "fs/promises";
@@ -7,7 +7,7 @@ import { SolidPlugin } from "bun-plugin-solid";
 
 const root = import.meta.dir;
 const projectRoot = join(root, "..");
-const outDir = join(projectRoot, "dist-electrobun");
+const outDir = join(root, "dist-electrobun");
 
 await mkdir(outDir, { recursive: true });
 
@@ -50,4 +50,4 @@ const html = `<!doctype html>
 `;
 
 await writeFile(join(outDir, "index.html"), html);
-console.log("Electrobun frontend built to dist-electrobun/");
+console.log("Electrobun frontend built to electrobun-app/dist-electrobun/");

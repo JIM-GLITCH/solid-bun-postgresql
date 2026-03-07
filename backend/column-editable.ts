@@ -222,6 +222,7 @@ export async function calculateColumnEditable(
       tableID: field.tableID,
       columnID: field.columnID,
       isEditable: false,
+      dataTypeOid: field.dataTypeID,
     };
 
     if (field.tableID === 0) return info;

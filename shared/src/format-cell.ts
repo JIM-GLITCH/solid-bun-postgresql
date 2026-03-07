@@ -1,0 +1,182 @@
+/**
+ * 表格单元格格式化：兼容所有 PostgreSQL 类型，处理 timestamp 与 JS Date 精度问题
+ *
+ * 精度说明：
+ * - PG timestamp/timestamptz 支持微秒（6 位小数）
+ * - JS Date 仅支持毫秒（3 位）
+ * - 策略：后端以字符串返回日期时间类型，前端保持字符串，不做 Date 转换
+ */
+
+/** PostgreSQL 类型 OID（常见） */
+export const PG_OID = {
+  bool: 16,
+  bytea: 17,
+  char: 18,
+  int8: 20,
+  int2: 21,
+  int4: 23,
+  text: 25,
+  float4: 700,
+  float8: 701,
+  money: 790,
+  json: 114,
+  jsonb: 3802,
+  date: 1082,
+  time: 1083,
+  timetz: 1266,
+  timestamp: 1114,
+  timestamptz: 1184,
+  interval: 1186,
+  numeric: 1700,
+  uuid: 2950,
+  inet: 869,
+  cidr: 650,
+  macaddr: 829,
+  xml: 142,
+  point: 600,
+  box: 603,
+  path: 602,
+  polygon: 604,
+  circle: 718,
+  bit: 1560,
+  varbit: 1562,
+} as const;
+
+/** 数字类型 OID */
+const NUMERIC_OIDS = new Set([
+  PG_OID.int2,
+  PG_OID.int4,
+  PG_OID.int8,
+  PG_OID.float4,
+  PG_OID.float8,
+  PG_OID.numeric,
+  PG_OID.money,
+]);
+
+/** 日期/时间类型 OID，需保持字符串以保留微秒精度 */
+const DATE_TIME_OIDS = new Set([
+  PG_OID.date,
+  PG_OID.time,
+  PG_OID.timetz,
+  PG_OID.timestamp,
+  PG_OID.timestamptz,
+  PG_OID.interval,
+]);
+
+/** 格式化为表格显示 */
+export function formatCellDisplay(value: unknown, dataTypeOid?: number): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "t" : "f";
+
+  // Date 对象：可能是旧数据，转为 ISO 字符串（会丢失微秒，但至少能显示）
+  if (value instanceof Date) return value.toISOString();
+
+  // Buffer/bytea（含 JSON 序列化后的形态）
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return "\\x" + value.toString("hex");
+  if (typeof value === "object" && value !== null && "type" in value && (value as any).type === "Buffer" && Array.isArray((value as any).data)) {
+    const hex = Array.from((value as any).data as number[])
+      .map((b: number) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return "\\x" + hex;
+  }
+
+  // JSON/JSONB：美化显示（截断过长内容）
+  if (typeof value === "object") {
+    try {
+      const str = JSON.stringify(value, null, 0);
+      return str.length > 200 ? str.slice(0, 200) + "…" : str;
+    } catch {
+      return String(value);
+    }
+  }
+
+  return String(value);
+}
+
+/** 转为可编辑的字符串（用于编辑框初始值，不截断） */
+export function formatCellToEditable(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return "\\x" + value.toString("hex");
+  if (typeof value === "object" && value !== null && "type" in value && (value as any).type === "Buffer" && Array.isArray((value as any).data)) {
+    const hex = Array.from((value as any).data as number[]).map((b: number) => b.toString(16).padStart(2, "0")).join("");
+    return "\\x" + hex;
+  }
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/** 格式化为 SQL 字面量（用于 UPDATE 的 SET 子句） */
+export function formatSqlValue(value: unknown, dataTypeOid?: number): string {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+
+  // 用户输入为字符串时，按列类型处理
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const isNumeric = dataTypeOid !== undefined && NUMERIC_OIDS.has(dataTypeOid);
+    if (isNumeric && trimmed !== "" && !Number.isNaN(Number(trimmed))) return trimmed;
+    if (dataTypeOid === PG_OID.bool) {
+      if (/^(t|true|yes|y|1)$/i.test(trimmed)) return "TRUE";
+      if (/^(f|false|no|n|0)$/i.test(trimmed)) return "FALSE";
+    }
+  }
+
+  // 日期时间：保持原字符串，确保微秒精度不丢失；按 OID 选择正确 cast
+  const isDateTime = dataTypeOid !== undefined && DATE_TIME_OIDS.has(dataTypeOid);
+  if (isDateTime || value instanceof Date) {
+    const str = value instanceof Date ? value.toISOString() : String(value);
+    const escaped = str.replace(/'/g, "''");
+    const cast =
+      dataTypeOid === PG_OID.date
+        ? "::date"
+        : dataTypeOid === PG_OID.time
+          ? "::time"
+          : dataTypeOid === PG_OID.timetz
+            ? "::timetz"
+            : dataTypeOid === PG_OID.timestamptz
+              ? "::timestamptz"
+              : dataTypeOid === PG_OID.interval
+                ? "::interval"
+                : "::timestamp";
+    return `'${escaped}'${cast}`;
+  }
+
+  // 字符串
+  if (typeof value === "string") {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+    return `'\\x${value.toString("hex")}'::bytea`;
+  }
+  if (typeof value === "object" && value !== null && "type" in value && (value as any).type === "Buffer" && Array.isArray((value as any).data)) {
+    const hex = Array.from((value as any).data as number[])
+      .map((b: number) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return `'\\x${hex}'::bytea`;
+  }
+
+  // JSON
+  if (typeof value === "object") {
+    try {
+      return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;
+    } catch {
+      return `'${String(value).replace(/'/g, "''")}'`;
+    }
+  }
+
+  return `'${String(value).replace(/'/g, "''")}'`;
+}

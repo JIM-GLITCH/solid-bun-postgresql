@@ -417,6 +417,7 @@ export function createApiRoutes(): Record<string, { GET?: (req: any) => Response
             tableID: f.tableID,
             columnID: f.columnID,
             isEditable: false,
+            dataTypeOid: f.dataTypeID,
           }));
 
           return Response.json({ rows: result.rows, columns, hasMore: false });

@@ -1,9 +1,10 @@
 import { createSignal, createEffect, Show } from "solid-js";
+import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 
 interface EditableCellProps {
   value: any;
   isEditable: boolean;
-  isModified?: boolean;  // 是否被修改过
+  isModified?: boolean;
   onSave?: (newValue: string) => void;
   align?: "left" | "right" | "center";
 }
@@ -22,7 +23,7 @@ export default function EditableCell(props: EditableCellProps) {
 
   function startEditing() {
     if (!props.isEditable) return;
-    setEditValue(String(props.value ?? ""));
+    setEditValue(formatCellToEditable(props.value));
     setIsEditing(true);
   }
 
@@ -66,7 +67,7 @@ export default function EditableCell(props: EditableCellProps) {
         when={isEditing()}
         fallback={
           <span title={props.isEditable ? "双击编辑" : ""}>
-            {props.value}
+            {formatCellDisplay(props.value)}
           </span>
         }
       >
