@@ -411,16 +411,9 @@ export function createApiRoutes(): Record<string, { GET?: (req: any) => Response
             : `${query} LIMIT ${limit}`;
 
           const result = await session.backGroundPool.query({ text: limitedQuery, rowMode: "array" });
+          const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
 
-          const columns = result.fields.map((f) => ({
-            name: f.name,
-            tableID: f.tableID,
-            columnID: f.columnID,
-            isEditable: false,
-            dataTypeOid: f.dataTypeID,
-          }));
-
-          return Response.json({ rows: result.rows, columns, hasMore: false });
+          return Response.json({ rows: result.rows, columns: columnsInfo, hasMore: false });
         } catch (e: any) {
           return Response.json({ error: e.message }, { status: 500 });
         }

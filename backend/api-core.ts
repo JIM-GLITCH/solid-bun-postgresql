@@ -206,8 +206,8 @@ export async function handleApiRequest<M extends ApiMethod>(
       const session = getS();
       const limitedQuery = query.trim().toLowerCase().includes("limit") ? query : `${query} LIMIT ${limit}`;
       const result = await session.backGroundPool.query({ text: limitedQuery, rowMode: "array" });
-      const columns = result.fields.map((f) => ({ name: f.name, tableID: f.tableID, columnID: f.columnID, isEditable: false, dataTypeOid: f.dataTypeID }));
-      return { rows: result.rows, columns, hasMore: false };
+      const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
+      return { rows: result.rows, columns: columnsInfo, hasMore: false };
     }
 
     case "postgres/schemas": {
