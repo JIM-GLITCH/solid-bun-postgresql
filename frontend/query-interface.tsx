@@ -1,4 +1,4 @@
-import { createSignal, For, Show, onMount, onCleanup, createEffect } from "solid-js";
+import { createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
 import { createStore } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
@@ -77,22 +77,20 @@ export default function QueryInterface() {
   const ROW_HEIGHT = 40; // 预估行高
   const OVERSCAN = 10; // 预渲染行数
 
-  const visibleRange = () => {
+  const visible = createMemo(() => {
     const start = Math.floor(scrollTop() / ROW_HEIGHT);
     const end = Math.ceil((scrollTop() + containerHeight()) / ROW_HEIGHT);
+    const s = Math.max(0, start - OVERSCAN);
+    const e = Math.min(result.length, end + OVERSCAN);
     return {
-      start: Math.max(0, start - OVERSCAN),
-      end: Math.min(result.length, end + OVERSCAN)
+      start: s,
+      end: e,
+      indices: Array.from({ length: e - s }, (_, i) => s + i)
     };
-  };
-
-  const visibleRows = () => {
-    const { start, end } = visibleRange();
-    return result.slice(start, end).map((row, i) => ({ row, index: start + i }));
-  };
+  });
 
   const totalHeight = () => result.length * ROW_HEIGHT;
-  const offsetY = () => visibleRange().start * ROW_HEIGHT;
+  const offsetY = () => visible().start * ROW_HEIGHT;
 
   const [tableContainerRef, setTableContainerRef] = createSignal<HTMLDivElement | null>(null);
 
@@ -102,7 +100,7 @@ export default function QueryInterface() {
     if (!el) return;
     const updateHeight = () => {
       const h = el.clientHeight;
-      setContainerHeight(Math.max(h, 200)); // 最小 200px，避免 0 导致 visibleRows 为空
+      setContainerHeight(Math.max(h, 200)); // 最小 200px，避免 0 导致 visible 为空
     };
     const ro = new ResizeObserver(() => {
       requestAnimationFrame(updateHeight); // 等布局完成后再测量
@@ -628,31 +626,28 @@ export default function QueryInterface() {
                   <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
                 </tr>
 
-                <For each={visibleRows()}>
-                  {({ row, index: rowIndex }) => (
+                <For each={visible().indices}>
+                  {(rowIndex) => (
                     <tr style={{ height: `${ROW_HEIGHT}px`, "box-sizing": "border-box" }}>
                       <For each={columns()}>
-                        {(colInfo, colIndex) => {
-                          const col = row[colIndex()];
-                          return (
+                        {(colInfo, colIndex) => (
                             <EditableCell
-                              value={col}
+                              value={() => result[rowIndex][colIndex()]}
                               isEditable={colInfo.isEditable}
                               isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
-                              align={getAlignment(col)}
+                              align={() => getAlignment(result[rowIndex][colIndex()])}
                               onSave={(newValue) => {
                                 handleCellSave(rowIndex, colIndex(), newValue);
                               }}
                             />
-                          );
-                        }}
+                          )}
                       </For>
                     </tr>
                   )}
                 </For>
 
                 {/* 底部占位行 */}
-                <tr style={{ height: `${Math.max(0, totalHeight() - offsetY() - (visibleRows().length * ROW_HEIGHT))}px` }}>
+                <tr style={{ height: `${Math.max(0, totalHeight() - offsetY() - (visible().indices.length * ROW_HEIGHT))}px` }}>
                   <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
                 </tr>
               </tbody>

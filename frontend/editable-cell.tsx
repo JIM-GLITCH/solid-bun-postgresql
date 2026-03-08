@@ -2,11 +2,12 @@ import { createSignal, createEffect, Show, onCleanup } from "solid-js";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 
 interface EditableCellProps {
-  value: any;
+  /** 直接传值，或传访问器 () => value 以建立对 store 的细粒度依赖 */
+  value: any | (() => any);
   isEditable: boolean;
   isModified?: boolean;
   onSave?: (newValue: string | null) => void;
-  align?: "left" | "right" | "center";
+  align?: "left" | "right" | "center" | (() => "left" | "right" | "center");
 }
 
 export default function EditableCell(props: EditableCellProps) {
@@ -37,9 +38,12 @@ export default function EditableCell(props: EditableCellProps) {
     });
   });
 
+  const getValue = () => (typeof props.value === "function" ? props.value() : props.value);
+  const getAlign = () => (typeof props.align === "function" ? props.align() : (props.align ?? "left"));
+
   function startEditing() {
     if (!props.isEditable) return;
-    setEditValue(formatCellToEditable(props.value));
+    setEditValue(formatCellToEditable(getValue()));
     setIsEditing(true);
   }
 
@@ -73,8 +77,6 @@ export default function EditableCell(props: EditableCellProps) {
     }
   }
 
-  const align = props.align || "left";
-
   return (
     <td
       onDblClick={startEditing}
@@ -82,7 +84,7 @@ export default function EditableCell(props: EditableCellProps) {
       style={{
         cursor: props.isEditable ? "pointer" : "default",
         padding: "8px 12px",
-        "text-align": align,
+        "text-align": getAlign(),
         "border": "1px solid #e5e7eb",
         "white-space": "nowrap",
         overflow: "hidden",
@@ -94,7 +96,7 @@ export default function EditableCell(props: EditableCellProps) {
         when={isEditing()}
         fallback={
           <span title={props.isEditable ? "双击编辑" : ""}>
-            {formatCellDisplay(props.value)}
+            {formatCellDisplay(getValue())}
           </span>
         }
       >
@@ -114,7 +116,7 @@ export default function EditableCell(props: EditableCellProps) {
             "font-family": "inherit",
             "box-sizing": "border-box",
             outline: "none",
-            "text-align": align,
+            "text-align": getAlign(),
             margin: "-4px -6px",  // 抵消 padding 差异，保持宽度不变
             "min-width": "calc(100% + 12px)"
           }}
