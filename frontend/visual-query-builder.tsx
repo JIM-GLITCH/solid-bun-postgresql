@@ -1,6 +1,5 @@
 import { createSignal, For, Show, onMount, onCleanup, createEffect, createMemo } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { getSessionId } from "./session";
 import { parseSqlToVisualDescriptor } from "./sql-to-visual";
 import { getSchemas, getTables, getColumns, getForeignKeys } from "./api";
 
@@ -73,6 +72,7 @@ interface QueryState {
 }
 
 interface VisualQueryBuilderProps {
+  connectionId: string | null;
   onExecuteQuery?: (sql: string) => void;
   onClose?: () => void;
   /** 打开时用该 SQL 生成可视化图（从 SQL 生成图） */
@@ -151,15 +151,16 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
 
   // 加载可用的表
   async function loadAvailableTables() {
+    const cid = props.connectionId;
+    if (!cid) return;
     setLoadingTables(true);
     try {
-      const sessionId = getSessionId();
-      const schemasData = await getSchemas(sessionId);
+      const schemasData = await getSchemas(cid);
 
       if (schemasData.schemas) {
         const schemaList: { schema: string; tables: string[] }[] = [];
         for (const schema of schemasData.schemas) {
-          const tablesData = await getTables(sessionId, schema);
+          const tablesData = await getTables(cid, schema);
           schemaList.push({
             schema,
             tables: [...(tablesData.tables || []), ...(tablesData.views || [])],
@@ -181,9 +182,11 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
       return tableColumns[key];
     }
 
+    const cid = props.connectionId;
+    if (!cid) return [];
+
     try {
-      const sessionId = getSessionId();
-      const data = await getColumns(sessionId, schema, table);
+      const data = await getColumns(cid, schema, table);
 
       const columns: TableColumn[] = (data.columns || []).map((col: any) => ({
         name: col.column_name,
@@ -207,9 +210,11 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
       return tableForeignKeys[key];
     }
 
+    const cid = props.connectionId;
+    if (!cid) return { outgoing: [], incoming: [] };
+
     try {
-      const sessionId = getSessionId();
-      const data = await getForeignKeys(sessionId, schema, table);
+      const data = await getForeignKeys(cid, schema, table);
 
       const fkInfo = {
         outgoing: data.outgoing || [],
@@ -362,8 +367,8 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     applyParsedDescriptor(descriptor);
   }
 
-  onMount(() => {
-    loadAvailableTables();
+  createEffect(() => {
+    if (props.connectionId) loadAvailableTables();
   });
 
   // 当传入 initialSql 时，首次挂载后解析并应用（仅执行一次）

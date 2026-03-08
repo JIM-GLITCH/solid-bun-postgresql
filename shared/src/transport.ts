@@ -8,6 +8,7 @@ import type { PostgresLoginParams, SSEMessage, ConnectPostgresRequest } from "./
 /** API 方法名 */
 export type ApiMethod =
   | "connect-postgres"
+  | "disconnect-postgres"
   | "postgres/query"
   | "postgres/query-stream"
   | "postgres/query-stream-more"
@@ -20,20 +21,21 @@ export type ApiMethod =
   | "postgres/indexes"
   | "postgres/foreign-keys";
 
-/** 请求载荷（不含 sessionId，由调用方注入） */
+/** 请求载荷 */
 export type ApiRequestPayload = {
   "connect-postgres": ConnectPostgresRequest;
-  "postgres/query": { query: string };
-  "postgres/query-stream": { query: string; batchSize?: number };
-  "postgres/query-stream-more": { batchSize?: number };
-  "postgres/save-changes": { sql: string };
-  "postgres/cancel-query": {};
-  "postgres/query-readonly": { query: string; limit?: number };
-  "postgres/schemas": {};
-  "postgres/tables": { schema: string };
-  "postgres/columns": { schema: string; table: string };
-  "postgres/indexes": { schema: string; table: string };
-  "postgres/foreign-keys": { schema: string; table: string };
+  "disconnect-postgres": { connectionId: string };
+  "postgres/query": { query: string; connectionId: string };
+  "postgres/query-stream": { query: string; batchSize?: number; connectionId: string };
+  "postgres/query-stream-more": { batchSize?: number; connectionId: string };
+  "postgres/save-changes": { sql: string; connectionId: string };
+  "postgres/cancel-query": { connectionId: string };
+  "postgres/query-readonly": { query: string; limit?: number; connectionId: string };
+  "postgres/schemas": { connectionId: string };
+  "postgres/tables": { schema: string; connectionId: string };
+  "postgres/columns": { schema: string; table: string; connectionId: string };
+  "postgres/indexes": { schema: string; table: string; connectionId: string };
+  "postgres/foreign-keys": { schema: string; table: string; connectionId: string };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */
@@ -41,9 +43,9 @@ export interface IApiTransport {
   /** 发送 RPC 请求 */
   request<M extends ApiMethod>(
     method: M,
-    payload: ApiRequestPayload[M] & { sessionId: string }
+    payload: ApiRequestPayload[M]
   ): Promise<unknown>;
 
   /** 订阅服务端推送（数据库 NOTICE/ERROR 等） */
-  subscribeEvents(sessionId: string, callback: (msg: SSEMessage) => void): () => void;
+  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void;
 }

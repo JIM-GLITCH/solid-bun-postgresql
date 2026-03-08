@@ -8,8 +8,11 @@ export interface PostgresLoginParams {
   password: string;
 }
 
-/** 连接请求：与 PostgresLoginParams 一致，包含明文密码 */
-export type ConnectPostgresRequest = PostgresLoginParams;
+/** 连接请求：包含 connectionId 和连接参数 */
+export interface ConnectPostgresRequest extends PostgresLoginParams {
+  /** 连接唯一 ID，前端生成，用于区分多个连接 */
+  connectionId: string;
+}
 
 export interface SSEMessage {
   type: "NOTICE" | "ERROR" | "INFO" | "WARNING" | "QUERY" | "NOTIFICATION";

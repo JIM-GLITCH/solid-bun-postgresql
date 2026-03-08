@@ -1,46 +1,20 @@
 import { createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
 import { createStore } from "solid-js/store";
+import type { Accessor } from "solid-js";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
-import { getSessionId } from "./session";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
-import Sidebar from "./sidebar";
 import VisualQueryBuilder from "./visual-query-builder";
 
-function SidebarPanel(props: { onQueryRequest: (sql: string) => void }) {
-  const panel = Resizable.usePanelContext();
-  return (
-    <Show
-      when={!panel.collapsed()}
-      fallback={
-        <button
-          onClick={() => panel.expand()}
-          title="展开侧边栏"
-          style={{
-            width: "100%",
-            padding: "8px",
-            border: "none",
-            background: "none",
-            color: "#6e7681",
-            cursor: "pointer",
-            "font-size": "14px",
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
-          onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
-        >
-          »
-        </button>
-      }
-    >
-      <Sidebar
-        onQueryRequest={props.onQueryRequest}
-        onCollapse={() => panel.collapse()}
-      />
-    </Show>
-  );
+interface QueryInterfaceProps {
+  /** 当前活跃的连接 ID，用于执行查询 */
+  activeConnectionId: Accessor<string | null>;
+  /** 外部触发的查询（如侧边栏点击表），处理后应清空 */
+  externalQuery?: Accessor<{ connectionId: string; sql: string } | null>;
+  onExternalQueryHandled?: () => void;
 }
 
 // 待执行的 UPDATE 语句
@@ -51,7 +25,7 @@ interface PendingUpdate {
   oldValue: any;  // 原始值，用于还原
 }
 
-export default function QueryInterface() {
+export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -110,26 +84,39 @@ export default function QueryInterface() {
     onCleanup(() => ro.disconnect());
   });
 
-  // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
+  // 响应外部查询请求（如侧边栏点击表）
+  createEffect(() => {
+    const ext = props.externalQuery?.();
+    if (ext) {
+      handleQueryRequest(ext.connectionId, ext.sql);
+      props.onExternalQueryHandled?.();
+    }
+  });
+
   onMount(() => {
     const onResize = () => {
       const el = tableContainerRef();
       if (el) setContainerHeight(Math.max(el.clientHeight, 200));
     };
-    window.addEventListener('resize', onResize);
-    onCleanup(() => window.removeEventListener('resize', onResize));
+    window.addEventListener("resize", onResize);
+    onCleanup(() => window.removeEventListener("resize", onResize));
+  });
 
-    const sessionId = getSessionId();
-    setSseConnected(true); // HttpTransport 使用 EventSource，连接建立即视为就绪
-    const unsubscribe = subscribeEvents(sessionId, (message) => {
-      console.log('收到消息:', message);
+  // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
+  createEffect(() => {
+    const cid = props.activeConnectionId?.();
+    if (!cid) {
+      setSseConnected(false);
+      return;
+    }
+    setSseConnected(true);
+    const unsubscribe = subscribeEvents(cid, (message) => {
       setNotices(prev => [...prev.slice(-49), message]);
     });
-
-    onCleanup(() => {
+    return () => {
       unsubscribe();
       setSseConnected(false);
-    });
+    };
   });
 
   // 清除所有通知
@@ -213,6 +200,8 @@ export default function QueryInterface() {
   }
 
   async function runUserQuery() {
+    const cid = props.activeConnectionId?.();
+    if (!cid) return;
     setLoading(true);
     setError(null);
     setResult([]);  // 清空 store
@@ -222,8 +211,7 @@ export default function QueryInterface() {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      const sessionId = getSessionId();
-      const data = await queryStream(sessionId, sql(), 100);
+      const data = await queryStream(cid, sql(), 100);
 
       if (data.error) {
         throw new Error(data.error);
@@ -256,11 +244,12 @@ export default function QueryInterface() {
   // 加载更多数据
   async function loadMore() {
     if (loadingMore() || !hasMore()) return;
+    const cid = props.activeConnectionId?.();
+    if (!cid) return;
 
     setLoadingMore(true);
     try {
-      const sessionId = getSessionId();
-      const data = await queryStreamMore(sessionId, 100);
+      const data = await queryStreamMore(cid, 100);
 
       if (data.error) {
         throw new Error(data.error);
@@ -300,9 +289,10 @@ export default function QueryInterface() {
 
   // 取消正在执行的查询
   async function doCancelQuery() {
+    const cid = props.activeConnectionId?.();
+    if (!cid) return;
     try {
-      const sessionId = getSessionId();
-      const { success, message, error: err } = await cancelQuery(sessionId);
+      const { success, message, error: err } = await cancelQuery(cid);
       if (success) {
         console.log("查询取消:", message);
       } else {
@@ -371,14 +361,15 @@ export default function QueryInterface() {
   // 执行所有待保存的 UPDATE（使用 adminClient）
   async function saveAllChanges() {
     if (pendingUpdates().length === 0) return;
+    const cid = props.activeConnectionId?.();
+    if (!cid) return;
 
     setSaving(true);
     setError(null);
 
     try {
-      const sessionId = getSessionId();
       for (const update of pendingUpdates()) {
-        const res = await saveChanges(sessionId, update.sql);
+        const res = await saveChanges(cid, update.sql);
         if (!res.success && res.error) {
           throw new Error(res.error || `执行失败: ${update.sql}`);
         }
@@ -400,12 +391,12 @@ export default function QueryInterface() {
 
   function renderResult() {
     if (loading()) {
-      return (<div style={{ padding: "16px", "text-align": "center" }}>
+      return (<div style={{ padding: "16px", "text-align": "center", color: "#94a3b8" }}>
         查询中...
       </div>);
     }
     if (error()) {
-      return (<div style={{ color: "red", padding: "16px" }}>
+      return (<div style={{ color: "#f87171", padding: "16px" }}>
         {error()}
       </div>);
     }
@@ -413,7 +404,7 @@ export default function QueryInterface() {
       <div style={{ display: "flex", "flex-direction": "column", height: "100%" }}>
         <div style={{
           "margin-bottom": "12px",
-          color: "#6b7280",
+          color: "#94a3b8",
           "font-size": "14px",
           display: "flex",
           "justify-content": "space-between",
@@ -439,7 +430,7 @@ export default function QueryInterface() {
             </Show>
           </span>
           <div style={{ display: "flex", "align-items": "center", gap: "12px" }}>
-            <span style={{ color: pendingUpdates().length > 0 ? "#f59e0b" : "#9ca3af" }}>
+            <span style={{ color: pendingUpdates().length > 0 ? "#fbbf24" : "#64748b" }}>
               {pendingUpdates().length} 个待保存的修改
             </span>
             <button
@@ -546,8 +537,8 @@ export default function QueryInterface() {
             flex: 1,
             overflow: "auto",
             position: "relative",
-            border: "1px solid #d1d5db",
-            "background-color": "#fff"
+            border: "1px solid #334155",
+            "background-color": "#0f172a"
           }}
         >
           {/* 撑开滚动条的占位层 */}
@@ -573,7 +564,7 @@ export default function QueryInterface() {
                   )}
                 </For>
               </colgroup>
-              <thead style={{ position: "sticky", top: 0, "z-index": 20, "background-color": "#f3f4f6" }}>
+              <thead style={{ position: "sticky", top: 0, "z-index": 20, "background-color": "#1e293b" }}>
                 <tr>
                   <For each={columns()}>
                     {(col, colIndex) => (
@@ -583,7 +574,8 @@ export default function QueryInterface() {
                           padding: "8px 12px",
                           "text-align": "center",
                           "font-weight": "600",
-                          border: "1px solid #d1d5db",
+                          border: "1px solid #334155",
+                          color: "#e2e8f0",
                           position: "relative",
                           "user-select": "none",
                           "min-height": `${ROW_HEIGHT}px`,
@@ -593,7 +585,7 @@ export default function QueryInterface() {
                         <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
                           <span>{col.name}</span>
                           {getDataTypeName(col.dataTypeOid) && (
-                            <span style={{ "font-size": "11px", color: "#6b7280", "font-weight": "400" }}>
+                            <span style={{ "font-size": "11px", color: "#64748b", "font-weight": "400" }}>
                               {getDataTypeName(col.dataTypeOid)}
                             </span>
                           )}
@@ -681,7 +673,7 @@ export default function QueryInterface() {
   }
 
   // 处理从 Sidebar 发来的查询请求（使用只读 API，不阻塞用户操作）
-  async function handleQueryRequest(querySql: string) {
+  async function handleQueryRequest(connectionId: string, querySql: string) {
     setSql(querySql);
     setLoading(true);
     setError(null);
@@ -693,8 +685,7 @@ export default function QueryInterface() {
     
     const startTime = performance.now();
     try {
-      const sessionId = getSessionId();
-      const data = await queryReadonly(sessionId, querySql, 1000);
+      const data = await queryReadonly(connectionId, querySql, 1000);
       if (data.error) {
         throw new Error(data.error);
       }
@@ -717,64 +708,49 @@ export default function QueryInterface() {
   }
 
   return (
-    <Resizable
-      initialSizes={[0.18, 0.82]}
+    <div
       style={{
-        display: "flex",
-        height: "100vh",
+        width: "100%",
+        height: "100%",
         overflow: "hidden",
-        "background-color": "#f0f2f5",
+        display: "flex",
+        "flex-direction": "column",
+        "background-color": "#0f172a",
       }}
     >
-      <Resizable.Panel
-        minSize={0.08}
-        collapsible
-        collapsedSize={0.02}
-        style={{
-          overflow: "hidden",
-          "background-color": "#0d1117",
-          "border-right": "1px solid #21262d",
-        }}
-      >
-        <SidebarPanel onQueryRequest={handleQueryRequest} />
-      </Resizable.Panel>
-      <Resizable.Handle
-        aria-label="调整侧边栏宽度"
-        style={{
-          width: "6px",
-          "flex-shrink": 0,
-          "background-color": "transparent",
-        }}
-      />
-      <Resizable.Panel
-        minSize={0.3}
-        style={{
-          overflow: "hidden",
-          display: "flex",
-          "flex-direction": "column",
-          padding: "20px",
-          "box-sizing": "border-box",
-        }}
-      >
-        {/* SQL 输入部分 - Monaco Editor */}
-        <div style={{ "flex-shrink": "0", "margin-bottom": "16px", display: "flex", "flex-direction": "column" }}>
-          <div style={{
-            height: "140px",
-            "min-height": "120px",
-            "border-radius": "8px",
+        {/* CloudBeaver 风格：SQL 与结果上下可调整 */}
+        <Resizable
+          orientation="vertical"
+          initialSizes={[0.35, 0.65]}
+          style={{
+            display: "flex",
+            "flex-direction": "column",
+            height: "100%",
             overflow: "hidden",
-            border: "1px solid #334155",
-            "background-color": "#1e293b",
-            "box-shadow": "0 1px 3px rgba(0,0,0,0.12)",
-          }}>
-            <SqlEditor
-              value={sql()}
-              onChange={setSql}
-              onRun={runUserQuery}
-              style={{ height: "100%" }}
-            />
-          </div>
-          <div style={{ display: "flex", gap: "8px", "align-items": "center", "margin-top": "8px" }}>
+          }}
+        >
+          {/* SQL 脚本面板 */}
+          <Resizable.Panel
+            minSize={0.15}
+            collapsible
+            collapsedSize={0.05}
+            style={{
+              overflow: "hidden",
+              display: "flex",
+              "flex-direction": "column",
+              "background-color": "#1e293b",
+              "border-bottom": "1px solid #334155",
+            }}
+          >
+            <div style={{
+              "flex-shrink": 0,
+              padding: "8px 12px",
+              display: "flex",
+              gap: "8px",
+              "align-items": "center",
+              "background-color": "#1e293b",
+              "border-bottom": "1px solid #334155",
+            }}>
             <button
               onClick={runUserQuery}
               disabled={loading() || sql().trim().length === 0}
@@ -836,16 +812,162 @@ export default function QueryInterface() {
             </button>
             <span style={{ 
               "margin-left": "auto", 
-              color: "#6b7280", 
+              color: "#94a3b8", 
               "font-size": "12px",
               "font-family": "'JetBrains Mono', monospace" 
             }}>
               Ctrl+Enter 执行
             </span>
-          </div>
-        </div>
+            </div>
+            <div style={{ flex: 1, "min-height": "80px", overflow: "hidden" }}>
+              <SqlEditor
+                value={sql()}
+                onChange={setSql}
+                onRun={runUserQuery}
+                style={{ height: "100%" }}
+              />
+            </div>
+          </Resizable.Panel>
+          <Resizable.Handle
+            aria-label="调整 SQL 与结果区域"
+            style={{
+              height: "5px",
+              "flex-shrink": 0,
+              "background-color": "transparent",
+            }}
+          />
+          {/* 结果面板 */}
+          <Resizable.Panel
+            minSize={0.2}
+            style={{
+              overflow: "hidden",
+              display: "flex",
+              "flex-direction": "column",
+              "background-color": "#0f172a",
+              padding: "16px",
+              "box-sizing": "border-box",
+            }}
+          >
+            <div style={{ 
+              flex: 1, 
+              "min-height": 0,
+              "background-color": "#1e293b", 
+              padding: "16px", 
+              "border-radius": "8px", 
+              overflow: "hidden", 
+              display: "flex", 
+              "flex-direction": "column",
+              border: "1px solid #334155",
+            }}>
+              {renderResult()}
+            </div>
 
-        {/* Visual Query Builder */}
+            {/* 数据库通知消息 - 底部可折叠 */}
+            <div style={{
+              "margin-top": "12px",
+              "background-color": "#1e293b",
+              "border-radius": "6px",
+              padding: "10px",
+              "flex-shrink": "0",
+              border: "1px solid #334155",
+            }}>
+              <div style={{
+                display: "flex",
+                "justify-content": "space-between",
+                "align-items": "center",
+                cursor: "pointer",
+                "user-select": "none"
+              }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
+                <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+                  <span style={{
+                    color: "#94a3b8",
+                    "font-size": "11px",
+                    transition: "transform 0.2s",
+                    transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
+                  }}>▼</span>
+                  <span style={{ color: "#94a3b8", "font-size": "12px", "font-weight": "600" }}>
+                    数据库消息
+                  </span>
+                  <span style={{
+                    width: "6px",
+                    height: "6px",
+                    "border-radius": "50%",
+                    "background-color": sseConnected() ? "#22c55e" : "#ef4444"
+                  }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
+                  <Show when={notices().length > 0}>
+                    <span style={{
+                      color: "#64748b",
+                      "font-size": "11px",
+                      "background-color": "#475569",
+                      padding: "1px 6px",
+                      "border-radius": "10px"
+                    }}>
+                      {notices().length}
+                    </span>
+                  </Show>
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); clearNotices(); }}
+                  style={{
+                    padding: "2px 8px",
+                    "font-size": "11px",
+                    "background-color": "#475569",
+                    color: "#e2e8f0",
+                    border: "none",
+                    "border-radius": "4px",
+                    cursor: "pointer"
+                  }}
+                >
+                  清除
+                </button>
+              </div>
+
+              <Show when={!messagesCollapsed()}>
+                <div style={{
+                  "margin-top": "8px",
+                  "max-height": "120px",
+                  "overflow-y": "auto"
+                }}>
+                  <Show when={notices().length === 0}>
+                    <div style={{ color: "#64748b", "font-size": "12px" }}>暂无消息</div>
+                  </Show>
+                  <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
+                    <For each={notices()}>
+                      {(notice) => {
+                        const typeColors: Record<SSEMessage['type'], { bg: string; label: string; text: string }> = {
+                          ERROR: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
+                          WARNING: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
+                          NOTICE: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
+                          INFO: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
+                          QUERY: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
+                          NOTIFICATION: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
+                        };
+                        const colors = typeColors[notice.type] || typeColors.INFO;
+                        return (
+                          <div style={{
+                            "font-family": "monospace",
+                            "font-size": "12px",
+                            "padding": "4px 8px",
+                            "background-color": colors.bg,
+                            "border-radius": "4px",
+                          }}>
+                            <span style={{ color: "#64748b", "flex-shrink": "0" }}>
+                              {new Date(notice.timestamp).toLocaleTimeString()}
+                            </span>
+                            <span style={{ color: colors.label, "font-weight": "500" }}>[{notice.type}]</span>
+                            <span style={{ color: colors.text }}>{notice.message}</span>
+                          </div>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </div>
+              </Show>
+            </div>
+          </Resizable.Panel>
+        </Resizable>
+
+        {/* Visual Query Builder 弹窗 */}
         <Show when={showQueryBuilder()}>
           <div style={{
             position: "fixed",
@@ -870,6 +992,7 @@ export default function QueryInterface() {
               "box-shadow": "0 25px 50px -12px rgba(0, 0, 0, 0.5)",
             }}>
               <VisualQueryBuilder 
+                connectionId={props.activeConnectionId?.() ?? null}
                 initialSql={sql().trim() || undefined}
                 onExecuteQuery={(generatedSql) => {
                   setSql(generatedSql);
@@ -881,142 +1004,6 @@ export default function QueryInterface() {
             </div>
           </div>
         </Show>
-
-        {/* 结果显示部分 */}
-        <div style={{ 
-          flex: 1, 
-          "min-height": "200px", 
-          "background-color": "#fff", 
-          padding: "16px", 
-          "border-radius": "8px", 
-          overflow: "hidden", 
-          display: "flex", 
-          "flex-direction": "column",
-          "box-shadow": "0 1px 3px rgba(0,0,0,0.1)"
-        }}>
-          {renderResult()}
-        </div>
-
-        {/* 数据库通知消息区域 - 可折叠，固定高度不挤压上方内容 */}
-        <div style={{
-          "margin-top": "16px",
-          "background-color": "#1e293b",
-          "border-radius": "8px",
-          padding: "12px",
-          "flex-shrink": "0"
-        }}>
-          {/* 标题栏 - 固定不滚动 */}
-          <div style={{
-            display: "flex",
-            "justify-content": "space-between",
-            "align-items": "center",
-            cursor: "pointer",
-            "user-select": "none"
-          }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
-            <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
-              <span style={{
-                color: "#94a3b8",
-                "font-size": "12px",
-                transition: "transform 0.2s",
-                transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
-              }}>▼</span>
-              <span style={{ color: "#94a3b8", "font-size": "13px", "font-weight": "600" }}>
-                数据库消息
-              </span>
-              <span style={{
-                width: "8px",
-                height: "8px",
-                "border-radius": "50%",
-                "background-color": sseConnected() ? "#22c55e" : "#ef4444"
-              }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
-              <Show when={notices().length > 0}>
-                <span style={{
-                  color: "#64748b",
-                  "font-size": "12px",
-                  "background-color": "#475569",
-                  padding: "1px 6px",
-                  "border-radius": "10px"
-                }}>
-                  {notices().length}
-                </span>
-              </Show>
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); clearNotices(); }}
-              style={{
-                padding: "2px 8px",
-                "font-size": "12px",
-                "background-color": "#475569",
-                color: "#e2e8f0",
-                border: "none",
-                "border-radius": "4px",
-                cursor: "pointer"
-              }}
-            >
-              清除
-            </button>
-          </div>
-
-          {/* 消息列表 - 可折叠、可滚动 */}
-          <Show when={!messagesCollapsed()}>
-            <div style={{
-              "margin-top": "8px",
-              "max-height": "180px",
-              "overflow-y": "auto"
-            }}>
-              <Show when={notices().length === 0}>
-                <div style={{ color: "#64748b", "font-size": "13px" }}>暂无消息</div>
-              </Show>
-              <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
-                <For each={notices()}>
-                  {(notice) => {
-                    // 根据消息类型设置颜色
-                    const typeColors: Record<SSEMessage['type'], { bg: string; label: string; text: string }> = {
-                      ERROR: { bg: '#4c1d1d', label: '#fca5a5', text: '#fecaca' },
-                      WARNING: { bg: '#422006', label: '#fbbf24', text: '#fde68a' },
-                      NOTICE: { bg: '#1e3a5f', label: '#60a5fa', text: '#93c5fd' },
-                      INFO: { bg: '#334155', label: '#94a3b8', text: '#cbd5e1' },
-                      QUERY: { bg: '#1e3a3a', label: '#2dd4bf', text: '#99f6e4' },
-                      NOTIFICATION: { bg: '#3b1d4a', label: '#c084fc', text: '#d8b4fe' },
-                    };
-                    const colors = typeColors[notice.type] || typeColors.INFO;
-
-                    return (
-                      <div style={{
-                        "font-family": "monospace",
-                        "font-size": "13px",
-                        "padding": "4px 8px",
-                        "background-color": colors.bg,
-                        "border-radius": "4px",
-                        display: "flex",
-                        gap: "8px",
-                        "flex-wrap": "wrap"
-                      }}>
-                        <span style={{ color: "#64748b", "flex-shrink": "0" }}>
-                          {new Date(notice.timestamp).toLocaleTimeString()}
-                        </span>
-                        <span style={{
-                          color: colors.label,
-                          "font-weight": "500",
-                          "flex-shrink": "0"
-                        }}>
-                          [{notice.type}]
-                        </span>
-                        <span style={{ color: colors.text }}>{notice.message}</span>
-                        {notice.detail && (
-                          <span style={{ color: "#9ca3af", "font-size": "12px", width: "100%", "padding-left": "70px" }}>
-                            ↳ {notice.detail}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  }}
-                </For>
-              </div>
-            </div>
-          </Show>
-        </div>
-      </Resizable.Panel>
-    </Resizable>
+    </div>
   );
 }

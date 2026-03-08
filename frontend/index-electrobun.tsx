@@ -7,9 +7,6 @@ import { setTransport } from "./transport";
 import { ElectrobunTransport, handleBackendEvent } from "./transport/electrobun-transport";
 import { render } from "solid-js/web";
 import App from "./app";
-import { Route, HashRouter } from "@solidjs/router";
-import Postgres from "./postgres";
-import QueryInterface from "./query-interface";
 
 const rpc = Electroview.defineRPC<AppRPCType>({
   handlers: {
@@ -27,14 +24,5 @@ setTransport(new ElectrobunTransport());
 
 const root = document.getElementById("root");
 if (root) {
-  render(
-    () => (
-      <HashRouter>
-        <Route path="/" component={App} />
-        <Route path="/postgres" component={Postgres} />
-        <Route path="/postgres/query-interface" component={QueryInterface} />
-      </HashRouter>
-    ),
-    root
-  );
+  render(() => <App />, root);
 }

@@ -28,71 +28,77 @@ export interface SessionConnection {
   };
 }
 
-const sessionMap = new Map<string, SessionConnection>();
+/** 以 connectionId 为 key 存储多个连接 */
+const connectionMap = new Map<string, SessionConnection>();
 
-export function sendSSEMessage(sessionId: string, message: SSEMessage) {
-  const session = sessionMap.get(sessionId);
-  if (!session) return;
+export function sendSSEMessage(connectionId: string, message: SSEMessage) {
+  const conn = connectionMap.get(connectionId);
+  if (!conn) return;
 
-  for (const push of session.eventPushers) {
+  for (const push of conn.eventPushers) {
     try {
       push(message);
     } catch (e) {
-      session.eventPushers.delete(push);
+      conn.eventPushers.delete(push);
     }
   }
 }
 
-export function getSession(sessionId: string): SessionConnection | undefined {
-  return sessionMap.get(sessionId);
+export function getSession(connectionId: string): SessionConnection | undefined {
+  return connectionMap.get(connectionId);
 }
 
-/** 订阅 session 的事件推送，返回取消订阅函数 */
+/** 订阅连接的事件推送，返回取消订阅函数 */
 export function subscribeSessionEvents(
-  sessionId: string,
+  connectionId: string,
   push: (msg: SSEMessage) => void
 ): () => void {
-  const session = sessionMap.get(sessionId);
-  if (!session) throw new Error("未找到数据库连接，请先连接数据库");
+  const conn = connectionMap.get(connectionId);
+  if (!conn) throw new Error("未找到数据库连接，请先连接数据库");
 
-  session.eventPushers.add(push);
-  return () => session.eventPushers.delete(push);
+  conn.eventPushers.add(push);
+  return () => conn.eventPushers.delete(push);
 }
 
 /** 处理 API 请求，返回纯数据（可 JSON 序列化） */
 export async function handleApiRequest<M extends ApiMethod>(
   method: M,
-  payload: ApiRequestPayload[M] & { sessionId: string }
+  payload: ApiRequestPayload[M]
 ): Promise<unknown> {
-  const { sessionId } = payload;
-  const getS = () => {
-    const s = getSession(sessionId);
+  const getConnId = (): string => {
+    const p = payload as { connectionId?: string };
+    if (!p.connectionId) throw new Error("缺少 connectionId");
+    return p.connectionId;
+  };
+  const getS = (cid: string) => {
+    const s = getSession(cid);
     if (!s) throw new Error("未找到数据库连接，请先连接数据库");
     return s;
   };
 
   switch (method) {
     case "connect-postgres": {
-      const params = payload as ConnectPostgresRequest & { sessionId: string };
-      const { sessionId: sid, ...connectParams } = params;
+      const params = payload as ConnectPostgresRequest;
+      const { connectionId: cid, ...connectParams } = params;
       const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
 
-      const existingSession = sessionMap.get(sid);
-      if (existingSession) {
-        await existingSession.userUsedClient.end().catch(() => {});
-        await existingSession.backGroundPool.end().catch(() => {});
-        sessionMap.delete(sid);
+      // 若已存在同 ID 连接，先断开
+      const existing = connectionMap.get(cid);
+      if (existing) {
+        await existing.userUsedClient.end().catch(() => {});
+        await existing.backGroundPool.end().catch(() => {});
+        connectionMap.delete(cid);
       }
 
       const client = await connectPostgres(loginParams);
       const adminPool = createPostgresPool(loginParams);
 
       client.on("error", (err) => {
-        sendSSEMessage(sid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
+        sendSSEMessage(cid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
       });
       client.on("notice", (msg: any) => {
         const severity = (msg.severity || "NOTICE").toUpperCase();
-        sendSSEMessage(sid, {
+        sendSSEMessage(cid, {
           type: severity as SSEMessage["type"],
           message: msg.message || String(msg),
           timestamp: Date.now(),
@@ -100,23 +106,35 @@ export async function handleApiRequest<M extends ApiMethod>(
         });
       });
       client.on("notification", (msg: any) => {
-        sendSSEMessage(sid, {
+        sendSSEMessage(cid, {
           type: "NOTIFICATION",
           message: `[${msg.channel}] ${msg.payload || "(无内容)"}`,
           timestamp: Date.now(),
         });
       });
       client.on("end", () => {
-        sendSSEMessage(sid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
+        sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
       });
 
-      sessionMap.set(sid, { userUsedClient: client, backGroundPool: adminPool, eventPushers: new Set() });
-      return { sucess: true };
+      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, eventPushers: new Set() });
+      return { sucess: true, connectionId: cid };
+    }
+
+    case "disconnect-postgres": {
+      const { connectionId: cid } = payload as { connectionId: string };
+      const conn = connectionMap.get(cid);
+      if (conn) {
+        await conn.userUsedClient.end().catch(() => {});
+        await conn.backGroundPool.end().catch(() => {});
+        connectionMap.delete(cid);
+      }
+      return { success: true };
     }
 
     case "postgres/query-stream": {
-      const { query, batchSize = 100 } = payload as { sessionId: string; query: string; batchSize?: number };
-      const session = getS();
+      const cid = getConnId();
+      const { query, batchSize = 100 } = payload as { connectionId: string; query: string; batchSize?: number };
+      const session = getS(cid);
       const { userUsedClient: client, backGroundPool: adminPool } = session;
 
       if (session.cursor) {
@@ -148,8 +166,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/query-stream-more": {
-      const { batchSize = 100 } = payload as { sessionId: string; batchSize?: number };
-      const session = getS();
+      const cid = getConnId();
+      const { batchSize = 100 } = payload as { connectionId: string; batchSize?: number };
+      const session = getS(cid);
 
       if (!session.cursor || session.cursor.isDone) return { rows: [], hasMore: false };
 
@@ -171,10 +190,11 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/save-changes": {
-      const { sql } = payload as { sessionId: string; sql: string };
-      const session = getS();
+      const cid = getConnId();
+      const { sql } = payload as { connectionId: string; sql: string };
+      const session = getS(cid);
       const result = await session.backGroundPool.query(sql);
-      sendSSEMessage(sessionId, {
+      sendSSEMessage(cid, {
         type: "INFO",
         message: `保存成功: ${result.rowCount ?? 0} 行受影响`,
         timestamp: Date.now(),
@@ -183,7 +203,8 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/cancel-query": {
-      const session = getS();
+      const cid = getConnId();
+      const session = getS(cid);
       const pid = session.runningQueryPid;
       if (!pid) throw new Error("没有正在执行的查询");
       const result = await session.backGroundPool.query(`SELECT pg_cancel_backend($1)`, [pid]);
@@ -192,8 +213,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/query-readonly": {
-      const { query, limit = 1000 } = payload as { sessionId: string; query: string; limit?: number };
-      const session = getS();
+      const cid = getConnId();
+      const { query, limit = 1000 } = payload as { connectionId: string; query: string; limit?: number };
+      const session = getS(cid);
       const limitedQuery = query.trim().toLowerCase().includes("limit") ? query : `${query} LIMIT ${limit}`;
       const result = await session.backGroundPool.query({ text: limitedQuery, rowMode: "array" });
       const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
@@ -201,7 +223,8 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/schemas": {
-      const session = getS();
+      const cid = getConnId();
+      const session = getS(cid);
       const result = await session.backGroundPool.query(
         `SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema' ORDER BY schema_name`
       );
@@ -209,8 +232,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/tables": {
-      const { schema } = payload as { sessionId: string; schema: string };
-      const session = getS();
+      const cid = getConnId();
+      const { schema } = payload as { connectionId: string; schema: string };
+      const session = getS(cid);
       const result = await session.backGroundPool.query(
         `SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_type, table_name`,
         [schema]
@@ -222,8 +246,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/columns": {
-      const { schema, table } = payload as { sessionId: string; schema: string; table: string };
-      const session = getS();
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
       const result = await session.backGroundPool.query(
         `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
          FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
@@ -233,8 +258,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/indexes": {
-      const { schema, table } = payload as { sessionId: string; schema: string; table: string };
-      const session = getS();
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
       const result = await session.backGroundPool.query(
         `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2 ORDER BY indexname`,
         [schema, table]
@@ -243,8 +269,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/foreign-keys": {
-      const { schema, table } = payload as { sessionId: string; schema: string; table: string };
-      const session = getS();
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
       const outgoingResult = await session.backGroundPool.query(
         `SELECT tc.constraint_name, tc.table_schema AS source_schema, tc.table_name AS source_table,
          kcu.column_name AS source_column, ccu.table_schema AS target_schema, ccu.table_name AS target_table, ccu.column_name AS target_column
@@ -267,17 +294,18 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/query": {
-      const { query } = payload as { sessionId: string; query: string };
-      const session = getS();
+      const cid = getConnId();
+      const { query } = payload as { connectionId: string; query: string };
+      const session = getS(cid);
       const client = session.userUsedClient;
 
       if ((client as any).processID) session.runningQueryPid = (client as any).processID;
 
       try {
-        sendSSEMessage(sessionId, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
+        sendSSEMessage(cid, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
         const result = await client.query({ text: query, rowMode: "array" });
         session.runningQueryPid = undefined;
-        sendSSEMessage(sessionId, {
+        sendSSEMessage(cid, {
           type: "INFO",
           message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`,
           timestamp: Date.now(),
@@ -286,7 +314,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         return { result: result.rows, columns: columnsInfo };
       } catch (e: any) {
         session.runningQueryPid = undefined;
-        sendSSEMessage(sessionId, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
+        sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
         throw e;
       }
     }

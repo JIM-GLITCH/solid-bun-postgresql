@@ -91,11 +91,12 @@ export default function EditableCell(props: EditableCellProps) {
         cursor: props.isEditable ? "pointer" : "default",
         padding: "8px 12px",
         "text-align": getAlign(),
-        "border": "1px solid #e5e7eb",
+        "border": "1px solid #334155",
         "white-space": "nowrap",
         overflow: "hidden",
         "text-overflow": "ellipsis",
-        "background-color": props.isModified ? "#fef3c7" : "transparent"  // 编辑过的单元格显示橙色背景
+        color: "#e2e8f0",
+        "background-color": props.isModified ? "#422006" : "transparent"  // 编辑过的单元格显示暗橙背景
       }}
     >
       <Show
@@ -138,8 +139,9 @@ export default function EditableCell(props: EditableCellProps) {
               left: `${pos().x}px`,
               top: `${pos().y}px`,
               "z-index": 10000,
-              background: "#fff",
-              border: "1px solid #e5e7eb",
+              background: "#1e293b",
+              border: "1px solid #334155",
+              color: "#e2e8f0",
               "border-radius": "4px",
               "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
               "min-width": "120px",
@@ -164,7 +166,7 @@ export default function EditableCell(props: EditableCellProps) {
                   cursor: "pointer",
                   "font-size": "inherit",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#334155")}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 撤销修改
@@ -188,7 +190,7 @@ export default function EditableCell(props: EditableCellProps) {
                   cursor: "pointer",
                   "font-size": "inherit",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#334155")}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 Set null

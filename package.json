@@ -48,7 +48,6 @@
   },
   "dependencies": {
     "@corvu/resizable": "^0.2.5",
-    "@solidjs/router": "^0.15.4",
     "@types/jsdom": "^27.0.0",
     "@types/pg": "^8.16.0",
     "bun-plugin-solid": "^1.0.0",

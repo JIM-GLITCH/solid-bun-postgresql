@@ -7,15 +7,20 @@ import type { PostgresLoginParams, ColumnEditableInfo, SSEMessage } from "../sha
 
 const api = () => getTransport();
 
-/** 连接数据库 */
-export async function connectPostgres(sessionId: string, params: PostgresLoginParams) {
-  const payload = { ...params, sessionId };
+/** 连接数据库，返回 connectionId */
+export async function connectPostgres(connectionId: string, params: PostgresLoginParams) {
+  const payload = { ...params, connectionId };
   return api().request("connect-postgres", payload) as Promise<{ sucess: boolean; error?: unknown }>;
 }
 
+/** 断开指定连接 */
+export async function disconnectPostgres(connectionId: string) {
+  return api().request("disconnect-postgres", { connectionId }) as Promise<{ success: boolean; error?: string }>;
+}
+
 /** 流式查询 - 第一批 */
-export async function queryStream(sessionId: string, query: string, batchSize = 100) {
-  return api().request("postgres/query-stream", { query, sessionId, batchSize }) as Promise<{
+export async function queryStream(connectionId: string, query: string, batchSize = 100) {
+  return api().request("postgres/query-stream", { query, connectionId, batchSize }) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;
@@ -24,8 +29,8 @@ export async function queryStream(sessionId: string, query: string, batchSize = 
 }
 
 /** 流式查询 - 加载更多 */
-export async function queryStreamMore(sessionId: string, batchSize = 100) {
-  return api().request("postgres/query-stream-more", { sessionId, batchSize }) as Promise<{
+export async function queryStreamMore(connectionId: string, batchSize = 100) {
+  return api().request("postgres/query-stream-more", { connectionId, batchSize }) as Promise<{
     rows: any[][];
     hasMore: boolean;
     error?: string;
@@ -33,18 +38,18 @@ export async function queryStreamMore(sessionId: string, batchSize = 100) {
 }
 
 /** 取消查询 */
-export async function cancelQuery(sessionId: string) {
-  return api().request("postgres/cancel-query", { sessionId }) as Promise<{ success: boolean; cancelled?: boolean; message?: string; error?: string }>;
+export async function cancelQuery(connectionId: string) {
+  return api().request("postgres/cancel-query", { connectionId }) as Promise<{ success: boolean; cancelled?: boolean; message?: string; error?: string }>;
 }
 
 /** 保存修改 */
-export async function saveChanges(sessionId: string, sql: string) {
-  return api().request("postgres/save-changes", { sql, sessionId }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
+export async function saveChanges(connectionId: string, sql: string) {
+  return api().request("postgres/save-changes", { sql, connectionId }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
 /** 只读查询（Sidebar 等） */
-export async function queryReadonly(sessionId: string, query: string, limit = 1000) {
-  return api().request("postgres/query-readonly", { sessionId, query, limit }) as Promise<{
+export async function queryReadonly(connectionId: string, query: string, limit = 1000) {
+  return api().request("postgres/query-readonly", { connectionId, query, limit }) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;
@@ -53,28 +58,28 @@ export async function queryReadonly(sessionId: string, query: string, limit = 10
 }
 
 /** 获取 schemas */
-export async function getSchemas(sessionId: string) {
-  return api().request("postgres/schemas", { sessionId }) as Promise<{ schemas: string[]; error?: string }>;
+export async function getSchemas(connectionId: string) {
+  return api().request("postgres/schemas", { connectionId }) as Promise<{ schemas: string[]; error?: string }>;
 }
 
 /** 获取表/视图 */
-export async function getTables(sessionId: string, schema: string) {
-  return api().request("postgres/tables", { sessionId, schema }) as Promise<{ tables: string[]; views: string[]; error?: string }>;
+export async function getTables(connectionId: string, schema: string) {
+  return api().request("postgres/tables", { connectionId, schema }) as Promise<{ tables: string[]; views: string[]; error?: string }>;
 }
 
 /** 获取列信息 */
-export async function getColumns(sessionId: string, schema: string, table: string) {
-  return api().request("postgres/columns", { sessionId, schema, table }) as Promise<{ columns: any[]; error?: string }>;
+export async function getColumns(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/columns", { connectionId, schema, table }) as Promise<{ columns: any[]; error?: string }>;
 }
 
 /** 获取索引 */
-export async function getIndexes(sessionId: string, schema: string, table: string) {
-  return api().request("postgres/indexes", { sessionId, schema, table }) as Promise<{ indexes: any[]; error?: string }>;
+export async function getIndexes(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/indexes", { connectionId, schema, table }) as Promise<{ indexes: any[]; error?: string }>;
 }
 
 /** 获取外键 */
-export async function getForeignKeys(sessionId: string, schema: string, table: string) {
-  return api().request("postgres/foreign-keys", { sessionId, schema, table }) as Promise<{
+export async function getForeignKeys(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/foreign-keys", { connectionId, schema, table }) as Promise<{
     outgoing: any[];
     incoming: any[];
     error?: string;
@@ -82,6 +87,6 @@ export async function getForeignKeys(sessionId: string, schema: string, table: s
 }
 
 /** 订阅服务端推送事件 */
-export function subscribeEvents(sessionId: string, callback: (msg: SSEMessage) => void): () => void {
-  return api().subscribeEvents(sessionId, callback);
+export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
+  return api().subscribeEvents(connectionId, callback);
 }

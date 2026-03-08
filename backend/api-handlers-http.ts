@@ -21,7 +21,7 @@ function postApi<M extends ApiMethod>(
   const { useSucess = false, status200 = false } = opts ?? {};
   return async (req: Request) => {
     try {
-      const data = (await req.json()) as ApiRequestPayload[M] & { sessionId: string };
+      const data = (await req.json()) as ApiRequestPayload[M];
       const result = await handleApiRequest(method, data);
       return Response.json(result);
     } catch (e: unknown) {
@@ -35,6 +35,7 @@ function postApi<M extends ApiMethod>(
 /** POST API 路由配置：path -> method，少数需特殊错误格式的单独标注 */
 const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean; status200?: boolean }> = [
   { path: "/api/connect-postgres", method: "connect-postgres", useSucess: true, status200: true },
+  { path: "/api/disconnect-postgres", method: "disconnect-postgres" },
   { path: "/api/postgres/query-stream", method: "postgres/query-stream" },
   { path: "/api/postgres/query-stream-more", method: "postgres/query-stream-more" },
   { path: "/api/postgres/save-changes", method: "postgres/save-changes" },
@@ -59,9 +60,9 @@ export function createApiRoutes(): Record<
     "/api/events": {
       GET: (req: unknown) => {
         const url = new URL((req as Request).url);
-        const sessionId = url.searchParams.get("sessionId");
-        if (!sessionId) return new Response("缺少 sessionId", { status: 400 });
-        const session = getSession(sessionId);
+        const connectionId = url.searchParams.get("connectionId");
+        if (!connectionId) return new Response("缺少 connectionId", { status: 400 });
+        const session = getSession(connectionId);
         if (!session) return new Response("未找到数据库连接，请先连接数据库", { status: 400 });
 
 
@@ -88,7 +89,7 @@ export function createApiRoutes(): Record<
             };
             sendHeartbeat();
             heartbeatInterval = setInterval(sendHeartbeat, 10000);
-            const unsubscribe = subscribeSessionEvents(sessionId, push);
+            const unsubscribe = subscribeSessionEvents(connectionId, push);
             cleanup = () => {
               clearInterval(heartbeatInterval);
               unsubscribe();

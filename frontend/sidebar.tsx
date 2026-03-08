@@ -1,7 +1,7 @@
-import { createSignal, For, Show, onMount } from "solid-js";
+import { createSignal, For, Show, createEffect } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { getSessionId } from "./session";
 import { getSchemas, getTables, getColumns, getIndexes } from "./api";
+import type { ConnectionInfo } from "./app";
 
 // 数据库对象类型
 type NodeType = "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
@@ -12,6 +12,7 @@ interface TreeNode {
   type: NodeType;
   schema?: string;
   table?: string;
+  connectionId?: string;
   children: TreeNode[];
   meta?: Record<string, any>;
 }
@@ -25,9 +26,13 @@ interface TreeState {
 }
 
 interface SidebarProps {
-  onTableSelect?: (schema: string, table: string) => void;
-  onQueryRequest?: (sql: string) => void;
+  connections: ConnectionInfo[];
+  activeConnectionId?: string | null;
+  onDisconnect?: (connectionId: string) => void;
+  onQueryRequest?: (connectionId: string, sql: string) => void;
+  onSetActiveConnection?: (connectionId: string) => void;
   onCollapse?: () => void;
+  onAddConnection?: () => void;
 }
 
 // 图标组件
@@ -47,9 +52,18 @@ function NodeIcon(props: { type: NodeType }) {
 }
 
 export default function Sidebar(props: SidebarProps) {
+  const initialNodes = (): TreeNode[] =>
+    props.connections.map((c) => ({
+      id: `connection:${c.id}`,
+      name: c.info,
+      type: "connection" as NodeType,
+      connectionId: c.id,
+      children: [],
+    }));
+
   const [state, setState] = createStore<TreeState>({
-    nodes: [],
-    expandedIds: new Set(),
+    nodes: initialNodes(),
+    expandedIds: new Set<string>(),
     loadingIds: new Set(),
     loadedIds: new Set(),
     selectedId: null,
@@ -58,9 +72,16 @@ export default function Sidebar(props: SidebarProps) {
   const [searchTerm, setSearchTerm] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; node: TreeNode } | null>(null);
 
-  // 初始化加载 schemas
-  onMount(() => {
-    loadSchemas();
+  // 连接列表变化时重建顶层节点（保留已加载的 children）
+  createEffect(() => {
+    const conns = props.connections;
+    setState(produce((s) => {
+      s.nodes = conns.map((c) => {
+        const existing = s.nodes.find((n) => n.connectionId === c.id || n.id === `connection:${c.id}`);
+        if (existing) return { ...existing, name: c.info };
+        return { id: `connection:${c.id}`, name: c.info, type: "connection" as NodeType, connectionId: c.id, children: [] };
+      });
+    }));
   });
 
   // 递归查找节点并返回路径索引
@@ -91,26 +112,24 @@ export default function Sidebar(props: SidebarProps) {
     }));
   }
 
-  // 加载 schemas
-  async function loadSchemas() {
-    const sessionId = getSessionId();
+  // 加载 schemas，挂到指定连接节点下
+  async function loadSchemas(connectionId: string, connectionNodeId: string) {
     try {
-      const data = await getSchemas(sessionId);
+      const data = await getSchemas(connectionId);
       if (data.schemas) {
         const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => ({
-          id: `schema:${schema}`,
+          id: `schema:${connectionId}:${schema}`,
           name: schema,
           type: "schema" as NodeType,
           schema,
+          connectionId,
           children: [
-            { id: `tables:${schema}`, name: "Tables", type: "tables" as NodeType, schema, children: [] },
-            { id: `views:${schema}`, name: "Views", type: "views" as NodeType, schema, children: [] },
+            { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] },
+            { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] },
           ],
         }));
-        setState("nodes", schemaNodes);
-        // 清空已加载状态
-        setState("loadedIds", new Set());
-        setState("expandedIds", new Set());
+        updateNodeChildren(connectionNodeId, schemaNodes);
+        setState("loadedIds", (prev) => new Set(prev).add(connectionNodeId));
       }
     } catch (e) {
       console.error("加载 schemas 失败:", e);
@@ -118,37 +137,38 @@ export default function Sidebar(props: SidebarProps) {
   }
 
   // 加载表和视图
-  async function loadTables(schema: string) {
-    const sessionId = getSessionId();
+  async function loadTables(connectionId: string, schema: string) {
     try {
-      const data = await getTables(sessionId, schema);
+      const data = await getTables(connectionId, schema);
 
-      const tablesId = `tables:${schema}`;
-      const viewsId = `views:${schema}`;
+      const tablesId = `tables:${connectionId}:${schema}`;
+      const viewsId = `views:${connectionId}:${schema}`;
 
       // 更新 tables 节点
       const tableChildren: TreeNode[] = (data.tables || []).map((t: string) => ({
-        id: `table:${schema}.${t}`,
+        id: `table:${connectionId}:${schema}.${t}`,
         name: t,
         type: "table" as NodeType,
         schema,
         table: t,
+        connectionId,
         children: [
-          { id: `columns:${schema}.${t}`, name: "Columns", type: "tables" as NodeType, schema, table: t, children: [] },
-          { id: `indexes:${schema}.${t}`, name: "Indexes", type: "indexes" as NodeType, schema, table: t, children: [] },
+          { id: `columns:${connectionId}:${schema}.${t}`, name: "Columns", type: "tables" as NodeType, schema, table: t, connectionId, children: [] },
+          { id: `indexes:${connectionId}:${schema}.${t}`, name: "Indexes", type: "indexes" as NodeType, schema, table: t, connectionId, children: [] },
         ],
       }));
       updateNodeChildren(tablesId, tableChildren);
 
       // 更新 views 节点
       const viewChildren: TreeNode[] = (data.views || []).map((v: string) => ({
-        id: `view:${schema}.${v}`,
+        id: `view:${connectionId}:${schema}.${v}`,
         name: v,
         type: "view" as NodeType,
         schema,
         table: v,
+        connectionId,
         children: [
-          { id: `columns:${schema}.${v}`, name: "Columns", type: "tables" as NodeType, schema, table: v, children: [] },
+          { id: `columns:${connectionId}:${schema}.${v}`, name: "Columns", type: "tables" as NodeType, schema, table: v, connectionId, children: [] },
         ],
       }));
       updateNodeChildren(viewsId, viewChildren);
@@ -158,18 +178,18 @@ export default function Sidebar(props: SidebarProps) {
   }
 
   // 加载列信息
-  async function loadColumns(schema: string, table: string) {
-    const sessionId = getSessionId();
+  async function loadColumns(connectionId: string, schema: string, table: string) {
     try {
-      const data = await getColumns(sessionId, schema, table);
+      const data = await getColumns(connectionId, schema, table);
 
-      const columnsId = `columns:${schema}.${table}`;
+      const columnsId = `columns:${connectionId}:${schema}.${table}`;
       const columnChildren: TreeNode[] = (data.columns || []).map((col: any) => ({
-        id: `column:${schema}.${table}.${col.column_name}`,
+        id: `column:${connectionId}:${schema}.${table}.${col.column_name}`,
         name: `${col.column_name} : ${col.data_type}${col.is_nullable === 'NO' ? ' NOT NULL' : ''}`,
         type: "column" as NodeType,
         schema,
         table,
+        connectionId,
         children: [],
         meta: col,
       }));
@@ -180,18 +200,18 @@ export default function Sidebar(props: SidebarProps) {
   }
 
   // 加载索引信息
-  async function loadIndexes(schema: string, table: string) {
-    const sessionId = getSessionId();
+  async function loadIndexes(connectionId: string, schema: string, table: string) {
     try {
-      const data = await getIndexes(sessionId, schema, table);
+      const data = await getIndexes(connectionId, schema, table);
 
-      const indexesId = `indexes:${schema}.${table}`;
+      const indexesId = `indexes:${connectionId}:${schema}.${table}`;
       const indexChildren: TreeNode[] = (data.indexes || []).map((idx: any) => ({
-        id: `index:${schema}.${table}.${idx.indexname}`,
+        id: `index:${connectionId}:${schema}.${table}.${idx.indexname}`,
         name: idx.indexname,
         type: "index" as NodeType,
         schema,
         table,
+        connectionId,
         children: [],
         meta: idx,
       }));
@@ -213,9 +233,19 @@ export default function Sidebar(props: SidebarProps) {
       if (state.loadedIds.has(node.id)) return;
 
       // 根据节点类型异步加载数据
-      if (node.type === "schema" && node.schema) {
+      const cid = node.connectionId ?? (node.id.startsWith("connection:") ? node.id.replace("connection:", "") : "");
+      if (node.type === "connection" && cid) {
         setState("loadingIds", (prev) => new Set(prev).add(node.id));
-        loadTables(node.schema).finally(() => {
+        loadSchemas(cid, node.id).finally(() => {
+          setState("loadingIds", (prev) => {
+            const s = new Set(prev);
+            s.delete(node.id);
+            return s;
+          });
+        });
+      } else if (node.type === "schema" && node.schema && cid) {
+        setState("loadingIds", (prev) => new Set(prev).add(node.id));
+        loadTables(cid, node.schema).finally(() => {
           setState("loadingIds", (prev) => {
             const s = new Set(prev);
             s.delete(node.id);
@@ -223,11 +253,11 @@ export default function Sidebar(props: SidebarProps) {
           });
           setState("loadedIds", (prev) => new Set(prev).add(node.id));
         });
-      } else if ((node.type === "table" || node.type === "view") && node.schema && node.table) {
+      } else if ((node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
         setState("loadingIds", (prev) => new Set(prev).add(node.id));
         Promise.all([
-          loadColumns(node.schema, node.table),
-          node.type === "table" ? loadIndexes(node.schema, node.table) : Promise.resolve()
+          loadColumns(cid, node.schema, node.table),
+          node.type === "table" ? loadIndexes(cid, node.schema, node.table) : Promise.resolve()
         ]).finally(() => {
           setState("loadingIds", (prev) => {
             const s = new Set(prev);
@@ -253,16 +283,17 @@ export default function Sidebar(props: SidebarProps) {
     setState("selectedId", node.id);
 
     // 只有可展开的节点才触发展开/折叠
-    const canExpand = node.type === "schema" || node.type === "table" || node.type === "view" ||
+    const canExpand = node.type === "connection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
       node.type === "tables" || node.type === "views" || node.type === "indexes";
     if (canExpand) {
       toggleNode(node);
     }
 
     // 双击表/视图时发送查询
-    if (e.detail === 2 && (node.type === "table" || node.type === "view") && node.schema && node.table) {
+    const cid = node.connectionId;
+    if (e.detail === 2 && (node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
       const sql = `SELECT * FROM ${node.schema}.${node.table}`;
-      props.onQueryRequest?.(sql);
+      props.onQueryRequest?.(cid, sql);
     }
   }
 
@@ -284,31 +315,51 @@ export default function Sidebar(props: SidebarProps) {
     if (!menu) return;
 
     const { node } = menu;
+    const cid = node.connectionId ?? (node.id.startsWith("connection:") ? node.id.replace("connection:", "") : (node.id.split(":")[1] || ""));
     switch (action) {
       case "select":
-        if (node.schema && node.table) {
-          props.onQueryRequest?.(`SELECT * FROM ${node.schema}.${node.table}`);
+        if (node.schema && node.table && cid) {
+          props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table}`);
         }
         break;
       case "selectTop100":
-        if (node.schema && node.table) {
-          props.onQueryRequest?.(`SELECT * FROM ${node.schema}.${node.table} LIMIT 100`);
+        if (node.schema && node.table && cid) {
+          props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table} LIMIT 100`);
         }
         break;
       case "count":
-        if (node.schema && node.table) {
-          props.onQueryRequest?.(`SELECT COUNT(*) FROM ${node.schema}.${node.table}`);
+        if (node.schema && node.table && cid) {
+          props.onQueryRequest?.(cid, `SELECT COUNT(*) FROM ${node.schema}.${node.table}`);
         }
         break;
       case "refresh":
-        if (node.type === "schema" && node.schema) {
-          // 清除已加载状态，重新加载
+        if (node.type === "schema" && node.schema && cid) {
           setState("loadedIds", (prev) => {
             const s = new Set(prev);
             s.delete(node.id);
             return s;
           });
-          loadTables(node.schema);
+          loadTables(cid, node.schema);
+        }
+        break;
+      case "refreshConnection":
+        if (node.type === "connection" && cid) {
+          setState("loadedIds", (prev) => {
+            const s = new Set(prev);
+            s.delete(node.id);
+            return s;
+          });
+          loadSchemas(cid, node.id);
+        }
+        break;
+      case "setActive":
+        if (node.type === "connection" && cid) {
+          props.onSetActiveConnection?.(cid);
+        }
+        break;
+      case "disconnect":
+        if (node.type === "connection" && cid) {
+          props.onDisconnect?.(cid);
         }
         break;
     }
@@ -458,8 +509,39 @@ export default function Sidebar(props: SidebarProps) {
           Database Navigator
         </span>
         <div style={{ "margin-left": "auto", display: "flex", gap: "4px" }}>
+          <Show when={props.onAddConnection}>
+            <button
+              onClick={() => props.onAddConnection?.()}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#6e7681",
+                cursor: "pointer",
+                padding: "4px",
+                "border-radius": "4px",
+                "font-size": "14px",
+              }}
+              title="添加数据库连接"
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
+            >
+              ➕
+            </button>
+          </Show>
           <button
-            onClick={loadSchemas}
+            onClick={() => {
+              state.nodes.filter((n) => n.type === "connection").forEach((n) => {
+                const cid = n.connectionId ?? n.id.replace("connection:", "");
+                if (cid) {
+                  setState("loadedIds", (prev) => {
+                    const s = new Set(prev);
+                    s.delete(n.id);
+                    return s;
+                  });
+                  loadSchemas(cid, n.id);
+                }
+              });
+            }}
             style={{
               background: "none",
               border: "none",
@@ -614,6 +696,56 @@ export default function Sidebar(props: SidebarProps) {
               </div>
               <div style={{ height: "1px", "background-color": "#30363d", margin: "4px 0" }} />
             </Show>
+            <Show when={menu().node.type === "connection"}>
+              <div
+                onClick={() => handleMenuAction("setActive")}
+                style={{
+                  padding: "8px 16px",
+                  color: "#c9d1d9",
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>✓</span> 设为当前连接
+              </div>
+              <div
+                onClick={() => handleMenuAction("refreshConnection")}
+                style={{
+                  padding: "8px 16px",
+                  color: "#c9d1d9",
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🔄</span> 刷新
+              </div>
+              <div
+                onClick={() => handleMenuAction("disconnect")}
+                style={{
+                  padding: "8px 16px",
+                  color: "#c9d1d9",
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🔌</span> 断开连接
+              </div>
+            </Show>
             <Show when={menu().node.type === "schema"}>
               <div
                 onClick={() => handleMenuAction("refresh")}
@@ -647,7 +779,7 @@ export default function Sidebar(props: SidebarProps) {
           "justify-content": "space-between",
         }}
       >
-        <span>Schemas: {state.nodes.length}</span>
+        <span>Connections: {state.nodes.length}</span>
         <span>💡 双击表查询</span>
       </div>
     </div>

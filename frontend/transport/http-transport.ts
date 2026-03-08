@@ -9,7 +9,7 @@ const API_BASE = "";
 export class HttpTransport implements IApiTransport {
   async request<M extends ApiMethod>(
     method: M,
-    payload: ApiRequestPayload[M] & { sessionId: string }
+    payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     const path = `/api/${method}`;
     const res = await fetch(path, {
@@ -31,8 +31,8 @@ export class HttpTransport implements IApiTransport {
     return data;
   }
 
-  subscribeEvents(sessionId: string, callback: (msg: SSEMessage) => void): () => void {
-    const url = `${API_BASE}/api/events?sessionId=${sessionId}`;
+  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
+    const url = `${API_BASE}/api/events?connectionId=${encodeURIComponent(connectionId)}`;
     const eventSource = new EventSource(url);
 
     eventSource.onmessage = (event) => {

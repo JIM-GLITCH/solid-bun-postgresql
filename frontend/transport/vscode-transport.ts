@@ -37,7 +37,7 @@ export class VsCodeTransport implements IApiTransport {
 
   async request<M extends ApiMethod>(
     method: M,
-    payload: ApiRequestPayload[M] & { sessionId: string }
+    payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     if (!this.vscode) {
       throw new Error("VsCodeTransport: acquireVsCodeApi 不可用，请在 VSCode Webview 中使用");
@@ -57,9 +57,7 @@ export class VsCodeTransport implements IApiTransport {
     });
   }
 
-  subscribeEvents(sessionId: string, callback: (msg: SSEMessage) => void): () => void {
-    // VSCode 下由 Extension Host 通过 webview.postMessage 推送
-    // 此处监听 type: 'sse' 的消息
+  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
     const handler = (event: MessageEvent) => {
       const { type, data } = event.data || {};
       if (type === "sse" && data) callback(data as SSEMessage);
@@ -67,12 +65,12 @@ export class VsCodeTransport implements IApiTransport {
 
     if (typeof window !== "undefined") {
       window.addEventListener("message", handler);
-      this.vscode?.postMessage({ type: "subscribe-events", sessionId });
+      this.vscode?.postMessage({ type: "subscribe-events", connectionId });
     }
 
     return () => {
       window.removeEventListener("message", handler);
-      this.vscode?.postMessage({ type: "unsubscribe-events", sessionId });
+      this.vscode?.postMessage({ type: "unsubscribe-events", connectionId });
     };
   }
 }

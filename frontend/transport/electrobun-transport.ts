@@ -12,18 +12,19 @@ declare global {
   }
 }
 
-/** 按 sessionId 存储的回调，用于分发主进程推送的 backend_event */
+/** 按 connectionId 存储的回调，用于分发主进程推送的 backend_event */
 const eventCallbacks = new Map<string, Set<(msg: SSEMessage) => void>>();
 
 /** 注册全局事件回调（主进程 push 时由 index-electrobun 调用） */
-export function handleBackendEvent(payload: { sessionId?: string; data?: SSEMessage; error?: string }) {
-  if (payload.error && payload.sessionId) {
-    const cbs = eventCallbacks.get(payload.sessionId);
+export function handleBackendEvent(payload: { connectionId?: string; data?: SSEMessage; error?: string }) {
+  const cid = payload.connectionId;
+  if (payload.error && cid) {
+    const cbs = eventCallbacks.get(cid);
     cbs?.forEach((cb) => cb({ type: "ERROR", message: payload.error!, timestamp: Date.now() }));
     return;
   }
-  if (payload.data && payload.sessionId) {
-    const cbs = eventCallbacks.get(payload.sessionId);
+  if (payload.data && cid) {
+    const cbs = eventCallbacks.get(cid);
     cbs?.forEach((cb) => cb(payload.data!));
   }
 }
@@ -31,27 +32,24 @@ export function handleBackendEvent(payload: { sessionId?: string; data?: SSEMess
 export class ElectrobunTransport implements IApiTransport {
   async request<M extends ApiMethod>(
     method: M,
-    payload: ApiRequestPayload[M] & { sessionId: string }
+    payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     const fn = window.__electrobunApiRequest;
     if (!fn) throw new Error("Electrobun RPC 未就绪，请确保在桌面应用内运行");
     return fn(method, payload);
   }
 
-  subscribeEvents(sessionId: string, callback: (msg: SSEMessage) => void): () => void {
-    let set = eventCallbacks.get(sessionId);
+  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
+    let set = eventCallbacks.get(connectionId);
     if (!set) {
       set = new Set();
-      eventCallbacks.set(sessionId, set);
+      eventCallbacks.set(connectionId, set);
     }
     set.add(callback);
 
-    this.request("subscribe-events" as ApiMethod, { sessionId }).catch(() => {});
-
     return () => {
       set?.delete(callback);
-      if (set?.size === 0) eventCallbacks.delete(sessionId);
-      this.request("unsubscribe-events" as ApiMethod, { sessionId }).catch(() => {});
+      if (set?.size === 0) eventCallbacks.delete(connectionId);
     };
   }
 }
