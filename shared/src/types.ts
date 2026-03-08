@@ -8,11 +8,8 @@ export interface PostgresLoginParams {
   password: string;
 }
 
-/** 连接请求：支持明文 password（兼容）或加密的 passwordEncrypted */
-export type ConnectPostgresRequest = Omit<PostgresLoginParams, "password"> & {
-  password?: string;
-  passwordEncrypted?: string;
-};
+/** 连接请求：与 PostgresLoginParams 一致，包含明文密码 */
+export type ConnectPostgresRequest = PostgresLoginParams;
 
 export interface SSEMessage {
   type: "NOTICE" | "ERROR" | "INFO" | "WARNING" | "QUERY" | "NOTIFICATION";

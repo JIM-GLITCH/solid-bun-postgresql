@@ -7,7 +7,6 @@ import type { PostgresLoginParams, SSEMessage, ConnectPostgresRequest } from "./
 
 /** API 方法名 */
 export type ApiMethod =
-  | "get-public-key"
   | "connect-postgres"
   | "postgres/query"
   | "postgres/query-stream"
@@ -23,7 +22,6 @@ export type ApiMethod =
 
 /** 请求载荷（不含 sessionId，由调用方注入） */
 export type ApiRequestPayload = {
-  "get-public-key": { sessionId?: string };
   "connect-postgres": ConnectPostgresRequest;
   "postgres/query": { query: string };
   "postgres/query-stream": { query: string; batchSize?: number };

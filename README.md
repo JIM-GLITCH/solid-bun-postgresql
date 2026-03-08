@@ -4,7 +4,7 @@
 
 ## ✨ 功能特性
 
-- 🔌 **数据库连接** - 支持自定义 PostgreSQL 连接参数，**密码经 RSA 加密后传输**，不以明文发送
+- 🔌 **数据库连接** - 支持自定义 PostgreSQL 连接参数
 - 📝 **SQL 查询** - 执行任意 SQL 语句并以表格形式展示结果
 - ✏️ **可视化编辑** - 双击单元格直接编辑数据，自动生成 UPDATE SQL
 - 📊 **智能列识别** - 自动检测可编辑列和主键/唯一键约束
@@ -30,7 +30,6 @@
 solid-project/
 ├── frontend/                    # 前端源码
 │   ├── api.ts                  # API 封装（连接、查询等）
-│   ├── crypto.ts               # 前端 RSA 公钥加密（密码）
 │   ├── transport/              # 传输层：HTTP / VSCode postMessage
 │   │   ├── http-transport.ts   # Web 环境：fetch + SSE
 │   │   └── vscode-transport.ts # 扩展环境：postMessage
@@ -38,8 +37,7 @@ solid-project/
 │   ├── query-interface.tsx     # SQL 查询与结果展示
 │   └── ...
 ├── backend/                     # 后端业务逻辑（与传输无关）
-│   ├── api-core.ts             # API 核心：handleApiRequest、session、加解密入口
-│   ├── crypto.ts               # RSA 密钥对与私钥解密
+│   ├── api-core.ts             # API 核心：handleApiRequest、session
 │   ├── connect-postgres.ts     # PostgreSQL 连接
 │   ├── api-handlers-http.ts    # HTTP 路由（Standalone 用）
 │   ├── api-handlers-vscode.ts  # Webview 消息处理（扩展用）
@@ -108,7 +106,7 @@ bun run build-extension
 
 1. 打开应用首页，进入 PostgreSQL 连接页。
 2. 填写 host、port、database、username、password。
-3. 点击「连接」。密码会在前端用服务端公钥加密后发送，后端私钥解密再连接数据库。
+3. 点击「连接」建立数据库连接。
 
 ### 2. 执行 SQL 查询
 
@@ -130,8 +128,7 @@ bun run build-extension
 
 | 方法 | 路径                         | 说明                 |
 | ---- | ---------------------------- | -------------------- |
-| POST | `/api/get-public-key`       | 获取 RSA 公钥（加密密码用） |
-| POST | `/api/connect-postgres`     | 建立数据库连接（支持 passwordEncrypted） |
+| POST | `/api/connect-postgres`     | 建立数据库连接       |
 | GET  | `/api/events?sessionId=xxx`  | SSE 订阅会话事件     |
 | POST | `/api/postgres/query`        | 执行 SQL 查询        |
 | POST | `/api/postgres/query-stream` | 流式查询             |

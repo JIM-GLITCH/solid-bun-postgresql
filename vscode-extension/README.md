@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 连接 PostgreSQL（host / port / database / 用户名 / 密码，密码经 RSA 加密后传输）
+- 连接 PostgreSQL（host / port / database / 用户名 / 密码）
 - SQL 查询与结果表格展示、流式加载
 - 表格单元格可视化编辑、变更预览与保存
 - 侧边栏 schema / 表 / 列 / 索引 / 外键浏览

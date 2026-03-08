@@ -3,24 +3,14 @@
  */
 
 import { getTransport } from "./transport";
-import type { PostgresLoginParams, ColumnEditableInfo, SSEMessage, ConnectPostgresRequest } from "../shared/src";
-import { encryptWithPublicKey } from "./crypto";
+import type { PostgresLoginParams, ColumnEditableInfo, SSEMessage } from "../shared/src";
 
 const api = () => getTransport();
 
-/** 连接数据库（密码在前端加密后传输，不以明文发送） */
+/** 连接数据库 */
 export async function connectPostgres(sessionId: string, params: PostgresLoginParams) {
-  const transport = api();
-  const keyRes = await transport.request("get-public-key", { sessionId: "" });
-  const publicKey = (keyRes as { publicKey: string }).publicKey;
-  const passwordEncrypted = await encryptWithPublicKey(publicKey, params.password ?? "");
-  const payload: ConnectPostgresRequest & { sessionId: string } = {
-    ...params,
-    password: undefined,
-    passwordEncrypted,
-    sessionId,
-  };
-  return transport.request("connect-postgres", payload) as Promise<{ sucess: boolean; error?: unknown }>;
+  const payload = { ...params, sessionId };
+  return api().request("connect-postgres", payload) as Promise<{ sucess: boolean; error?: unknown }>;
 }
 
 /** 流式查询 - 第一批 */

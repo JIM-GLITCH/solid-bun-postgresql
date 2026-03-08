@@ -5,7 +5,6 @@
 
 import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgresRequest } from "../shared/src";
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
-import { decryptPassword, getPublicKeyPem } from "./crypto";
 import { calculateColumnEditable } from "./column-editable";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
@@ -65,11 +64,6 @@ export async function handleApiRequest<M extends ApiMethod>(
   method: M,
   payload: ApiRequestPayload[M] & { sessionId: string }
 ): Promise<unknown> {
-  switch (method) {
-    case "get-public-key":
-      return { publicKey: getPublicKeyPem() };
-  }
-
   const { sessionId } = payload;
   const getS = () => {
     const s = getSession(sessionId);
@@ -80,12 +74,8 @@ export async function handleApiRequest<M extends ApiMethod>(
   switch (method) {
     case "connect-postgres": {
       const params = payload as ConnectPostgresRequest & { sessionId: string };
-      const { sessionId: sid, password, passwordEncrypted, ...rest } = params;
-      const resolvedPassword =
-        typeof passwordEncrypted === "string" && passwordEncrypted
-          ? decryptPassword(passwordEncrypted)
-          : (password ?? "");
-      const connectParams: PostgresLoginParams = { ...rest, password: resolvedPassword };
+      const { sessionId: sid, ...connectParams } = params;
+      const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
 
       const existingSession = sessionMap.get(sid);
       if (existingSession) {
@@ -94,8 +84,8 @@ export async function handleApiRequest<M extends ApiMethod>(
         sessionMap.delete(sid);
       }
 
-      const client = await connectPostgres(connectParams);
-      const adminPool = createPostgresPool(connectParams);
+      const client = await connectPostgres(loginParams);
+      const adminPool = createPostgresPool(loginParams);
 
       client.on("error", (err) => {
         sendSSEMessage(sid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
