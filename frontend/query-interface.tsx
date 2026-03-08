@@ -635,6 +635,11 @@ export default function QueryInterface() {
                               value={() => result[rowIndex][colIndex()]}
                               isEditable={colInfo.isEditable}
                               isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
+                              onUndo={colInfo.isEditable ? () => {
+                                  const c = colIndex();
+                                  const idx = pendingUpdates().findIndex(u => u.rowIndex === rowIndex && u.colIndex === c);
+                                  if (idx >= 0) removePendingUpdate(idx);
+                                } : undefined}
                               align={() => getAlignment(result[rowIndex][colIndex()])}
                               onSave={(newValue) => {
                                 handleCellSave(rowIndex, colIndex(), newValue);

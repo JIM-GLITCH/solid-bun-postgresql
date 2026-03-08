@@ -7,6 +7,7 @@ interface EditableCellProps {
   isEditable: boolean;
   isModified?: boolean;
   onSave?: (newValue: string | null) => void;
+  onUndo?: () => void;  // 撤销修改（仅对已修改单元格显示）
   align?: "left" | "right" | "center" | (() => "left" | "right" | "center");
 }
 
@@ -53,9 +54,14 @@ export default function EditableCell(props: EditableCellProps) {
   }
 
   function handleContextMenu(e: MouseEvent) {
-    if (!props.isEditable) return;
+    if (!props.isEditable && !props.onUndo) return;
     e.preventDefault();
     setMenuPos({ x: e.clientX, y: e.clientY });
+  }
+
+  function handleUndo() {
+    closeMenu();
+    props.onUndo?.();
   }
 
   function handleSetNull() {
@@ -140,28 +146,54 @@ export default function EditableCell(props: EditableCellProps) {
               padding: "4px 0",
             }}
           >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSetNull();
-              }}
-              style={{
-                display: "block",
-                width: "100%",
-                padding: "6px 12px",
-                border: "none",
-                background: "none",
-                "text-align": "left",
-                cursor: "pointer",
-                "font-size": "inherit",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-            >
-              Set null
-            </button>
+            <Show when={props.isModified && props.onUndo}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleUndo();
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "6px 12px",
+                  border: "none",
+                  background: "none",
+                  "text-align": "left",
+                  cursor: "pointer",
+                  "font-size": "inherit",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                撤销修改
+              </button>
+            </Show>
+            <Show when={props.isEditable}>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSetNull();
+                }}
+                style={{
+                  display: "block",
+                  width: "100%",
+                  padding: "6px 12px",
+                  border: "none",
+                  background: "none",
+                  "text-align": "left",
+                  cursor: "pointer",
+                  "font-size": "inherit",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#f3f4f6")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                Set null
+              </button>
+            </Show>
           </div>
         )}
       </Show>
