@@ -1,22 +1,23 @@
 /**
- * Electrobun 前端构建：用 Bun 替代 Vite，输出到 electrobun-app/dist-electrobun/
+ * Electrobun 前端构建：以 index.html 为入口，Bun 自动打包引用的 tsx
  */
 import { join } from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, cp } from "fs/promises";
+import { existsSync } from "fs";
 import { SolidPlugin } from "bun-plugin-solid";
 
 const root = import.meta.dir;
 const projectRoot = join(root, "..");
 const outDir = join(root, "dist-electrobun");
+const monacoMin = join(projectRoot, "node_modules", "monaco-editor", "min", "vs");
 
 await mkdir(outDir, { recursive: true });
 
 const result = await Bun.build({
-  entrypoints: [join(projectRoot, "frontend", "index-electrobun.tsx")],
+  entrypoints: [join(root, "index.html")],
   outdir: outDir,
   target: "browser",
   plugins: [SolidPlugin()],
-  naming: "[name].js",
 });
 
 if (!result.success) {
@@ -24,30 +25,10 @@ if (!result.success) {
   process.exit(1);
 }
 
-// 复制 HTML（script 改为 ./index.js）
-const html = `<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Front Table</title>
-    <style>
-      *, *::before, *::after { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-      #root { height: 100%; overflow: hidden; }
-      html {
-        -webkit-font-smoothing: antialiased;
-        -moz-osx-font-smoothing: grayscale;
-        text-rendering: optimizeLegibility;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="./index-electrobun.js"></script>
-  </body>
-</html>
-`;
+// Monaco Workers 需单独提供（主代码已打包）
+if (existsSync(monacoMin)) {
+  await cp(monacoMin, join(outDir, "vs"), { recursive: true });
+  console.log("Monaco Editor vs/ copied");
+}
 
-await writeFile(join(outDir, "index.html"), html);
 console.log("Electrobun frontend built to electrobun-app/dist-electrobun/");

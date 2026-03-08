@@ -15,8 +15,7 @@ export default {
       entrypoint: "electrobun-app/src/bun/index.ts",
     },
     copy: {
-      "electrobun-app/dist-electrobun/index.html": "views/app/index.html",
-      "electrobun-app/dist-electrobun/index-electrobun.js": "views/app/index-electrobun.js",
+      "electrobun-app/dist-electrobun": "views/app",
     },
     // 使用 CEF 替代系统 WebView2，解决 Windows 高 DPI 下界面模糊（类似 Tauri 的清晰度）
     win: { bundleCEF: true, defaultRenderer: "cef" },
