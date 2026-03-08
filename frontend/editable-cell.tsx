@@ -1,5 +1,6 @@
 import { createSignal, createEffect, Show, onCleanup } from "solid-js";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
+import { vscode } from "./theme";
 
 interface EditableCellProps {
   /** 直接传值，或传访问器 () => value 以建立对 store 的细粒度依赖 */
@@ -91,12 +92,12 @@ export default function EditableCell(props: EditableCellProps) {
         cursor: props.isEditable ? "pointer" : "default",
         padding: "8px 12px",
         "text-align": getAlign(),
-        "border": "1px solid #334155",
+        "border": `1px solid ${vscode.border}`,
         "white-space": "nowrap",
         overflow: "hidden",
         "text-overflow": "ellipsis",
-        color: "#e2e8f0",
-        "background-color": props.isModified ? "#422006" : "transparent"  // 编辑过的单元格显示暗橙背景
+        color: vscode.foreground,
+        "background-color": props.isModified ? "rgba(220, 220, 170, 0.1)" : "transparent"
       }}
     >
       <Show
@@ -117,7 +118,7 @@ export default function EditableCell(props: EditableCellProps) {
           style={{
             width: "100%",
             padding: "2px 4px",
-            border: "2px solid #2563eb",
+            border: `2px solid ${vscode.accent}`,
             "border-radius": "2px",
             "font-size": "inherit",
             "font-family": "inherit",
@@ -139,9 +140,9 @@ export default function EditableCell(props: EditableCellProps) {
               left: `${pos().x}px`,
               top: `${pos().y}px`,
               "z-index": 10000,
-              background: "#1e293b",
-              border: "1px solid #334155",
-              color: "#e2e8f0",
+              background: vscode.sidebarBg,
+              border: `1px solid ${vscode.border}`,
+              color: vscode.foreground,
               "border-radius": "4px",
               "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
               "min-width": "120px",
@@ -166,7 +167,7 @@ export default function EditableCell(props: EditableCellProps) {
                   cursor: "pointer",
                   "font-size": "inherit",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#334155")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 撤销修改
@@ -190,7 +191,7 @@ export default function EditableCell(props: EditableCellProps) {
                   cursor: "pointer",
                   "font-size": "inherit",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#334155")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 Set null

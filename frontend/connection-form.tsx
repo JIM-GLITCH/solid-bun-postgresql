@@ -1,6 +1,7 @@
 import { For, createSignal, Show } from 'solid-js';
 import { connectPostgres } from './api';
 import { saveConnection } from './connection-storage';
+import { vscode } from './theme';
 import type { PostgresLoginParams } from '../shared/src';
 
 function generateConnectionId(): string {
@@ -78,21 +79,22 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   if (props.compact && props.connectionId) {
     return (
       <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
-        <span style={{ color: '#94a3b8', 'font-size': '13px' }}>
+        <span style={{ color: vscode.foreground, 'font-size': '13px' }}>
           {props.connectionInfo || 'PostgreSQL 已连接'}
         </span>
         {props.onDisconnect && (
           <button
             onClick={() => props.onDisconnect?.(props.connectionId!)}
             style={{
-              padding: '4px 10px',
+              padding: '4px 12px',
               'font-size': '12px',
-              'background-color': '#334155',
-              color: '#e2e8f0',
+              'background-color': vscode.buttonSecondary,
+              color: vscode.foreground,
               border: 'none',
-              'border-radius': '4px',
               cursor: 'pointer',
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
           >
             断开
           </button>
@@ -104,33 +106,31 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   return (
     <div style={{
       padding: '20px',
-      'background-color': '#f8fafc',
-      'border-radius': '8px',
-      'border': '1px solid #e2e8f0',
-      'margin-bottom': '20px',
+      'background-color': vscode.sidebarBg,
+      'border': `1px solid ${vscode.border}`,
     }}>
-      <h2 style={{ 'margin': '0 0 16px 0', 'font-size': '18px', color: '#1e293b' }}>
+      <h2 style={{ 'margin': '0 0 16px 0', 'font-size': '16px', color: vscode.foreground }}>
         PostgreSQL 连接
       </h2>
       <Show when={error()}>
-        <div style={{ color: '#dc2626', 'margin-bottom': '12px', 'font-size': '14px' }}>
+        <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>
           {error()}
         </div>
       </Show>
       <table style={{ 'border-collapse': 'collapse', width: '100%', 'max-width': '600px' }}>
         <thead>
           <tr>
-            <th style={{ 'text-align': 'left', padding: '8px 12px 8px 0' }}>字段</th>
-            <th style={{ 'text-align': 'left', padding: '8px 12px 8px 0' }}>说明</th>
-            <th style={{ 'text-align': 'left', padding: '8px 0' }}>值</th>
+            <th style={{ 'text-align': 'left', padding: '8px 12px 8px 0', color: vscode.foreground, 'font-size': '13px' }}>字段</th>
+            <th style={{ 'text-align': 'left', padding: '8px 12px 8px 0', color: vscode.foreground, 'font-size': '13px' }}>说明</th>
+            <th style={{ 'text-align': 'left', padding: '8px 0', color: vscode.foreground, 'font-size': '13px' }}>值</th>
           </tr>
         </thead>
         <tbody>
           <For each={fields}>
             {(field) => (
               <tr>
-                <td style={{ padding: '8px 12px 8px 0' }}>{field.label}</td>
-                <td style={{ padding: '8px 12px 8px 0', color: '#64748b', 'font-size': '13px' }}>{field.desc}</td>
+                <td style={{ padding: '8px 12px 8px 0', color: vscode.foreground }}>{field.label}</td>
+                <td style={{ padding: '8px 12px 8px 0', color: vscode.foregroundDim, 'font-size': '13px' }}>{field.desc}</td>
                 <td style={{ padding: '8px 0' }}>
                   <input
                     type={field.key === 'password' ? 'password' : 'text'}
@@ -141,9 +141,10 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                     style={{
                       width: '100%',
                       padding: '8px 12px',
-                      border: '1px solid #d1d5db',
-                      'border-radius': '6px',
-                      'font-size': '14px',
+                      border: `1px solid ${vscode.border}`,
+                      'background-color': vscode.inputBg,
+                      color: vscode.inputFg,
+                      'font-size': '13px',
                     }}
                   />
                 </td>
@@ -152,7 +153,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </For>
         </tbody>
       </table>
-      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', cursor: 'pointer', fontSize: '14px', color: '#64748b' }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', cursor: 'pointer', fontSize: '13px', color: vscode.foregroundDim }}>
         <input
           type="checkbox"
           checked={rememberPassword()}
@@ -165,15 +166,15 @@ export default function ConnectionForm(props: ConnectionFormProps) {
         disabled={connecting()}
         style={{
           'margin-top': '12px',
-          padding: '10px 24px',
-          'font-size': '14px',
-          'font-weight': '500',
-          'background-color': connecting() ? '#94a3b8' : '#10b981',
+          padding: '8px 20px',
+          'font-size': '13px',
+          'background-color': connecting() ? vscode.buttonSecondary : vscode.buttonBg,
           color: '#fff',
           border: 'none',
-          'border-radius': '6px',
           cursor: connecting() ? 'not-allowed' : 'pointer',
         }}
+        onMouseEnter={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
+        onMouseLeave={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
       >
         {connecting() ? '连接中...' : '连接'}
       </button>

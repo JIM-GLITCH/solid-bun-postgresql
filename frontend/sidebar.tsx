@@ -1,10 +1,12 @@
-import { createSignal, For, Show, createEffect } from "solid-js";
+import type { Accessor } from "solid-js";
+import { createSignal, For, Show, createEffect, onCleanup, on } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { getSchemas, getTables, getColumns, getIndexes } from "./api";
 import type { ConnectionInfo } from "./app";
+import { vscode } from "./theme";
 
 // 数据库对象类型
-type NodeType = "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
+type NodeType = "addConnection" | "savedConnection" | "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
 
 interface TreeNode {
   id: string;
@@ -13,8 +15,16 @@ interface TreeNode {
   schema?: string;
   table?: string;
   connectionId?: string;
+  /** savedConnection 时存储 StoredConnection 的 id */
+  storedId?: string;
   children: TreeNode[];
   meta?: Record<string, any>;
+}
+
+interface StoredConnection {
+  id: string;
+  label: string;
+  enc?: string;
 }
 
 interface TreeState {
@@ -26,19 +36,29 @@ interface TreeState {
 }
 
 interface SidebarProps {
-  connections: ConnectionInfo[];
+  connections: Accessor<ConnectionInfo[]>;
+  /** 已保存的连接（未连接时显示为可点击节点，已连接时合并到 connection 节点） */
+  savedConnections?: Accessor<StoredConnection[]>;
   activeConnectionId?: string | null;
   onDisconnect?: (connectionId: string) => void;
   onQueryRequest?: (connectionId: string, sql: string) => void;
   onOpenQueryTab?: (connectionId: string, connectionInfo: string) => void;
-  onSetActiveConnection?: (connectionId: string) => void;
-  onCollapse?: () => void;
   onAddConnection?: () => void;
+  onConnectFromSaved?: (stored: StoredConnection) => void;
+  onRemoveSaved?: (id: string) => void;
+  connectingSavedId?: string | null;
+  onCollapse?: () => void;
+  /** 外部触发刷新时递增，Sidebar 会响应并刷新所有连接 */
+  refreshTrigger?: () => number;
+  /** 无标题栏模式，由父组件提供标题 */
+  hideHeader?: boolean;
 }
 
 // 图标组件
 function NodeIcon(props: { type: NodeType }) {
   const icons: Record<NodeType, string> = {
+    addConnection: "➕",
+    savedConnection: "🔌",
     connection: "🔌",
     schema: "📁",
     tables: "📋",
@@ -49,21 +69,56 @@ function NodeIcon(props: { type: NodeType }) {
     indexes: "🔑",
     index: "🏷️",
   };
-  return <span style={{ "margin-right": "6px", "font-size": "14px" }}>{icons[props.type]}</span>;
+  return <span style={{ "margin-right": "6px", "font-size": "14px" }}>{icons[props.type] ?? "•"}</span>;
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const initialNodes = (): TreeNode[] =>
-    props.connections.map((c) => ({
-      id: `connection:${c.id}`,
-      name: c.info,
-      type: "connection" as NodeType,
-      connectionId: c.id,
-      children: [],
-    }));
+  // 构建统一树根：新建连接 + 已保存（未连接为 savedConnection，已连接为 connection）+ 未保存的活跃连接
+  function buildRootNodes(): TreeNode[] {
+    const conns = props.connections?.() ?? [];
+    const saved = props.savedConnections?.() ?? [];
+    const roots: TreeNode[] = [];
+
+    roots.push({ id: "add", name: "新建连接", type: "addConnection", children: [] });
+
+    for (const s of saved) {
+      const c = conns.find((x) => x.id === s.id);
+      if (c) {
+        roots.push({
+          id: `connection:${c.id}`,
+          name: c.info,
+          type: "connection",
+          connectionId: c.id,
+          storedId: s.id,
+          children: [],
+        });
+      } else {
+        roots.push({
+          id: `saved:${s.id}`,
+          name: s.label,
+          type: "savedConnection",
+          storedId: s.id,
+          children: [],
+        });
+      }
+    }
+
+    for (const c of conns) {
+      if (!saved.some((s) => s.id === c.id)) {
+        roots.push({
+          id: `connection:${c.id}`,
+          name: c.info,
+          type: "connection",
+          connectionId: c.id,
+          children: [],
+        });
+      }
+    }
+    return roots;
+  }
 
   const [state, setState] = createStore<TreeState>({
-    nodes: initialNodes(),
+    nodes: buildRootNodes(),
     expandedIds: new Set<string>(),
     loadingIds: new Set(),
     loadedIds: new Set(),
@@ -72,18 +127,86 @@ export default function Sidebar(props: SidebarProps) {
 
   const [searchTerm, setSearchTerm] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; node: TreeNode } | null>(null);
-
-  // 连接列表变化时重建顶层节点（保留已加载的 children）
+  /** 点击 savedConnection 连接后需自动展开并加载，存 storedId，连接成功后 effect 处理 */
+  const [pendingExpandStoredId, setPendingExpandStoredId] = createSignal<string | null>(null);
+  // 连接失败时清除 pending，避免残留
   createEffect(() => {
-    const conns = props.connections;
+    if (!props.connectingSavedId && pendingExpandStoredId()) {
+      const conns = props.connections?.() ?? [];
+      if (!conns.some((c) => c.id === pendingExpandStoredId())) setPendingExpandStoredId(null);
+    }
+  });
+
+  // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
+  createEffect(() => {
+    if (!contextMenu()) return;
+    const handler = () => closeContextMenu();
+    document.addEventListener("click", handler, false);
+    document.addEventListener("contextmenu", handler, false);
+    onCleanup(() => {
+      document.removeEventListener("click", handler, false);
+      document.removeEventListener("contextmenu", handler, false);
+    });
+  });
+
+  // 刷新所有连接
+  function refreshAll() {
+    state.nodes.filter((n) => n.type === "connection").forEach((n) => {
+      const cid = n.connectionId ?? n.id.replace("connection:", "");
+      if (cid) {
+        setState("loadedIds", (prev) => {
+          const s = new Set(prev);
+          s.delete(n.id);
+          return s;
+        });
+        loadSchemas(cid, n.id);
+      }
+    });
+  }
+
+  // 响应外部刷新触发
+  createEffect(() => {
+    const trigger = props.refreshTrigger?.();
+    if (trigger !== undefined && trigger > 0) refreshAll();
+  });
+
+  // connections / savedConnections 变化时重建顶层节点（保留 connection 节点已加载的 children）
+  createEffect(() => {
+    const newRoots = buildRootNodes();
     setState(produce((s) => {
-      s.nodes = conns.map((c) => {
-        const existing = s.nodes.find((n) => n.connectionId === c.id || n.id === `connection:${c.id}`);
-        if (existing) return { ...existing, name: c.info };
-        return { id: `connection:${c.id}`, name: c.info, type: "connection" as NodeType, connectionId: c.id, children: [] };
+      s.nodes = newRoots.map((r) => {
+        if (r.type === "connection" && r.connectionId) {
+          const existing = s.nodes.find((n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection"));
+          if (existing && existing.children.length > 0) return { ...r, children: existing.children };
+          // 新建或重连的 connection 节点无 children，需清除 loadedIds 否则展开时会误判已加载而跳过 loadSchemas
+          s.loadedIds = new Set([...s.loadedIds].filter((id) => id !== r.id));
+        }
+        return r;
       });
     }));
   });
+
+  // 点击 savedConnection 连接成功后自动展开并加载 schemas（on 确保仅在 connections 变化时执行）
+  createEffect(on(
+    () => props.connections?.(),
+    (conns) => {
+      const list = conns ?? [];
+      const storedId = pendingExpandStoredId();
+      if (!storedId || !list.some((c) => c.id === storedId)) return;
+      setPendingExpandStoredId(null);
+      const nodeId = `connection:${storedId}`;
+      setState("expandedIds", (prev) => new Set(prev).add(nodeId));
+      setState("loadingIds", (prev) => new Set(prev).add(nodeId));
+      loadSchemas(storedId, nodeId).finally(() => {
+        setState("loadingIds", (prev) => {
+          const s = new Set(prev);
+          s.delete(nodeId);
+          return s;
+        });
+      });
+    },
+    { defer: true }
+  ));
 
   // 递归查找节点并返回路径索引
   function findNodePath(nodes: TreeNode[], nodeId: string, path: number[] = []): number[] | null {
@@ -304,18 +427,26 @@ export default function Sidebar(props: SidebarProps) {
     e.stopPropagation();
     setState("selectedId", node.id);
 
-    // 只有可展开的节点才触发展开/折叠
-    const canExpand = node.type === "connection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
-      node.type === "tables" || node.type === "views" || node.type === "indexes";
-    if (canExpand) {
-      toggleNode(node);
+    if (node.type === "addConnection") {
+      props.onAddConnection?.();
+      return;
+    }
+    if (node.type === "savedConnection" && node.storedId && e.detail === 1) {
+      const stored = props.savedConnections?.()?.find((s) => s.id === node.storedId);
+      if (stored && !props.connectingSavedId) {
+        setPendingExpandStoredId(node.storedId);
+        props.onConnectFromSaved?.(stored);
+      }
+      return;
     }
 
-    // 双击表/视图时发送查询
+    const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
+      node.type === "tables" || node.type === "views" || node.type === "indexes";
+    if (canExpand) toggleNode(node);
+
     const cid = node.connectionId;
     if (e.detail === 2 && (node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
-      const sql = `SELECT * FROM ${node.schema}.${node.table}`;
-      props.onQueryRequest?.(cid, sql);
+      props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table}`);
     }
   }
 
@@ -379,14 +510,20 @@ export default function Sidebar(props: SidebarProps) {
           props.onOpenQueryTab?.(cid, node.name);
         }
         break;
-      case "setActive":
-        if (node.type === "connection" && cid) {
-          props.onSetActiveConnection?.(cid);
-        }
-        break;
       case "disconnect":
         if (node.type === "connection" && cid) {
           props.onDisconnect?.(cid);
+        }
+        break;
+      case "connectSaved":
+        if (node.type === "savedConnection" && node.storedId) {
+          const stored = props.savedConnections?.()?.find((s) => s.id === node.storedId);
+          if (stored) props.onConnectFromSaved?.(stored);
+        }
+        break;
+      case "removeSaved":
+        if (node.type === "savedConnection" && node.storedId) {
+          props.onRemoveSaved?.(node.storedId);
         }
         break;
     }
@@ -415,10 +552,10 @@ export default function Sidebar(props: SidebarProps) {
   // 渲染单个节点
   function renderNode(node: TreeNode, depth: number = 0) {
     const isExpanded = () => state.expandedIds.has(node.id);
-    const isLoading = () => state.loadingIds.has(node.id);
+    const isLoading = () => state.loadingIds.has(node.id) || (node.type === "savedConnection" && node.storedId === props.connectingSavedId);
     const isSelected = () => state.selectedId === node.id;
     const hasChildren = () => node.children.length > 0;
-    const canExpand = node.type === "schema" || node.type === "table" || node.type === "view" ||
+    const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
       node.type === "tables" || node.type === "views" || node.type === "indexes";
 
     return (
@@ -432,15 +569,18 @@ export default function Sidebar(props: SidebarProps) {
             padding: "4px 8px",
             "padding-left": `${depth * 16 + 8}px`,
             cursor: "pointer",
-            "background-color": isSelected() ? "#2d4a7c" : "transparent",
-            color: isSelected() ? "#fff" : "#c9d1d9",
+            "background-color": isSelected() ? vscode.listSelect : "transparent",
+            "border-left": node.type === "connection" && node.connectionId === props.activeConnectionId
+              ? `3px solid ${vscode.accent}`
+              : "3px solid transparent",
+            color: isSelected() ? "#fff" : vscode.foreground,
             "border-radius": "4px",
             "margin": "1px 4px",
             "font-size": "13px",
             "font-family": "'JetBrains Mono', 'Fira Code', 'Consolas', monospace",
             transition: "background-color 0.15s ease",
           }}
-          onMouseEnter={(e) => !isSelected() && (e.currentTarget.style.backgroundColor = "#1c2e4a")}
+          onMouseEnter={(e) => !isSelected() && (e.currentTarget.style.backgroundColor = vscode.listHover)}
           onMouseLeave={(e) => !isSelected() && (e.currentTarget.style.backgroundColor = "transparent")}
         >
           {/* 展开/折叠箭头 */}
@@ -452,7 +592,7 @@ export default function Sidebar(props: SidebarProps) {
               "align-items": "center",
               "justify-content": "center",
               "margin-right": "4px",
-              color: "#6e7681",
+              color: vscode.foregroundDim,
               "font-size": "10px",
               transition: "transform 0.2s ease",
               transform: isExpanded() ? "rotate(90deg)" : "rotate(0deg)",
@@ -461,23 +601,37 @@ export default function Sidebar(props: SidebarProps) {
             {canExpand ? (isLoading() ? "⏳" : "▶") : ""}
           </span>
 
-          <NodeIcon type={node.type} />
+          {/* connection/savedConnection 用状态圆点替换 🔌，其他类型用 NodeIcon */}
+          <Show when={node.type === "connection" || node.type === "savedConnection"} fallback={<NodeIcon type={node.type} />}>
+            <span
+              style={{
+                width: "8px",
+                height: "8px",
+                "border-radius": "50%",
+                "margin-right": "6px",
+                "flex-shrink": 0,
+                "background-color": node.type === "connection" ? vscode.success : vscode.foregroundMuted,
+              }}
+              title={node.type === "connection" ? "已连接" : "未连接，点击连接"}
+            />
+          </Show>
 
           <span style={{
             flex: 1,
             overflow: "hidden",
             "text-overflow": "ellipsis",
-            "white-space": "nowrap"
+            "white-space": "nowrap",
+            opacity: node.type === "savedConnection" && node.storedId === props.connectingSavedId ? 0.7 : 1,
           }}>
-            {node.name}
+            {node.type === "savedConnection" && node.storedId === props.connectingSavedId ? "⏳ " : ""}{node.name}
           </span>
 
           {/* 计数徽章 */}
           <Show when={hasChildren() && isExpanded()}>
             <span style={{
               "font-size": "10px",
-              color: "#6e7681",
-              "background-color": "#21262d",
+              color: vscode.foregroundDim,
+              "background-color": vscode.inputBg,
               padding: "1px 6px",
               "border-radius": "10px",
               "margin-left": "4px",
@@ -506,108 +660,59 @@ export default function Sidebar(props: SidebarProps) {
       style={{
         width: "100%",
         height: "100%",
-        "background-color": "#0d1117",
-        "border-right": "1px solid #21262d",
+        "background-color": vscode.sidebarBg,
+        "border-right": `1px solid ${vscode.border}`,
         display: "flex",
         "flex-direction": "column",
         "user-select": "none",
       }}
       onClick={closeContextMenu}
     >
-      {/* 标题栏 */}
-      <div
-        style={{
-          padding: "12px 16px",
-          "border-bottom": "1px solid #21262d",
-          display: "flex",
-          "align-items": "center",
-          gap: "8px",
-        }}
-      >
-        <span style={{ "font-size": "14px" }}>🗄️</span>
-        <span
+      <Show when={!props.hideHeader}>
+        {/* 标题栏（hideHeader 时由父组件提供） */}
+        <div
           style={{
-            color: "#c9d1d9",
-            "font-weight": "600",
-            "font-size": "14px",
-            "letter-spacing": "0.5px",
+            padding: "12px 16px",
+            "border-bottom": `1px solid ${vscode.border}`,
+            display: "flex",
+            "align-items": "center",
+            gap: "8px",
           }}
         >
-          Database Navigator
-        </span>
-        <div style={{ "margin-left": "auto", display: "flex", gap: "4px" }}>
-          <Show when={props.onAddConnection}>
+          <span style={{ "font-size": "14px" }}>🗄️</span>
+          <span style={{ color: vscode.foreground, "font-weight": "600", "font-size": "14px" }}>数据库</span>
+          <div style={{ "margin-left": "auto", display: "flex", gap: "4px" }}>
+            <Show when={props.onAddConnection}>
+              <button
+                onClick={() => props.onAddConnection?.()}
+                style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
+                title="添加数据库连接"
+                onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+                onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
+              >➕</button>
+            </Show>
             <button
-              onClick={() => props.onAddConnection?.()}
-              style={{
-                background: "none",
-                border: "none",
-                color: "#6e7681",
-                cursor: "pointer",
-                padding: "4px",
-                "border-radius": "4px",
-                "font-size": "14px",
-              }}
-              title="添加数据库连接"
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
-            >
-              ➕
-            </button>
-          </Show>
-          <button
-            onClick={() => {
-              state.nodes.filter((n) => n.type === "connection").forEach((n) => {
-                const cid = n.connectionId ?? n.id.replace("connection:", "");
-                if (cid) {
-                  setState("loadedIds", (prev) => {
-                    const s = new Set(prev);
-                    s.delete(n.id);
-                    return s;
-                  });
-                  loadSchemas(cid, n.id);
-                }
-              });
-            }}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#6e7681",
-              cursor: "pointer",
-              padding: "4px",
-              "border-radius": "4px",
-              "font-size": "14px",
-            }}
-            title="刷新"
-            onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
-          >
-            🔄
-          </button>
-          <Show when={props.onCollapse}>
-            <button
-              onClick={() => props.onCollapse?.()}
-              style={{
-                background: "none",
-                border: "none",
-                color: "#6e7681",
-                cursor: "pointer",
-                padding: "4px",
-                "border-radius": "4px",
-                "font-size": "14px",
-              }}
-              title="收起侧边栏"
-              onMouseEnter={(e) => (e.currentTarget.style.color = "#c9d1d9")}
-              onMouseLeave={(e) => (e.currentTarget.style.color = "#6e7681")}
-            >
-              ◀
-            </button>
-          </Show>
+              onClick={refreshAll}
+              style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
+              title="刷新"
+              onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
+            >🔄</button>
+            <Show when={props.onCollapse}>
+              <button
+                onClick={() => props.onCollapse?.()}
+                style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
+                title="收起侧边栏"
+                onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+                onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
+              >◀</button>
+            </Show>
+          </div>
         </div>
-      </div>
+      </Show>
 
       {/* 搜索框 */}
-      <div style={{ padding: "8px 12px", "border-bottom": "1px solid #21262d" }}>
+      <div style={{ padding: "8px 12px", "border-bottom": `1px solid ${vscode.border}` }}>
         <input
           type="text"
           placeholder="🔍 搜索表、视图..."
@@ -616,16 +721,15 @@ export default function Sidebar(props: SidebarProps) {
           style={{
             width: "100%",
             padding: "8px 12px",
-            "background-color": "#161b22",
-            border: "1px solid #30363d",
-            "border-radius": "6px",
-            color: "#c9d1d9",
+            "background-color": vscode.inputBg,
+            border: `1px solid ${vscode.border}`,
+            color: vscode.inputFg,
             "font-size": "12px",
             outline: "none",
             "box-sizing": "border-box",
           }}
-          onFocus={(e) => (e.currentTarget.style.borderColor = "#58a6ff")}
-          onBlur={(e) => (e.currentTarget.style.borderColor = "#30363d")}
+          onFocus={(e) => (e.currentTarget.style.borderColor = vscode.accent)}
+          onBlur={(e) => (e.currentTarget.style.borderColor = vscode.border)}
         />
       </div>
 
@@ -635,14 +739,14 @@ export default function Sidebar(props: SidebarProps) {
           flex: 1,
           "overflow-y": "auto",
           "overflow-x": "hidden",
-          padding: "8px 0",
+          padding: "8px 12px",
         }}
       >
         <Show when={filteredTree().length > 0} fallback={
           <div style={{
             padding: "20px",
             "text-align": "center",
-            color: "#6e7681",
+            color: vscode.foregroundDim,
             "font-size": "13px"
           }}>
             {searchTerm() ? "未找到匹配项" : "暂无数据，请先连接数据库"}
@@ -662,8 +766,8 @@ export default function Sidebar(props: SidebarProps) {
               position: "fixed",
               left: `${menu().x}px`,
               top: `${menu().y}px`,
-              "background-color": "#161b22",
-              border: "1px solid #30363d",
+              "background-color": vscode.sidebarBg,
+              border: `1px solid ${vscode.border}`,
               "border-radius": "8px",
               "box-shadow": "0 8px 24px rgba(0,0,0,0.4)",
               "z-index": "1000",
@@ -677,14 +781,14 @@ export default function Sidebar(props: SidebarProps) {
                 onClick={() => handleMenuAction("select")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>▶️</span> SELECT *
@@ -693,14 +797,14 @@ export default function Sidebar(props: SidebarProps) {
                 onClick={() => handleMenuAction("selectTop100")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>🔝</span> SELECT TOP 100
@@ -709,65 +813,49 @@ export default function Sidebar(props: SidebarProps) {
                 onClick={() => handleMenuAction("count")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>#️⃣</span> COUNT(*)
               </div>
-              <div style={{ height: "1px", "background-color": "#30363d", margin: "4px 0" }} />
+              <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
             </Show>
             <Show when={menu().node.type === "connection"}>
               <div
                 onClick={() => handleMenuAction("openQuery")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>📝</span> 新建查询
               </div>
               <div
-                onClick={() => handleMenuAction("setActive")}
-                style={{
-                  padding: "8px 16px",
-                  color: "#c9d1d9",
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>✓</span> 设为当前连接
-              </div>
-              <div
                 onClick={() => handleMenuAction("refreshConnection")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>🔄</span> 刷新
@@ -776,17 +864,51 @@ export default function Sidebar(props: SidebarProps) {
                 onClick={() => handleMenuAction("disconnect")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>🔌</span> 断开连接
+              </div>
+            </Show>
+            <Show when={menu().node.type === "savedConnection"}>
+              <div
+                onClick={() => handleMenuAction("connectSaved")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🔌</span> 连接
+              </div>
+              <div
+                onClick={() => handleMenuAction("removeSaved")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🗑</span> 删除
               </div>
             </Show>
             <Show when={menu().node.type === "schema"}>
@@ -794,14 +916,14 @@ export default function Sidebar(props: SidebarProps) {
                 onClick={() => handleMenuAction("refresh")}
                 style={{
                   padding: "8px 16px",
-                  color: "#c9d1d9",
+                  color: vscode.foreground,
                   cursor: "pointer",
                   "font-size": "13px",
                   display: "flex",
                   "align-items": "center",
                   gap: "8px",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>🔄</span> 刷新
@@ -815,9 +937,9 @@ export default function Sidebar(props: SidebarProps) {
       <div
         style={{
           padding: "8px 16px",
-          "border-top": "1px solid #21262d",
+          "border-top": `1px solid ${vscode.border}`,
           "font-size": "11px",
-          color: "#6e7681",
+          color: vscode.foregroundDim,
           display: "flex",
           "justify-content": "space-between",
         }}

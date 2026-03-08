@@ -8,6 +8,7 @@ import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
+import { vscode } from "./theme";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
@@ -391,12 +392,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   function renderResult() {
     if (loading()) {
-      return (<div style={{ padding: "16px", "text-align": "center", color: "#94a3b8" }}>
+      return (<div style={{ padding: "16px", "text-align": "center", color: vscode.foregroundDim }}>
         查询中...
       </div>);
     }
     if (error()) {
-      return (<div style={{ color: "#f87171", padding: "16px" }}>
+      return (<div style={{ color: vscode.error, padding: "16px" }}>
         {error()}
       </div>);
     }
@@ -404,8 +405,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       <div style={{ display: "flex", "flex-direction": "column", height: "100%" }}>
         <div style={{
           "margin-bottom": "12px",
-          color: "#94a3b8",
-          "font-size": "14px",
+          color: vscode.foregroundDim,
+          "font-size": "13px",
           display: "flex",
           "justify-content": "space-between",
           "align-items": "center",
@@ -414,23 +415,23 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           <span>
             查询结果：{hasMore() ? "已加载" : "共"} {result.length} 行，{columns().length} 列
             <Show when={hasMore()}>
-              <span style={{ "margin-left": "8px", color: "#3b82f6" }}>
+              <span style={{ "margin-left": "8px", color: vscode.accent }}>
                 (滚动加载更多)
               </span>
             </Show>
             <Show when={loadingMore()}>
-              <span style={{ "margin-left": "8px", color: "#f59e0b" }}>
+              <span style={{ "margin-left": "8px", color: vscode.warning }}>
                 加载中...
               </span>
             </Show>
             <Show when={queryDuration() !== null}>
-              <span style={{ "margin-left": "12px", color: "#10b981" }}>
+              <span style={{ "margin-left": "12px", color: vscode.success }}>
                 耗时 {formatDuration(queryDuration()!)}
               </span>
             </Show>
           </span>
           <div style={{ display: "flex", "align-items": "center", gap: "12px" }}>
-            <span style={{ color: pendingUpdates().length > 0 ? "#fbbf24" : "#64748b" }}>
+            <span style={{ color: pendingUpdates().length > 0 ? vscode.warning : vscode.foregroundDim }}>
               {pendingUpdates().length} 个待保存的修改
             </span>
             <button
@@ -438,7 +439,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               style={{
                 padding: "6px 16px",
                 "font-size": "14px",
-                "background-color": "#6b7280",
+                "background-color": vscode.buttonSecondary,
                 color: "#fff",
                 border: "none",
                 "border-radius": "4px",
@@ -453,7 +454,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               style={{
                 padding: "6px 16px",
                 "font-size": "14px",
-                "background-color": pendingUpdates().length > 0 ? "#10b981" : "#9ca3af",
+                "background-color": pendingUpdates().length > 0 ? vscode.buttonBg : vscode.buttonSecondary,
                 color: "#fff",
                 border: "none",
                 "border-radius": "4px",
@@ -468,16 +469,15 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           <div style={{
             "margin-bottom": "12px",
             padding: "12px",
-            "background-color": "#fef3c7",
-            "border-radius": "4px",
-            border: "1px solid #f59e0b",
+            "background-color": "rgba(220, 220, 170, 0.15)",
+            border: `1px solid ${vscode.warning}`,
             "flex-shrink": "0"
           }}>
-            <div style={{ "font-weight": "bold", "margin-bottom": "8px", color: "#92400e" }}>
+            <div style={{ "font-weight": "bold", "margin-bottom": "8px", color: vscode.warning }}>
               待执行的 UPDATE SQL:
             </div>
             <Show when={pendingUpdates().length === 0}>
-              <div style={{ color: "#9ca3af", "font-size": "13px" }}>暂无修改</div>
+              <div style={{ color: vscode.foregroundDim, "font-size": "13px" }}>暂无修改</div>
             </Show>
             <div style={{
               "max-height": "200px",
@@ -493,9 +493,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                     "align-items": "center",
                     gap: "8px",
                     padding: "6px 8px",
-                    "background-color": "#fffbeb",
-                    "border-radius": "4px",
-                    border: "1px solid #fcd34d"
+                    "background-color": vscode.inputBg,
+                    border: `1px solid ${vscode.border}`
                   }}>
                     <span style={{
                       flex: "1",
@@ -510,7 +509,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       style={{
                         padding: "2px 8px",
                         "font-size": "12px",
-                        "background-color": "#ef4444",
+                        "background-color": vscode.error,
                         color: "#fff",
                         border: "none",
                         "border-radius": "4px",
@@ -537,8 +536,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             flex: 1,
             overflow: "auto",
             position: "relative",
-            border: "1px solid #334155",
-            "background-color": "#0f172a"
+            border: `1px solid ${vscode.border}`,
+            "background-color": vscode.editorBg
           }}
         >
           {/* 撑开滚动条的占位层 */}
@@ -564,7 +563,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   )}
                 </For>
               </colgroup>
-              <thead style={{ position: "sticky", top: 0, "z-index": 20, "background-color": "#1e293b" }}>
+              <thead style={{ position: "sticky", top: 0, "z-index": 20, "background-color": vscode.tabBarBg }}>
                 <tr>
                   <For each={columns()}>
                     {(col, colIndex) => (
@@ -574,8 +573,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                           padding: "8px 12px",
                           "text-align": "center",
                           "font-weight": "600",
-                          border: "1px solid #334155",
-                          color: "#e2e8f0",
+                          border: `1px solid ${vscode.border}`,
+                          color: vscode.foreground,
                           position: "relative",
                           "user-select": "none",
                           "min-height": `${ROW_HEIGHT}px`,
@@ -585,7 +584,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
                           <span>{col.name}</span>
                           {getDataTypeName(col.dataTypeOid) && (
-                            <span style={{ "font-size": "11px", color: "#64748b", "font-weight": "400" }}>
+                            <span style={{ "font-size": "11px", color: vscode.foregroundDim, "font-weight": "400" }}>
                               {getDataTypeName(col.dataTypeOid)}
                             </span>
                           )}
@@ -602,7 +601,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                             "background-color": "transparent",
                             "z-index": "10"
                           }}
-                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#2563eb")}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.accent)}
                           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                         />
                       </th>
@@ -663,7 +662,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 "background-color": "transparent",
                 "z-index": "20"
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#10b981")}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.success)}
               onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
             />
           </div>
@@ -715,7 +714,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         overflow: "hidden",
         display: "flex",
         "flex-direction": "column",
-        "background-color": "#0f172a",
+        "background-color": vscode.editorBg,
       }}
     >
         {/* CloudBeaver 风格：SQL 与结果上下可调整 */}
@@ -738,8 +737,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               overflow: "hidden",
               display: "flex",
               "flex-direction": "column",
-              "background-color": "#1e293b",
-              "border-bottom": "1px solid #334155",
+              "background-color": vscode.sidebarBg,
+              "border-bottom": `1px solid ${vscode.border}`,
             }}
           >
             <div style={{
@@ -748,8 +747,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               display: "flex",
               gap: "8px",
               "align-items": "center",
-              "background-color": "#1e293b",
-              "border-bottom": "1px solid #334155",
+              "background-color": vscode.sidebarBg,
+              "border-bottom": `1px solid ${vscode.border}`,
             }}>
             <button
               onClick={runUserQuery}
@@ -758,7 +757,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 padding: "10px 24px",
                 "font-size": "14px",
                 "font-weight": "500",
-                "background-color": loading() ? "#6b7280" : "#10b981",
+                "background-color": loading() ? vscode.buttonSecondary : vscode.buttonBg,
                 color: "#fff",
                 border: "none",
                 "border-radius": "6px",
@@ -778,7 +777,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   padding: "10px 24px",
                   "font-size": "14px",
                   "font-weight": "500",
-                  "background-color": "#ef4444",
+                  "background-color": vscode.error,
                   color: "#fff",
                   border: "none",
                   "border-radius": "6px",
@@ -797,7 +796,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 padding: "10px 24px",
                 "font-size": "14px",
                 "font-weight": "500",
-                "background-color": showQueryBuilder() ? "#3b82f6" : "#6366f1",
+                "background-color": showQueryBuilder() ? vscode.accent : vscode.buttonSecondary,
                 color: "#fff",
                 border: "none",
                 "border-radius": "6px",
@@ -812,7 +811,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </button>
             <span style={{ 
               "margin-left": "auto", 
-              color: "#94a3b8", 
+              color: vscode.foregroundDim, 
               "font-size": "12px",
               "font-family": "'JetBrains Mono', monospace" 
             }}>
@@ -843,7 +842,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               overflow: "hidden",
               display: "flex",
               "flex-direction": "column",
-              "background-color": "#0f172a",
+              "background-color": vscode.editorBg,
               padding: "16px",
               "box-sizing": "border-box",
             }}
@@ -851,13 +850,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             <div style={{ 
               flex: 1, 
               "min-height": 0,
-              "background-color": "#1e293b", 
+              "background-color": vscode.sidebarBg, 
               padding: "16px", 
-              "border-radius": "8px", 
               overflow: "hidden", 
               display: "flex", 
               "flex-direction": "column",
-              border: "1px solid #334155",
+              border: `1px solid ${vscode.border}`,
             }}>
               {renderResult()}
             </div>
@@ -865,11 +863,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             {/* 数据库通知消息 - 底部可折叠 */}
             <div style={{
               "margin-top": "12px",
-              "background-color": "#1e293b",
-              "border-radius": "6px",
+              "background-color": vscode.sidebarBg,
               padding: "10px",
               "flex-shrink": "0",
-              border: "1px solid #334155",
+              border: `1px solid ${vscode.border}`,
             }}>
               <div style={{
                 display: "flex",
@@ -880,25 +877,25 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               }} onClick={() => setMessagesCollapsed(!messagesCollapsed())}>
                 <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
                   <span style={{
-                    color: "#94a3b8",
+                    color: vscode.foregroundDim,
                     "font-size": "11px",
                     transition: "transform 0.2s",
                     transform: messagesCollapsed() ? "rotate(-90deg)" : "rotate(0deg)"
                   }}>▼</span>
-                  <span style={{ color: "#94a3b8", "font-size": "12px", "font-weight": "600" }}>
+                  <span style={{ color: vscode.foregroundDim, "font-size": "12px", "font-weight": "600" }}>
                     数据库消息
                   </span>
                   <span style={{
                     width: "6px",
                     height: "6px",
                     "border-radius": "50%",
-                    "background-color": sseConnected() ? "#22c55e" : "#ef4444"
+                    "background-color": sseConnected() ? vscode.success : vscode.error
                   }} title={sseConnected() ? "SSE 已连接" : "SSE 未连接"} />
                   <Show when={notices().length > 0}>
                     <span style={{
-                      color: "#64748b",
+                      color: vscode.foregroundDim,
                       "font-size": "11px",
-                      "background-color": "#475569",
+                      "background-color": vscode.inputBg,
                       padding: "1px 6px",
                       "border-radius": "10px"
                     }}>
@@ -911,8 +908,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   style={{
                     padding: "2px 8px",
                     "font-size": "11px",
-                    "background-color": "#475569",
-                    color: "#e2e8f0",
+                    "background-color": vscode.buttonSecondary,
+                    color: vscode.foreground,
                     border: "none",
                     "border-radius": "4px",
                     cursor: "pointer"
@@ -929,7 +926,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   "overflow-y": "auto"
                 }}>
                   <Show when={notices().length === 0}>
-                    <div style={{ color: "#64748b", "font-size": "12px" }}>暂无消息</div>
+                    <div style={{ color: vscode.foregroundDim, "font-size": "12px" }}>暂无消息</div>
                   </Show>
                   <div style={{ display: "flex", "flex-direction": "column", gap: "4px" }}>
                     <For each={notices()}>
@@ -951,7 +948,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                             "background-color": colors.bg,
                             "border-radius": "4px",
                           }}>
-                            <span style={{ color: "#64748b", "flex-shrink": "0" }}>
+                            <span style={{ color: vscode.foregroundDim, "flex-shrink": "0" }}>
                               {new Date(notice.timestamp).toLocaleTimeString()}
                             </span>
                             <span style={{ color: colors.label, "font-weight": "500" }}>[{notice.type}]</span>

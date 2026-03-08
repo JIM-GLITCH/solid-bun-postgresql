@@ -38,9 +38,10 @@ export default function SqlEditor(props: SqlEditorProps) {
     editor = monaco.editor.create(container, {
       value: props.value,
       language: "sql",
+      theme: "vs-dark",
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
-      fontSize: 14,
+      fontSize: 13,
       lineNumbers: "on",
       wordWrap: "on",
       automaticLayout: true,

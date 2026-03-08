@@ -10,6 +10,7 @@ import {
   removeStoredConnection,
   type StoredConnection,
 } from './connection-storage';
+import { vscode } from './theme';
 
 export interface ConnectionInfo {
   id: string;
@@ -25,7 +26,6 @@ export interface QueryTab {
 export default function App() {
   const [connections, setConnections] = createSignal<ConnectionInfo[]>([]);
   const [savedConnections, setSavedConnections] = createSignal<StoredConnection[]>([]);
-  const [activeConnectionId, setActiveConnectionId] = createSignal<string | null>(null);
   const [externalQuery, setExternalQuery] = createSignal<{ connectionId: string; sql: string } | null>(null);
   const [showConnectionForm, setShowConnectionForm] = createSignal(false);
   const [connectingSavedId, setConnectingSavedId] = createSignal<string | null>(null);
@@ -38,7 +38,6 @@ export default function App() {
 
   const handleConnected = (connectionId: string, info: string) => {
     setConnections((prev) => [...prev, { id: connectionId, info }]);
-    setActiveConnectionId(connectionId);
     setShowConnectionForm(false);
   };
 
@@ -49,7 +48,7 @@ export default function App() {
   const handleConnectFromSaved = async (stored: StoredConnection) => {
     const already = connections().some((c) => c.id === stored.id);
     if (already) {
-      setActiveConnectionId(stored.id);
+      addOrFocusQueryTab(stored.id, stored.label);
       return;
     }
     setConnectingSavedId(stored.id);
@@ -57,7 +56,6 @@ export default function App() {
       const { success, connectionId, error } = await connectFromSaved(stored.id);
       if (success && connectionId) {
         setConnections((prev) => [...prev, { id: connectionId, info: stored.label }]);
-        setActiveConnectionId(connectionId);
         setShowConnectionForm(false);
       } else {
         alert(`连接失败: ${error ?? '未知错误'}`);
@@ -90,13 +88,7 @@ export default function App() {
     if (currentTab?.connectionId === connectionId) {
       setActiveTabId(remainingTabs[0]?.id ?? null);
     }
-    setConnections((prev) => {
-      const next = prev.filter((c) => c.id !== connectionId);
-      if (activeConnectionId() === connectionId) {
-        setActiveConnectionId(next[0]?.id ?? null);
-      }
-      return next;
-    });
+      setConnections((prev) => prev.filter((c) => c.id !== connectionId));
   };
 
   const addOrFocusQueryTab = (connectionId: string, connectionInfo: string, initialSql?: string) => {
@@ -128,8 +120,13 @@ export default function App() {
   };
 
   const handleQueryRequest = (connectionId: string, sql: string) => {
-    setActiveConnectionId(connectionId);
     addOrFocusQueryTab(connectionId, "", sql);
+  };
+
+  // 当前高亮的连接：有标签页时取当前标签的连接，否则为 null
+  const activeConnectionIdForSidebar = () => {
+    const tab = queryTabs().find((t) => t.id === activeTabId());
+    return tab?.connectionId ?? null;
   };
 
   const clearExternalQuery = () => {
@@ -140,78 +137,23 @@ export default function App() {
     setShowConnectionForm(true);
   };
 
-  const activeConn = () => connections().find((c) => c.id === activeConnectionId());
-
   return (
     <main style={{
       height: '100vh',
       display: 'flex',
       'flex-direction': 'column',
       overflow: 'hidden',
-      'background-color': '#0f172a',
+      'background-color': vscode.editorBg,
+      'font-family': "'Segoe UI', 'Microsoft YaHei', sans-serif",
     }}>
-      {/* 顶部工具栏 */}
-      <header style={{
-        'flex-shrink': 0,
-        height: '40px',
-        display: 'flex',
-        'align-items': 'center',
-        'justify-content': 'space-between',
-        padding: '0 16px',
-        'background-color': '#1e293b',
-        'border-bottom': '1px solid #334155',
-      }}>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '12px' }}>
-          <span style={{ color: '#e2e8f0', 'font-weight': '600', 'font-size': '14px' }}>
-            数据库
-          </span>
-          <span style={{ color: '#64748b', 'font-size': '12px' }}>|</span>
-          <Show when={connections().length > 0} fallback={
-            <span style={{ color: '#94a3b8', 'font-size': '13px' }}>未连接</span>
-          }>
-            <span style={{ color: '#22c55e', 'font-size': '12px' }}>●</span>
-            <span style={{ color: '#94a3b8', 'font-size': '13px' }}>
-              {activeConn()?.info ?? `${connections().length} 个连接`}
-            </span>
-            {activeConnectionId() && (
-              <ConnectionForm
-                compact
-                connectionId={activeConnectionId()!}
-                connectionInfo={activeConn()?.info}
-                onConnected={() => {}}
-                onDisconnect={handleDisconnect}
-              />
-            )}
-          </Show>
-        </div>
-        <div style={{ display: 'flex', 'align-items': 'center', gap: '8px' }}>
-          <Show when={connections().length > 0}>
-            <button
-              onClick={handleAddConnection}
-              style={{
-                padding: '4px 10px',
-                'font-size': '12px',
-                'background-color': '#238636',
-                color: '#fff',
-                border: 'none',
-                'border-radius': '4px',
-                cursor: 'pointer',
-              }}
-            >
-              ➕ 添加连接
-            </button>
-          </Show>
-        </div>
-      </header>
-
-      {/* CloudBeaver 风格：左侧 Database Navigator + 右侧主区域 */}
+      {/* 左侧 Database Navigator + 右侧主区域 */}
       <Resizable
         initialSizes={[0.2, 0.8]}
         style={{
           flex: 1,
           display: 'flex',
           overflow: 'hidden',
-          'background-color': '#0f172a',
+          'background-color': vscode.editorBg,
         }}
       >
         <Resizable.Panel
@@ -220,19 +162,18 @@ export default function App() {
           collapsedSize={0.02}
           style={{
             overflow: 'hidden',
-            'background-color': '#0d1117',
-            'border-right': '1px solid #21262d',
+            'background-color': vscode.sidebarBg,
+            'border-right': `1px solid ${vscode.border}`,
           }}
         >
           <DatabaseNavigator
-            connections={connections()}
-            savedConnections={savedConnections()}
-            activeConnectionId={activeConnectionId()}
+            connections={connections}
+            savedConnections={savedConnections}
+            activeConnectionId={activeConnectionIdForSidebar()}
             onAddConnection={handleAddConnection}
             onDisconnect={handleDisconnect}
             onQueryRequest={handleQueryRequest}
             onOpenQueryTab={handleOpenQueryTab}
-            onSetActiveConnection={setActiveConnectionId}
             onConnectFromSaved={handleConnectFromSaved}
             connectingSavedId={connectingSavedId()}
             onRemoveSaved={handleRemoveSaved}
@@ -242,9 +183,9 @@ export default function App() {
         <Resizable.Handle
           aria-label="调整侧边栏宽度"
           style={{
-            width: '5px',
+            width: '4px',
             'flex-shrink': 0,
-            'background-color': 'transparent',
+            'background-color': vscode.border,
           }}
         />
         <Resizable.Panel
@@ -253,7 +194,7 @@ export default function App() {
             overflow: 'hidden',
             display: 'flex',
             'flex-direction': 'column',
-            'background-color': '#0f172a',
+            'background-color': vscode.editorBg,
             position: 'relative',
           }}
         >
@@ -266,11 +207,11 @@ export default function App() {
                 'align-items': 'center',
                 'justify-content': 'center',
                 padding: '24px',
-                'background-color': '#0f172a',
+                'background-color': vscode.editorBg,
               }}>
                 <div style={{
-                  color: '#94a3b8',
-                  'font-size': '15px',
+                  color: vscode.foregroundDim,
+                  'font-size': '13px',
                   'text-align': 'center',
                   'max-width': '320px',
                 }}>
@@ -284,15 +225,14 @@ export default function App() {
                 'align-items': 'center',
                 'justify-content': 'center',
                 padding: '24px',
-                'background-color': '#0f172a',
+                'background-color': vscode.editorBg,
               }}>
                 <div style={{
                   width: '100%',
                   'max-width': '480px',
-                  padding: '32px',
-                  'background-color': '#1e293b',
-                  'border-radius': '12px',
-                  'border': '1px solid #334155',
+                  padding: '24px',
+                  'background-color': vscode.sidebarBg,
+                  'border': `1px solid ${vscode.border}`,
                 }}>
                   <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
                 </div>
@@ -306,16 +246,15 @@ export default function App() {
                 display: 'flex',
                 'align-items': 'center',
                 'justify-content': 'center',
-                'background-color': 'rgba(0,0,0,0.6)',
+                'background-color': 'rgba(0,0,0,0.5)',
                 'z-index': 100,
               }}>
                 <div style={{
                   width: '100%',
                   'max-width': '480px',
-                  padding: '32px',
-                  'background-color': '#1e293b',
-                  'border-radius': '12px',
-                  'border': '1px solid #334155',
+                  padding: '24px',
+                  'background-color': vscode.sidebarBg,
+                  'border': `1px solid ${vscode.border}`,
                   position: 'relative',
                 }}>
                   <button
@@ -324,14 +263,15 @@ export default function App() {
                       position: 'absolute',
                       top: '12px',
                       right: '12px',
-                      padding: '4px 8px',
+                      padding: '4px 12px',
                       'font-size': '12px',
-                      'background-color': '#334155',
-                      color: '#e2e8f0',
+                      'background-color': vscode.buttonSecondary,
+                      color: vscode.foreground,
                       border: 'none',
-                      'border-radius': '4px',
                       cursor: 'pointer',
                     }}
+                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
+                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
                   >
                     取消
                   </button>
@@ -345,20 +285,20 @@ export default function App() {
                 display: 'flex',
                 'align-items': 'center',
                 'justify-content': 'center',
-                color: '#64748b',
-                'font-size': '14px',
+                color: vscode.foregroundDim,
+                'font-size': '13px',
               }}>
                 右键点击左侧数据库连接 → 选择「新建查询」打开查询窗口
               </div>
             }>
               <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
+                {/* Tab 栏 - VS Code 风格 */}
                 <div style={{
                   display: 'flex',
-                  'align-items': 'center',
-                  gap: '2px',
-                  padding: '4px 8px',
-                  'background-color': '#1e293b',
-                  'border-bottom': '1px solid #334155',
+                  'align-items': 'flex-end',
+                  gap: '0',
+                  'background-color': vscode.tabBarBg,
+                  'border-bottom': `1px solid ${vscode.border}`,
                   'flex-shrink': 0,
                   overflow: 'auto',
                 }}>
@@ -372,18 +312,18 @@ export default function App() {
                             display: 'flex',
                             'align-items': 'center',
                             gap: '6px',
-                            padding: '6px 12px',
+                            padding: '8px 16px',
                             'font-size': '13px',
                             cursor: 'pointer',
-                            'background-color': isActive() ? '#334155' : 'transparent',
-                            color: isActive() ? '#fff' : '#94a3b8',
-                            'border-radius': '4px',
-                            'max-width': '200px',
+                            'background-color': isActive() ? vscode.tabActiveBg : 'transparent',
+                            color: isActive() ? vscode.foreground : vscode.foregroundDim,
+                            'border-right': `1px solid ${vscode.border}`,
+                            'max-width': '220px',
                             overflow: 'hidden',
                             'text-overflow': 'ellipsis',
                             'white-space': 'nowrap',
                           }}
-                          onMouseEnter={(e) => !isActive() && (e.currentTarget.style.backgroundColor = '#2d3748')}
+                          onMouseEnter={(e) => !isActive() && (e.currentTarget.style.backgroundColor = vscode.listHover)}
                           onMouseLeave={(e) => !isActive() && (e.currentTarget.style.backgroundColor = 'transparent')}
                         >
                           <span style={{ 'font-size': '12px' }}>📝</span>
@@ -391,16 +331,16 @@ export default function App() {
                           <button
                             onClick={(e) => { e.stopPropagation(); removeQueryTab(tab.id); }}
                             style={{
-                              padding: '2px',
+                              padding: '0 4px',
                               background: 'none',
                               border: 'none',
-                              color: '#64748b',
+                              color: vscode.foregroundDim,
                               cursor: 'pointer',
-                              'font-size': '14px',
+                              'font-size': '16px',
                               'line-height': 1,
                             }}
-                            onMouseEnter={(e) => (e.currentTarget.style.color = '#f87171')}
-                            onMouseLeave={(e) => (e.currentTarget.style.color = '#64748b')}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
                             title="关闭"
                           >
                             ×
