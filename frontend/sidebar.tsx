@@ -113,22 +113,43 @@ export default function Sidebar(props: SidebarProps) {
     }));
   }
 
-  // 加载 schemas，挂到指定连接节点下
+  // 从树中递归查找节点
+  function findNode(nodes: TreeNode[], nodeId: string): TreeNode | null {
+    for (const n of nodes) {
+      if (n.id === nodeId) return n;
+      if (n.children.length > 0) {
+        const found = findNode(n.children, nodeId);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  // 加载 schemas，挂到指定连接节点下（刷新时保留已加载的 tables/views）
   async function loadSchemas(connectionId: string, connectionNodeId: string) {
     try {
       const data = await getSchemas(connectionId);
       if (data.schemas) {
-        const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => ({
-          id: `schema:${connectionId}:${schema}`,
-          name: schema,
-          type: "schema" as NodeType,
-          schema,
-          connectionId,
-          children: [
-            { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] },
-            { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] },
-          ],
-        }));
+        const connNode = findNode(state.nodes, connectionNodeId);
+        const existingSchemas = connNode?.children ?? [];
+        const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => {
+          const schemaId = `schema:${connectionId}:${schema}`;
+          const existing = existingSchemas.find((s) => s.id === schemaId);
+          if (existing && existing.children.length >= 2) {
+            return { ...existing, name: schema };
+          }
+          return {
+            id: schemaId,
+            name: schema,
+            type: "schema" as NodeType,
+            schema,
+            connectionId,
+            children: [
+              { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] },
+              { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] },
+            ],
+          };
+        });
         updateNodeChildren(connectionNodeId, schemaNodes);
         setState("loadedIds", (prev) => new Set(prev).add(connectionNodeId));
       }

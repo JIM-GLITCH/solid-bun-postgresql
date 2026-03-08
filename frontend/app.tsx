@@ -1,4 +1,4 @@
-import { createSignal, Show, For, onMount, createMemo } from 'solid-js';
+import { createSignal, Show, For, onMount } from 'solid-js';
 import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
@@ -140,10 +140,6 @@ export default function App() {
   };
 
   const activeConn = () => connections().find((c) => c.id === activeConnectionId());
-  const activeTab = createMemo(() => {
-    const tid = activeTabId();
-    return tid ? queryTabs().find((t) => t.id === tid) : undefined;
-  });
 
   return (
     <main style={{
@@ -413,22 +409,31 @@ export default function App() {
                     }}
                   </For>
                 </div>
-                <Show when={activeTab()}>
-                  {(getTab) => (
-                    <div style={{ flex: 1, overflow: 'hidden', 'min-height': 0 }}>
-                      <QueryInterface
-                        activeConnectionId={() => getTab()?.connectionId ?? null}
-                        externalQuery={() => {
-                          const ext = externalQuery();
-                          const tab = getTab();
-                          if (!ext || !tab || ext.connectionId !== tab.connectionId) return null;
-                          return ext;
+                <div style={{ flex: 1, overflow: 'hidden', 'min-height': 0, position: 'relative' }}>
+                  <For each={queryTabs()}>
+                    {(tab) => (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          display: activeTabId() === tab.id ? 'flex' : 'none',
+                          'flex-direction': 'column',
+                          overflow: 'hidden',
                         }}
-                        onExternalQueryHandled={clearExternalQuery}
-                      />
-                    </div>
-                  )}
-                </Show>
+                      >
+                        <QueryInterface
+                          activeConnectionId={() => tab.connectionId}
+                          externalQuery={() => {
+                            const ext = externalQuery();
+                            if (!ext || ext.connectionId !== tab.connectionId) return null;
+                            return ext;
+                          }}
+                          onExternalQueryHandled={clearExternalQuery}
+                        />
+                      </div>
+                    )}
+                  </For>
+                </div>
               </div>
             </Show>
           </Show>

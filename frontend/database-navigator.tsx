@@ -30,13 +30,14 @@ export default function DatabaseNavigator(props: DatabaseNavigatorProps) {
   const collapsed = () => panel.collapsed();
 
   return (
-    <Show
-      when={!collapsed()}
-      fallback={
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <Show when={collapsed()}>
         <button
           onClick={() => panel.expand()}
           title="展开侧边栏"
           style={{
+            position: 'absolute',
+            inset: 0,
             width: '100%',
             height: '100%',
             padding: '8px',
@@ -45,21 +46,21 @@ export default function DatabaseNavigator(props: DatabaseNavigatorProps) {
             color: '#6e7681',
             cursor: 'pointer',
             'font-size': '14px',
+            'z-index': 1,
           }}
           onMouseEnter={(e) => (e.currentTarget.style.color = '#c9d1d9')}
           onMouseLeave={(e) => (e.currentTarget.style.color = '#6e7681')}
         >
           »
         </button>
-      }
-    >
+      </Show>
     <div
       style={{
         width: '100%',
         height: '100%',
         'background-color': '#0d1117',
         'border-right': '1px solid #21262d',
-        display: 'flex',
+        display: collapsed() ? 'none' : 'flex',
         'flex-direction': 'column',
         'user-select': 'none',
       }}
@@ -211,7 +212,7 @@ export default function DatabaseNavigator(props: DatabaseNavigatorProps) {
                       display: 'flex',
                       'align-items': 'center',
                       gap: '4px',
-                      marginBottom: '4px',
+                      'margin-bottom': '4px',
                     }}
                   >
                     <button
@@ -259,6 +260,6 @@ export default function DatabaseNavigator(props: DatabaseNavigatorProps) {
         </div>
       </Show>
     </div>
-    </Show>
+    </div>
   );
 }
