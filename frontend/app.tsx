@@ -2,7 +2,7 @@ import { createSignal, Show, For, onMount } from 'solid-js';
 import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
-import DatabaseNavigator from './database-navigator';
+import Sidebar from './sidebar';
 import { disconnectPostgres } from './api';
 import {
   loadStoredConnections,
@@ -166,7 +166,7 @@ export default function App() {
             'border-right': `1px solid ${vscode.border}`,
           }}
         >
-          <DatabaseNavigator
+          <Sidebar
             connections={connections}
             savedConnections={savedConnections}
             activeConnectionId={activeConnectionIdForSidebar()}
@@ -177,7 +177,6 @@ export default function App() {
             onConnectFromSaved={handleConnectFromSaved}
             connectingSavedId={connectingSavedId()}
             onRemoveSaved={handleRemoveSaved}
-            onCollapse={() => {}}
           />
         </Resizable.Panel>
         <Resizable.Handle

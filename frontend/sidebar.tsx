@@ -1,6 +1,7 @@
 import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup, on } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import Resizable from "@corvu/resizable";
 import { getSchemas, getTables, getColumns, getIndexes } from "./api";
 import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
@@ -47,11 +48,6 @@ interface SidebarProps {
   onConnectFromSaved?: (stored: StoredConnection) => void;
   onRemoveSaved?: (id: string) => void;
   connectingSavedId?: string | null;
-  onCollapse?: () => void;
-  /** 外部触发刷新时递增，Sidebar 会响应并刷新所有连接 */
-  refreshTrigger?: () => number;
-  /** 无标题栏模式，由父组件提供标题 */
-  hideHeader?: boolean;
 }
 
 // 图标组件
@@ -73,6 +69,10 @@ function NodeIcon(props: { type: NodeType }) {
 }
 
 export default function Sidebar(props: SidebarProps) {
+  const panel = Resizable.usePanelContext();
+  const onCollapse = () => panel.collapse();
+  const collapsed = () => panel.collapsed();
+
   // 构建统一树根：新建连接 + 已保存（未连接为 savedConnection，已连接为 connection）+ 未保存的活跃连接
   function buildRootNodes(): TreeNode[] {
     const conns = props.connections?.() ?? [];
@@ -165,10 +165,6 @@ export default function Sidebar(props: SidebarProps) {
   }
 
   // 响应外部刷新触发
-  createEffect(() => {
-    const trigger = props.refreshTrigger?.();
-    if (trigger !== undefined && trigger > 0) refreshAll();
-  });
 
   // connections / savedConnections 变化时重建顶层节点（保留 connection 节点已加载的 children）
   createEffect(() => {
@@ -656,60 +652,81 @@ export default function Sidebar(props: SidebarProps) {
   const filteredTree = () => filterNodes(state.nodes, searchTerm());
 
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        "background-color": vscode.sidebarBg,
-        "border-right": `1px solid ${vscode.border}`,
-        display: "flex",
-        "flex-direction": "column",
-        "user-select": "none",
-      }}
-      onClick={closeContextMenu}
-    >
-      <Show when={!props.hideHeader}>
-        {/* 标题栏（hideHeader 时由父组件提供） */}
+    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+      <Show when={collapsed()}>
+        <button
+          onClick={() => panel.expand()}
+          title="展开侧边栏"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            padding: "8px",
+            border: "none",
+            background: "none",
+            color: vscode.foregroundDim,
+            cursor: "pointer",
+            "font-size": "14px",
+            "z-index": 1,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+          onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
+        >
+          »
+        </button>
+      </Show>
+      <div
+        style={{
+          width: "100%",
+          height: "100%",
+          "background-color": vscode.sidebarBg,
+          "border-right": `1px solid ${vscode.border}`,
+          display: collapsed() ? "none" : "flex",
+          "flex-direction": "column",
+          "user-select": "none",
+        }}
+        onClick={closeContextMenu}
+      >
+        {/* 标题栏：数据库 */}
         <div
           style={{
-            padding: "12px 16px",
+            padding: "10px 12px",
             "border-bottom": `1px solid ${vscode.border}`,
+            "flex-shrink": 0,
             display: "flex",
             "align-items": "center",
             gap: "8px",
           }}
         >
           <span style={{ "font-size": "14px" }}>🗄️</span>
-          <span style={{ color: vscode.foreground, "font-weight": "600", "font-size": "14px" }}>数据库</span>
+          <span style={{ "font-size": "13px", color: vscode.foreground, "font-weight": "600" }}>数据库</span>
           <div style={{ "margin-left": "auto", display: "flex", gap: "4px" }}>
-            <Show when={props.onAddConnection}>
-              <button
-                onClick={() => props.onAddConnection?.()}
-                style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
-                title="添加数据库连接"
-                onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
-                onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
-              >➕</button>
-            </Show>
             <button
-              onClick={refreshAll}
+              onClick={props.onAddConnection}
               style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
-              title="刷新"
+              title="添加数据库连接"
               onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
               onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
-            >🔄</button>
-            <Show when={props.onCollapse}>
+            >➕</button>
+            <Show when={(props.connections?.() ?? []).length > 0}>
               <button
-                onClick={() => props.onCollapse?.()}
+                onClick={refreshAll}
                 style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
-                title="收起侧边栏"
+                title="刷新"
                 onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
                 onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
-              >◀</button>
+              >🔄</button>
             </Show>
+            <button
+              onClick={onCollapse}
+              style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
+              title="收起侧边栏"
+              onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
+              onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
+            >◀</button>
           </div>
         </div>
-      </Show>
 
       {/* 搜索框 */}
       <div style={{ padding: "8px 12px", "border-bottom": `1px solid ${vscode.border}` }}>
@@ -946,6 +963,7 @@ export default function Sidebar(props: SidebarProps) {
       >
         <span>Connections: {state.nodes.length}</span>
         <span>💡 双击表查询</span>
+      </div>
       </div>
     </div>
   );
