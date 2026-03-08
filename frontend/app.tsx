@@ -3,11 +3,10 @@ import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
 import DatabaseNavigator from './database-navigator';
-import { disconnectPostgres, connectPostgres } from './api';
+import { disconnectPostgres } from './api';
 import {
   loadStoredConnections,
-  saveConnection,
-  decryptConnection,
+  connectFromSaved,
   removeStoredConnection,
   type StoredConnection,
 } from './connection-storage';
@@ -34,7 +33,7 @@ export default function App() {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
 
   onMount(() => {
-    setSavedConnections(loadStoredConnections());
+    loadStoredConnections().then(setSavedConnections);
   });
 
   const handleConnected = (connectionId: string, info: string) => {
@@ -44,7 +43,7 @@ export default function App() {
   };
 
   const handleSavedRefresh = () => {
-    setSavedConnections(loadStoredConnections());
+    loadStoredConnections().then(setSavedConnections);
   };
 
   const handleConnectFromSaved = async (stored: StoredConnection) => {
@@ -55,15 +54,13 @@ export default function App() {
     }
     setConnectingSavedId(stored.id);
     try {
-      const params = await decryptConnection(stored);
-      const { id, ...loginParams } = params;
-      const { sucess, error: err } = await connectPostgres(id, loginParams);
-      if (sucess) {
-        setConnections((prev) => [...prev, { id, info: stored.label }]);
-        setActiveConnectionId(id);
+      const { success, connectionId, error } = await connectFromSaved(stored.id);
+      if (success && connectionId) {
+        setConnections((prev) => [...prev, { id: connectionId, info: stored.label }]);
+        setActiveConnectionId(connectionId);
         setShowConnectionForm(false);
       } else {
-        alert(`连接失败: ${err ?? '未知错误'}`);
+        alert(`连接失败: ${error ?? '未知错误'}`);
       }
     } catch (e) {
       alert(`连接失败: ${e instanceof Error ? e.message : String(e)}`);
@@ -72,9 +69,13 @@ export default function App() {
     }
   };
 
-  const handleRemoveSaved = (id: string) => {
-    removeStoredConnection(id);
-    setSavedConnections(loadStoredConnections());
+  const handleRemoveSaved = async (id: string) => {
+    try {
+      await removeStoredConnection(id);
+      loadStoredConnections().then(setSavedConnections);
+    } catch (e) {
+      console.warn('删除失败:', e);
+    }
   };
 
   const handleDisconnect = async (connectionId: string) => {
