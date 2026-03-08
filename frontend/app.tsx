@@ -1,4 +1,5 @@
 import { createSignal, Show, For, onMount } from 'solid-js';
+import { createStore } from 'solid-js/store';
 import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
@@ -24,7 +25,7 @@ export interface QueryTab {
 }
 
 export default function App() {
-  const [connections, setConnections] = createSignal<ConnectionInfo[]>([]);
+  const [connections, setConnections] = createStore<ConnectionInfo[]>([]);
   const [savedConnections, setSavedConnections] = createSignal<StoredConnection[]>([]);
   const [externalQuery, setExternalQuery] = createSignal<{ connectionId: string; sql: string } | null>(null);
   const [showConnectionForm, setShowConnectionForm] = createSignal(false);
@@ -37,7 +38,7 @@ export default function App() {
   });
 
   const handleConnected = (connectionId: string, info: string) => {
-    setConnections((prev) => [...prev, { id: connectionId, info }]);
+    setConnections(connections.length, { id: connectionId, info });
     setShowConnectionForm(false);
   };
 
@@ -46,7 +47,7 @@ export default function App() {
   };
 
   const handleConnectFromSaved = async (stored: StoredConnection): Promise<{ success: boolean; connectionId?: string }> => {
-    const already = connections().some((c) => c.id === stored.id);
+    const already = connections.some((c) => c.id === stored.id);
     if (already) {
       addOrFocusQueryTab(stored.id, stored.label);
       return { success: true, connectionId: stored.id };
@@ -55,7 +56,7 @@ export default function App() {
     try {
       const { success, connectionId, error } = await connectFromSaved(stored.id);
       if (success && connectionId) {
-        setConnections((prev) => [...prev, { id: connectionId, info: stored.label }]);
+        setConnections(connections.length, { id: connectionId, info: stored.label });
         setShowConnectionForm(false);
         return { success: true, connectionId };
       } else {
@@ -91,7 +92,7 @@ export default function App() {
     if (currentTab?.connectionId === connectionId) {
       setActiveTabId(remainingTabs[0]?.id ?? null);
     }
-      setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+      setConnections(connections.filter((c) => c.id !== connectionId));
   };
 
   const addOrFocusQueryTab = (connectionId: string, connectionInfo: string, initialSql?: string) => {
@@ -102,7 +103,7 @@ export default function App() {
       if (initialSql) setExternalQuery({ connectionId, sql: initialSql });
       return;
     }
-    const conn = connections().find((c) => c.id === connectionId);
+    const conn = connections.find((c) => c.id === connectionId);
     const info = conn?.info ?? connectionInfo;
     const tab: QueryTab = { id: connectionId, connectionId, connectionInfo: info };
     setQueryTabs((prev) => [...prev, tab]);
@@ -200,7 +201,7 @@ export default function App() {
             position: 'relative',
           }}
         >
-          <Show when={connections().length > 0} fallback={
+          <Show when={connections.length > 0} fallback={
             /* 未连接时：主区域显示连接表单或欢迎页 */
             <Show when={showConnectionForm()} fallback={
               <div style={{

@@ -37,7 +37,7 @@ interface TreeState {
 }
 
 interface SidebarProps {
-  connections: Accessor<ConnectionInfo[]>;
+  connections: ConnectionInfo[];
   /** 已保存的连接（未连接时显示为可点击节点，已连接时合并到 connection 节点） */
   savedConnections?: Accessor<StoredConnection[]>;
   activeConnectionId?: string | null;
@@ -75,7 +75,7 @@ export default function Sidebar(props: SidebarProps) {
 
   // 构建统一树根：新建连接 + 已保存（未连接为 savedConnection，已连接为 connection）+ 未保存的活跃连接
   function buildRootNodes(): TreeNode[] {
-    const conns = props.connections?.() ?? [];
+    const conns = props.connections ?? [];
     const saved = props.savedConnections?.() ?? [];
     const roots: TreeNode[] = [];
 
@@ -157,19 +157,16 @@ export default function Sidebar(props: SidebarProps) {
 
   // 响应外部刷新触发
 
-  // connections / savedConnections 变化时重建顶层节点（保留 connection 节点已加载的 children）
+  // connections / savedConnections 变化时重建顶层节点
   createEffect(() => {
-    const conns = props.connections?.() ?? [];
+    const conns = props.connections ?? [];
     const connIds = new Set(conns.map((c) => c.id));
     const newRoots = buildRootNodes();
     setState(produce((s) => {
-      // 断开连接时清除对应节点的 expandedIds，避免重连时误判为已展开
       s.expandedIds = new Set([...s.expandedIds].filter((id) => {
         const parts = id.split(":");
         if (parts.length < 2) return true;
-        const cid = parts[1];
-        if (!connIds.has(cid)) return false;
-        return true;
+        return connIds.has(parts[1]);
       }));
       s.nodes = newRoots.map((r) => {
         if (r.type === "connection" && r.connectionId) {
@@ -712,7 +709,7 @@ export default function Sidebar(props: SidebarProps) {
               onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
               onMouseLeave={(e) => (e.currentTarget.style.color = vscode.foregroundDim)}
             >➕</button>
-            <Show when={(props.connections?.() ?? []).length > 0}>
+            <Show when={(props.connections ?? []).length > 0}>
               <button
                 onClick={refreshAll}
                 style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
