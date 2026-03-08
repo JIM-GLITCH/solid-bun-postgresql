@@ -1,5 +1,6 @@
 import { For, createSignal, Show } from 'solid-js';
 import { connectPostgres } from './api';
+import { saveConnection } from './connection-storage';
 import type { PostgresLoginParams } from '../shared/src';
 
 function generateConnectionId(): string {
@@ -29,6 +30,7 @@ const initForm = (): PostgresLoginParams =>
 
 interface ConnectionFormProps {
   onConnected: (connectionId: string, info: string) => void;
+  onSaved?: () => void;
   compact?: boolean;
   connectionInfo?: string;
   connectionId?: string;
@@ -39,6 +41,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const [form, setForm] = createSignal<PostgresLoginParams>(initForm());
   const [connecting, setConnecting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [rememberPassword, setRememberPassword] = createSignal(false);
 
   const onChange = (key: keyof PostgresLoginParams, value: string) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -53,6 +56,14 @@ export default function ConnectionForm(props: ConnectionFormProps) {
       const { sucess, error: err } = await connectPostgres(connectionId, form());
       if (sucess) {
         const p = form();
+        if (rememberPassword()) {
+          try {
+            await saveConnection(connectionId, p);
+            props.onSaved?.();
+          } catch (e) {
+            console.warn('保存连接失败:', e);
+          }
+        }
         props.onConnected(connectionId, `${p.username}@${p.host}:${p.port}/${p.database}`);
       } else {
         setError(String(err ?? '连接失败'));
@@ -122,6 +133,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                 <td style={{ padding: '8px 12px 8px 0', color: '#64748b', 'font-size': '13px' }}>{field.desc}</td>
                 <td style={{ padding: '8px 0' }}>
                   <input
+                    type={field.key === 'password' ? 'password' : 'text'}
                     value={form()[field.key]}
                     onInput={(e) => onChange(field.key, e.currentTarget.value)}
                     placeholder={field.example}
@@ -140,6 +152,14 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </For>
         </tbody>
       </table>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', cursor: 'pointer', fontSize: '14px', color: '#64748b' }}>
+        <input
+          type="checkbox"
+          checked={rememberPassword()}
+          onInput={(e) => setRememberPassword(e.currentTarget.checked)}
+        />
+        记住密码（加密存储）
+      </label>
       <button
         onClick={connect}
         disabled={connecting()}

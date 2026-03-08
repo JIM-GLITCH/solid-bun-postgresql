@@ -1,9 +1,16 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, Show, onMount } from 'solid-js';
 import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
 import DatabaseNavigator from './database-navigator';
-import { disconnectPostgres } from './api';
+import { disconnectPostgres, connectPostgres } from './api';
+import {
+  loadStoredConnections,
+  saveConnection,
+  decryptConnection,
+  removeStoredConnection,
+  type StoredConnection,
+} from './connection-storage';
 
 export interface ConnectionInfo {
   id: string;
@@ -12,14 +19,54 @@ export interface ConnectionInfo {
 
 export default function App() {
   const [connections, setConnections] = createSignal<ConnectionInfo[]>([]);
+  const [savedConnections, setSavedConnections] = createSignal<StoredConnection[]>([]);
   const [activeConnectionId, setActiveConnectionId] = createSignal<string | null>(null);
   const [externalQuery, setExternalQuery] = createSignal<{ connectionId: string; sql: string } | null>(null);
   const [showConnectionForm, setShowConnectionForm] = createSignal(false);
+  const [connectingSavedId, setConnectingSavedId] = createSignal<string | null>(null);
+
+  onMount(() => {
+    setSavedConnections(loadStoredConnections());
+  });
 
   const handleConnected = (connectionId: string, info: string) => {
     setConnections((prev) => [...prev, { id: connectionId, info }]);
     setActiveConnectionId(connectionId);
     setShowConnectionForm(false);
+  };
+
+  const handleSavedRefresh = () => {
+    setSavedConnections(loadStoredConnections());
+  };
+
+  const handleConnectFromSaved = async (stored: StoredConnection) => {
+    const already = connections().some((c) => c.id === stored.id);
+    if (already) {
+      setActiveConnectionId(stored.id);
+      return;
+    }
+    setConnectingSavedId(stored.id);
+    try {
+      const params = await decryptConnection(stored);
+      const { id, ...loginParams } = params;
+      const { sucess, error: err } = await connectPostgres(id, loginParams);
+      if (sucess) {
+        setConnections((prev) => [...prev, { id, info: stored.label }]);
+        setActiveConnectionId(id);
+        setShowConnectionForm(false);
+      } else {
+        alert(`连接失败: ${err ?? '未知错误'}`);
+      }
+    } catch (e) {
+      alert(`连接失败: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setConnectingSavedId(null);
+    }
+  };
+
+  const handleRemoveSaved = (id: string) => {
+    removeStoredConnection(id);
+    setSavedConnections(loadStoredConnections());
   };
 
   const handleDisconnect = async (connectionId: string) => {
@@ -136,11 +183,15 @@ export default function App() {
         >
           <DatabaseNavigator
             connections={connections()}
+            savedConnections={savedConnections()}
             activeConnectionId={activeConnectionId()}
             onAddConnection={handleAddConnection}
             onDisconnect={handleDisconnect}
             onQueryRequest={handleQueryRequest}
             onSetActiveConnection={setActiveConnectionId}
+            onConnectFromSaved={handleConnectFromSaved}
+            connectingSavedId={connectingSavedId()}
+            onRemoveSaved={handleRemoveSaved}
             onCollapse={() => {}}
           />
         </Resizable.Panel>
@@ -199,7 +250,7 @@ export default function App() {
                   'border-radius': '12px',
                   'border': '1px solid #334155',
                 }}>
-                  <ConnectionForm onConnected={handleConnected} />
+                  <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
                 </div>
               </div>
             </Show>
@@ -240,7 +291,7 @@ export default function App() {
                   >
                     取消
                   </button>
-                  <ConnectionForm onConnected={handleConnected} />
+                  <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
                 </div>
               </div>
             </Show>
