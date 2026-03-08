@@ -142,7 +142,11 @@ export async function handleApiRequest<M extends ApiMethod>(
         session.cursor = undefined;
       }
 
-      if ((client as any).processID) {
+      // 使用 pg_backend_pid() 可靠获取当前连接的后端 PID，供取消查询使用
+      try {
+        const pidRes = await client.query("SELECT pg_backend_pid() as pid");
+        session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
+      } catch {
         session.runningQueryPid = (client as any).processID;
       }
 
@@ -206,7 +210,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       const cid = getConnId();
       const session = getS(cid);
       const pid = session.runningQueryPid;
-      if (!pid) throw new Error("没有正在执行的查询");
+      if (!pid) return { success: false, error: "没有正在执行的查询" };
       const result = await session.backGroundPool.query(`SELECT pg_cancel_backend($1)`, [pid]);
       const cancelled = result.rows[0]?.pg_cancel_backend;
       return { success: true, cancelled, message: cancelled ? "查询取消请求已发送" : "查询可能已完成或无法取消" };
@@ -217,9 +221,17 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { query, limit = 1000 } = payload as { connectionId: string; query: string; limit?: number };
       const session = getS(cid);
       const limitedQuery = query.trim().toLowerCase().includes("limit") ? query : `${query} LIMIT ${limit}`;
-      const result = await session.backGroundPool.query({ text: limitedQuery, rowMode: "array" });
-      const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
-      return { rows: result.rows, columns: columnsInfo, hasMore: false };
+      const poolClient = await session.backGroundPool.connect();
+      try {
+        const pidRes = await poolClient.query("SELECT pg_backend_pid() as pid");
+        session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
+        const result = await poolClient.query({ text: limitedQuery, rowMode: "array" });
+        const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
+        return { rows: result.rows, columns: columnsInfo, hasMore: false };
+      } finally {
+        session.runningQueryPid = undefined;
+        poolClient.release();
+      }
     }
 
     case "postgres/schemas": {

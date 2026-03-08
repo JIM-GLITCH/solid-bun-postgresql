@@ -16,6 +16,7 @@ interface DatabaseNavigatorProps {
   onAddConnection: () => void;
   onDisconnect?: (connectionId: string) => void;
   onQueryRequest?: (connectionId: string, sql: string) => void;
+  onOpenQueryTab?: (connectionId: string, connectionInfo: string) => void;
   onSetActiveConnection?: (connectionId: string) => void;
   onConnectFromSaved?: (stored: StoredConnection) => void;
   onRemoveSaved?: (id: string) => void;
@@ -250,6 +251,7 @@ export default function DatabaseNavigator(props: DatabaseNavigatorProps) {
             activeConnectionId={props.activeConnectionId}
             onDisconnect={props.onDisconnect}
             onQueryRequest={props.onQueryRequest}
+            onOpenQueryTab={props.onOpenQueryTab}
             onSetActiveConnection={props.onSetActiveConnection}
             onCollapse={onCollapse}
             onAddConnection={props.onAddConnection}

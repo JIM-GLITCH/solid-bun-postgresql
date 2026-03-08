@@ -30,6 +30,7 @@ interface SidebarProps {
   activeConnectionId?: string | null;
   onDisconnect?: (connectionId: string) => void;
   onQueryRequest?: (connectionId: string, sql: string) => void;
+  onOpenQueryTab?: (connectionId: string, connectionInfo: string) => void;
   onSetActiveConnection?: (connectionId: string) => void;
   onCollapse?: () => void;
   onAddConnection?: () => void;
@@ -350,6 +351,11 @@ export default function Sidebar(props: SidebarProps) {
             return s;
           });
           loadSchemas(cid, node.id);
+        }
+        break;
+      case "openQuery":
+        if (node.type === "connection" && cid) {
+          props.onOpenQueryTab?.(cid, node.name);
         }
         break;
       case "setActive":
@@ -697,6 +703,22 @@ export default function Sidebar(props: SidebarProps) {
               <div style={{ height: "1px", "background-color": "#30363d", margin: "4px 0" }} />
             </Show>
             <Show when={menu().node.type === "connection"}>
+              <div
+                onClick={() => handleMenuAction("openQuery")}
+                style={{
+                  padding: "8px 16px",
+                  color: "#c9d1d9",
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "#21262d")}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📝</span> 新建查询
+              </div>
               <div
                 onClick={() => handleMenuAction("setActive")}
                 style={{
