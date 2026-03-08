@@ -7,7 +7,7 @@ import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
 
 // 数据库对象类型
-type NodeType = "addConnection" | "savedConnection" | "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
+type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
 
 interface TreeNode {
   id: string;
@@ -53,7 +53,6 @@ interface SidebarProps {
 // 图标组件
 function NodeIcon(props: { type: NodeType }) {
   const icons: Record<NodeType, string> = {
-    addConnection: "➕",
     savedConnection: "🔌",
     connection: "🔌",
     schema: "📁",
@@ -73,13 +72,11 @@ export default function Sidebar(props: SidebarProps) {
   const onCollapse = () => panel.collapse();
   const collapsed = () => panel.collapsed();
 
-  // 构建统一树根：新建连接 + 已保存（未连接为 savedConnection，已连接为 connection）+ 未保存的活跃连接
+  // 构建统一树根：已保存（未连接为 savedConnection，已连接为 connection）+ 未保存的活跃连接
   function buildRootNodes(): TreeNode[] {
     const conns = props.connections ?? [];
     const saved = props.savedConnections?.() ?? [];
     const roots: TreeNode[] = [];
-
-    roots.push({ id: "add", name: "新建连接", type: "addConnection", children: [] });
 
     for (const s of saved) {
       const c = conns.find((x) => x.id === s.id);
@@ -398,10 +395,6 @@ export default function Sidebar(props: SidebarProps) {
     e.stopPropagation();
     setState("selectedId", node.id);
 
-    if (node.type === "addConnection") {
-      props.onAddConnection?.();
-      return;
-    }
     if (node.type === "savedConnection" && node.storedId && e.detail === 1) {
       const stored = props.savedConnections?.()?.find((s) => s.id === node.storedId);
       if (stored && !props.connectingSavedId) {

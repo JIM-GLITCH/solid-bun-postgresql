@@ -1,5 +1,5 @@
 import { createSignal, createMemo, For, Show, onMount, onCleanup, createEffect } from "solid-js";
-import { createStore } from "solid-js/store";
+import { createStore, produce } from "solid-js/store";
 import type { Accessor } from "solid-js";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
@@ -26,6 +26,17 @@ interface PendingUpdate {
   oldValue: any;  // 原始值，用于还原
 }
 
+// 待执行的 DELETE 语句
+interface PendingDelete {
+  sql: string;
+  rowIndex: number;
+}
+
+// 待执行的 INSERT（行索引，保存时根据当前行值生成 SQL）
+interface PendingInsert {
+  rowIndex: number;
+}
+
 export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
@@ -33,6 +44,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [error, setError] = createSignal<string | null>(null);
   const [columns, setColumns] = createSignal<ColumnEditableInfo[]>([]);
   const [pendingUpdates, setPendingUpdates] = createSignal<PendingUpdate[]>([]);
+  const [pendingDeletes, setPendingDeletes] = createSignal<PendingDelete[]>([]);
+  const [pendingInserts, setPendingInserts] = createSignal<PendingInsert[]>([]);
   const [saving, setSaving] = createSignal(false);
   const [showPendingSql, setShowPendingSql] = createSignal(false);
   const [columnWidths, setColumnWidths] = createStore<number[]>([]);
@@ -207,6 +220,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setError(null);
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
+    setPendingDeletes([]);  // 清空待执行的删除
+    setPendingInserts([]);  // 清空待执行的插入
     setQueryDuration(null);  // 清空上次查询耗时
     setHasMore(false);
     setModifiedCells([]);
@@ -319,12 +334,97 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid)} WHERE ${whereConditions.join(" AND ")}`;
   }
 
+  // 生成 DELETE SQL（使用第一个有 uniqueKeyColumns 的列）
+  function generateDeleteSql(rowIndex: number): string | null {
+    const cols = columns();
+    const colInfo = cols.find(c => c.uniqueKeyColumns?.length && c.tableName);
+    if (!colInfo?.uniqueKeyColumns || !colInfo.uniqueKeyFieldIndices) return null;
+    const row = result[rowIndex];
+    const whereConditions = colInfo.uniqueKeyColumns.map((keyColName, i) => {
+      const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
+      const keyValue = row[keyColIndex];
+      const keyOid = cols[keyColIndex]?.dataTypeOid;
+      return `${keyColName} = ${formatSqlValueShared(keyValue, keyOid)}`;
+    });
+    return `DELETE FROM ${colInfo.tableName} WHERE ${whereConditions.join(" AND ")}`;
+  }
+
+  // 处理删除行（加入待执行列表）
+  function handleDeleteRow(rowIndex: number) {
+    const sql = generateDeleteSql(rowIndex);
+    if (!sql) return;
+    setPendingDeletes(prev => [...prev, { sql, rowIndex }]);
+    // 移除该行的所有待执行更新并还原单元格
+    const updates = pendingUpdates();
+    for (let i = updates.length - 1; i >= 0; i--) {
+      if (updates[i].rowIndex === rowIndex) removePendingUpdate(i);
+    }
+  }
+
+  // 移除一条待执行的删除
+  function removePendingDelete(index: number) {
+    setPendingDeletes(prev => prev.filter((_, i) => i !== index));
+  }
+
+  const canDeleteRow = () => columns().some(c => c.uniqueKeyColumns?.length && c.tableName);
+
+  // 生成 INSERT SQL（使用第一个有 tableName 的表的可插入列）
+  function generateInsertSql(rowIndex: number): string | null {
+    const row = result[rowIndex];
+    const cols = columns();
+    const firstTable = cols.find(c => c.tableName && c.columnName)?.tableName;
+    if (!firstTable) return null;
+    const tableCols = cols
+      .map((c, i) => ({ ...c, colIndex: i }))
+      .filter(c => c.tableName === firstTable && c.columnName);
+    if (tableCols.length === 0) return null;
+    const colNames = tableCols.map(c => c.columnName!);
+    const values = tableCols.map(c => formatSqlValueShared(row[c.colIndex], c.dataTypeOid));
+    return `INSERT INTO ${firstTable} (${colNames.join(", ")}) VALUES (${values.join(", ")})`;
+  }
+
+  const canAddRow = () => columns().some(c => c.tableName && c.columnName);
+
+  // 处理添加行，在 belowRowIndex 下方插入
+  function handleAddRow(belowRowIndex: number) {
+    const cols = columns();
+    if (cols.length === 0) return;
+    const insertAt = belowRowIndex + 1;
+    const newRow = cols.map(() => null);
+    setResult(produce(prev => { prev.splice(insertAt, 0, newRow); }));
+    setModifiedCells(produce(prev => { prev.splice(insertAt, 0, cols.map(() => false)); }));
+    // 更新后续行的索引
+    setPendingInserts(prev => prev.map(p => p.rowIndex >= insertAt ? { rowIndex: p.rowIndex + 1 } : p).concat([{ rowIndex: insertAt }]));
+    setPendingDeletes(prev => prev.map(d => ({ ...d, rowIndex: d.rowIndex >= insertAt ? d.rowIndex + 1 : d.rowIndex })));
+    setPendingUpdates(prev => prev.map(u => ({ ...u, rowIndex: u.rowIndex >= insertAt ? u.rowIndex + 1 : u.rowIndex })));
+  }
+
+  // 移除一条待执行的添加
+  function removePendingInsert(index: number) {
+    const ins = pendingInserts()[index];
+    if (!ins) return;
+    setResult(produce(prev => { prev.splice(ins.rowIndex, 1); }));
+    setModifiedCells(produce(prev => { prev.splice(ins.rowIndex, 1); }));
+    setPendingInserts(prev =>
+      prev.filter((_, i) => i !== index).map(p =>
+        p.rowIndex > ins.rowIndex ? { rowIndex: p.rowIndex - 1 } : p
+      )
+    );
+  }
+
   // 处理单元格保存（newValue 为 null 表示设为 SQL NULL）
   function handleCellSave(rowIndex: number, colIndex: number, newValue: string | null) {
     const currentValue = result[rowIndex][colIndex];
 
     if (newValue === null && (currentValue === null || currentValue === undefined)) return;
     if (newValue !== null && formatCellToEditable(currentValue) === newValue) return;
+
+    // 待插入行：只更新本地数据，不生成 UPDATE
+    if (pendingInserts().some(p => p.rowIndex === rowIndex)) {
+      setResult(rowIndex, colIndex, newValue);
+      setModifiedCells(rowIndex, colIndex, true);
+      return;
+    }
 
     // 查找是否已有该单元格的更新记录（保留最初的原始值）
     const existingUpdate = pendingUpdates().find(u => u.rowIndex === rowIndex && u.colIndex === colIndex);
@@ -359,9 +459,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setPendingUpdates(prev => prev.filter((_, i) => i !== index));
   }
 
-  // 执行所有待保存的 UPDATE（使用 adminClient）
+  // 执行所有待保存的 UPDATE、DELETE、INSERT（使用 adminClient）
   async function saveAllChanges() {
-    if (pendingUpdates().length === 0) return;
+    if (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0) return;
     const cid = props.activeConnectionId?.();
     if (!cid) return;
 
@@ -375,14 +475,42 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           throw new Error(res.error || `执行失败: ${update.sql}`);
         }
       }
-
-      // 全部成功，清空修改标记（只更新被修改过的单元格）
       for (const update of pendingUpdates()) {
         setModifiedCells(update.rowIndex, update.colIndex, false);
       }
-      // 清空待执行列表
       setPendingUpdates([]);
-      // alert('保存成功！');
+
+      // 按行索引倒序执行 DELETE，避免删除后索引变化
+      const sortedDeletes = [...pendingDeletes()].sort((a, b) => b.rowIndex - a.rowIndex);
+      for (const del of sortedDeletes) {
+        const res = await saveChanges(cid, del.sql);
+        if (!res.success && res.error) {
+          throw new Error(res.error || `执行失败: ${del.sql}`);
+        }
+      }
+      setResult(produce(prev => {
+        for (const del of sortedDeletes) prev.splice(del.rowIndex, 1);
+      }));
+      setModifiedCells(produce(prev => {
+        for (const del of sortedDeletes) prev.splice(del.rowIndex, 1);
+      }));
+      setPendingDeletes([]);
+
+      // 执行 INSERT（按行索引正序，避免影响后续索引）
+      for (const ins of pendingInserts()) {
+        const sql = generateInsertSql(ins.rowIndex);
+        if (!sql) continue;
+        const res = await saveChanges(cid, sql);
+        if (!res.success && res.error) {
+          throw new Error(res.error || `执行失败: ${sql}`);
+        }
+      }
+      for (const ins of pendingInserts()) {
+        for (let c = 0; c < columns().length; c++) {
+          setModifiedCells(ins.rowIndex, c, false);
+        }
+      }
+      setPendingInserts([]);
     } catch (e: any) {
       setError(e.message || "保存失败");
     } finally {
@@ -431,8 +559,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </Show>
           </span>
           <div style={{ display: "flex", "align-items": "center", gap: "12px" }}>
-            <span style={{ color: pendingUpdates().length > 0 ? vscode.warning : vscode.foregroundDim }}>
-              {pendingUpdates().length} 个待保存的修改
+            <span style={{ color: (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.warning : vscode.foregroundDim }}>
+              {pendingUpdates().length + pendingDeletes().length + pendingInserts().length} 个待保存的修改
             </span>
             <button
               onClick={() => setShowPendingSql(!showPendingSql())}
@@ -450,15 +578,15 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </button>
             <button
               onClick={saveAllChanges}
-              disabled={saving() || pendingUpdates().length === 0}
+              disabled={saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)}
               style={{
                 padding: "6px 16px",
                 "font-size": "14px",
-                "background-color": pendingUpdates().length > 0 ? vscode.buttonBg : vscode.buttonSecondary,
+                "background-color": (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.buttonBg : vscode.buttonSecondary,
                 color: "#fff",
                 border: "none",
                 "border-radius": "4px",
-                cursor: (saving() || pendingUpdates().length === 0) ? "not-allowed" : "pointer"
+                cursor: (saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)) ? "not-allowed" : "pointer"
               }}
             >
               {saving() ? "保存中..." : "保存修改"}
@@ -474,9 +602,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             "flex-shrink": "0"
           }}>
             <div style={{ "font-weight": "bold", "margin-bottom": "8px", color: vscode.warning }}>
-              待执行的 UPDATE SQL:
+              待执行的 SQL:
             </div>
-            <Show when={pendingUpdates().length === 0}>
+            <Show when={pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0}>
               <div style={{ color: vscode.foregroundDim, "font-size": "13px" }}>暂无修改</div>
             </Show>
             <div style={{
@@ -524,6 +652,108 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 )}
               </For>
             </div>
+            <Show when={pendingDeletes().length > 0}>
+              <div style={{ "font-weight": "bold", "margin": "12px 0 8px", color: vscode.error }}>
+                待执行的 DELETE:
+              </div>
+              <div style={{
+                "max-height": "200px",
+                "overflow-y": "auto",
+                display: "flex",
+                "flex-direction": "column",
+                gap: "6px"
+              }}>
+                <For each={pendingDeletes()}>
+                  {(del, index) => (
+                    <div style={{
+                      display: "flex",
+                      "align-items": "center",
+                      gap: "8px",
+                      padding: "6px 8px",
+                      "background-color": vscode.inputBg,
+                      border: `1px solid ${vscode.border}`
+                    }}>
+                      <span style={{
+                        flex: "1",
+                        "font-family": "monospace",
+                        "font-size": "13px",
+                        "word-break": "break-all"
+                      }}>
+                        {index() + 1}. {del.sql};
+                      </span>
+                      <button
+                        onClick={() => removePendingDelete(index())}
+                        style={{
+                          padding: "2px 8px",
+                          "font-size": "12px",
+                          "background-color": vscode.error,
+                          color: "#fff",
+                          border: "none",
+                          "border-radius": "4px",
+                          cursor: "pointer",
+                          "flex-shrink": "0"
+                        }}
+                        title="取消此删除"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </Show>
+            <Show when={pendingInserts().length > 0}>
+              <div style={{ "font-weight": "bold", "margin": "12px 0 8px", color: vscode.success }}>
+                待执行的 INSERT:
+              </div>
+              <div style={{
+                "max-height": "200px",
+                "overflow-y": "auto",
+                display: "flex",
+                "flex-direction": "column",
+                gap: "6px"
+              }}>
+                <For each={pendingInserts()}>
+                  {(ins, index) => {
+                    const sql = () => generateInsertSql(ins.rowIndex);
+                    return (
+                    <div style={{
+                      display: "flex",
+                      "align-items": "center",
+                      gap: "8px",
+                      padding: "6px 8px",
+                      "background-color": vscode.inputBg,
+                      border: `1px solid ${vscode.border}`
+                    }}>
+                      <span style={{
+                        flex: "1",
+                        "font-family": "monospace",
+                        "font-size": "13px",
+                        "word-break": "break-all"
+                      }}>
+                        {index() + 1}. {sql() ?? "..."};
+                      </span>
+                      <button
+                        onClick={() => removePendingInsert(index())}
+                        style={{
+                          padding: "2px 8px",
+                          "font-size": "12px",
+                          "background-color": vscode.error,
+                          color: "#fff",
+                          border: "none",
+                          "border-radius": "4px",
+                          cursor: "pointer",
+                          "flex-shrink": "0"
+                        }}
+                        title="取消此插入"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ); }}
+                </For>
+              </div>
+            </Show>
           </div>
         </Show>
 
@@ -618,18 +848,42 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 </tr>
 
                 <For each={visible().indices}>
-                  {(rowIndex) => (
-                    <tr style={{ height: `${ROW_HEIGHT}px`, "box-sizing": "border-box" }}>
+                  {(rowIndex) => {
+                    const pendingDel = () => pendingDeletes().some(d => d.rowIndex === rowIndex);
+                    const pendingIns = () => pendingInserts().some(p => p.rowIndex === rowIndex);
+                    return (
+                    <tr style={{
+                      height: `${ROW_HEIGHT}px`,
+                      "box-sizing": "border-box",
+                      "border-left": pendingDel() ? `3px solid ${vscode.error}` : pendingIns() ? `3px solid ${vscode.success}` : undefined
+                    }}>
                       <For each={columns()}>
                         {(colInfo, colIndex) => (
                             <EditableCell
                               value={() => result[rowIndex][colIndex()]}
-                              isEditable={colInfo.isEditable}
+                              isEditable={colInfo.isEditable || (pendingInserts().some(p => p.rowIndex === rowIndex) && !!colInfo.tableName && !!colInfo.columnName)}
                               isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
+                              isPendingDelete={pendingDeletes().some(d => d.rowIndex === rowIndex)}
+                              isPendingInsert={pendingInserts().some(p => p.rowIndex === rowIndex)}
                               onUndo={colInfo.isEditable ? () => {
                                   const c = colIndex();
-                                  const idx = pendingUpdates().findIndex(u => u.rowIndex === rowIndex && u.colIndex === c);
-                                  if (idx >= 0) removePendingUpdate(idx);
+                                  if (pendingInserts().some(p => p.rowIndex === rowIndex)) {
+                                    setResult(rowIndex, c, null);
+                                    setModifiedCells(rowIndex, c, false);
+                                  } else {
+                                    const idx = pendingUpdates().findIndex(u => u.rowIndex === rowIndex && u.colIndex === c);
+                                    if (idx >= 0) removePendingUpdate(idx);
+                                  }
+                                } : undefined}
+                              onDeleteRow={canDeleteRow() && !pendingDeletes().some(d => d.rowIndex === rowIndex) ? () => handleDeleteRow(rowIndex) : undefined}
+                              onUndoDelete={pendingDeletes().some(d => d.rowIndex === rowIndex) ? () => {
+                                  const idx = pendingDeletes().findIndex(d => d.rowIndex === rowIndex);
+                                  if (idx >= 0) removePendingDelete(idx);
+                                } : undefined}
+                              onAddRow={canAddRow() ? () => handleAddRow(rowIndex) : undefined}
+                              onUndoInsert={pendingInserts().some(p => p.rowIndex === rowIndex) ? () => {
+                                  const idx = pendingInserts().findIndex(p => p.rowIndex === rowIndex);
+                                  if (idx >= 0) removePendingInsert(idx);
                                 } : undefined}
                               align={() => getAlignment(result[rowIndex][colIndex()])}
                               onSave={(newValue) => {
@@ -639,7 +893,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                           )}
                       </For>
                     </tr>
-                  )}
+                  ); }}
                 </For>
 
                 {/* 底部占位行 */}
@@ -678,6 +932,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setError(null);
     setResult([]);
     setPendingUpdates([]);
+    setPendingDeletes([]);
+    setPendingInserts([]);
     setQueryDuration(null);
     setHasMore(false);
     setModifiedCells([]);
