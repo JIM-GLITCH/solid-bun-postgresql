@@ -1,5 +1,5 @@
 import type { Accessor } from "solid-js";
-import { createSignal, For, Show, createEffect, onCleanup, on } from "solid-js";
+import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import { getSchemas, getTables, getColumns, getIndexes } from "./api";
@@ -45,7 +45,7 @@ interface SidebarProps {
   onQueryRequest?: (connectionId: string, sql: string) => void;
   onOpenQueryTab?: (connectionId: string, connectionInfo: string) => void;
   onAddConnection?: () => void;
-  onConnectFromSaved?: (stored: StoredConnection) => void;
+  onConnectFromSaved?: (stored: StoredConnection) => Promise<{ success: boolean; connectionId?: string }>;
   onRemoveSaved?: (id: string) => void;
   connectingSavedId?: string | null;
 }
@@ -127,15 +127,6 @@ export default function Sidebar(props: SidebarProps) {
 
   const [searchTerm, setSearchTerm] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; node: TreeNode } | null>(null);
-  /** 点击 savedConnection 连接后需自动展开并加载，存 storedId，连接成功后 effect 处理 */
-  const [pendingExpandStoredId, setPendingExpandStoredId] = createSignal<string | null>(null);
-  // 连接失败时清除 pending，避免残留
-  createEffect(() => {
-    if (!props.connectingSavedId && pendingExpandStoredId()) {
-      const conns = props.connections?.() ?? [];
-      if (!conns.some((c) => c.id === pendingExpandStoredId())) setPendingExpandStoredId(null);
-    }
-  });
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -168,41 +159,28 @@ export default function Sidebar(props: SidebarProps) {
 
   // connections / savedConnections 变化时重建顶层节点（保留 connection 节点已加载的 children）
   createEffect(() => {
+    const conns = props.connections?.() ?? [];
+    const connIds = new Set(conns.map((c) => c.id));
     const newRoots = buildRootNodes();
     setState(produce((s) => {
+      // 断开连接时清除对应节点的 expandedIds，避免重连时误判为已展开
+      s.expandedIds = new Set([...s.expandedIds].filter((id) => {
+        const parts = id.split(":");
+        if (parts.length < 2) return true;
+        const cid = parts[1];
+        if (!connIds.has(cid)) return false;
+        return true;
+      }));
       s.nodes = newRoots.map((r) => {
         if (r.type === "connection" && r.connectionId) {
           const existing = s.nodes.find((n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection"));
           if (existing && existing.children.length > 0) return { ...r, children: existing.children };
-          // 新建或重连的 connection 节点无 children，需清除 loadedIds 否则展开时会误判已加载而跳过 loadSchemas
           s.loadedIds = new Set([...s.loadedIds].filter((id) => id !== r.id));
         }
         return r;
       });
     }));
   });
-
-  // 点击 savedConnection 连接成功后自动展开并加载 schemas（on 确保仅在 connections 变化时执行）
-  createEffect(on(
-    () => props.connections?.(),
-    (conns) => {
-      const list = conns ?? [];
-      const storedId = pendingExpandStoredId();
-      if (!storedId || !list.some((c) => c.id === storedId)) return;
-      setPendingExpandStoredId(null);
-      const nodeId = `connection:${storedId}`;
-      setState("expandedIds", (prev) => new Set(prev).add(nodeId));
-      setState("loadingIds", (prev) => new Set(prev).add(nodeId));
-      loadSchemas(storedId, nodeId).finally(() => {
-        setState("loadingIds", (prev) => {
-          const s = new Set(prev);
-          s.delete(nodeId);
-          return s;
-        });
-      });
-    },
-    { defer: true }
-  ));
 
   // 递归查找节点并返回路径索引
   function findNodePath(nodes: TreeNode[], nodeId: string, path: number[] = []): number[] | null {
@@ -430,8 +408,19 @@ export default function Sidebar(props: SidebarProps) {
     if (node.type === "savedConnection" && node.storedId && e.detail === 1) {
       const stored = props.savedConnections?.()?.find((s) => s.id === node.storedId);
       if (stored && !props.connectingSavedId) {
-        setPendingExpandStoredId(node.storedId);
-        props.onConnectFromSaved?.(stored);
+        (async () => {
+          const result = await props.onConnectFromSaved?.(stored);
+          if (result?.success && result.connectionId) {
+            const connNode: TreeNode = {
+              id: `connection:${result.connectionId}`,
+              name: stored.label,
+              type: "connection",
+              connectionId: result.connectionId,
+              children: [],
+            };
+            toggleNode(connNode);
+          }
+        })();
       }
       return;
     }
@@ -514,7 +503,21 @@ export default function Sidebar(props: SidebarProps) {
       case "connectSaved":
         if (node.type === "savedConnection" && node.storedId) {
           const stored = props.savedConnections?.()?.find((s) => s.id === node.storedId);
-          if (stored) props.onConnectFromSaved?.(stored);
+          if (stored && !props.connectingSavedId) {
+            (async () => {
+              const result = await props.onConnectFromSaved?.(stored);
+              if (result?.success && result.connectionId) {
+                const connNode: TreeNode = {
+                  id: `connection:${result.connectionId}`,
+                  name: stored.label,
+                  type: "connection",
+                  connectionId: result.connectionId,
+                  children: [],
+                };
+                toggleNode(connNode);
+              }
+            })();
+          }
         }
         break;
       case "removeSaved":

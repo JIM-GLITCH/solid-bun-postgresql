@@ -45,11 +45,11 @@ export default function App() {
     loadStoredConnections().then(setSavedConnections);
   };
 
-  const handleConnectFromSaved = async (stored: StoredConnection) => {
+  const handleConnectFromSaved = async (stored: StoredConnection): Promise<{ success: boolean; connectionId?: string }> => {
     const already = connections().some((c) => c.id === stored.id);
     if (already) {
       addOrFocusQueryTab(stored.id, stored.label);
-      return;
+      return { success: true, connectionId: stored.id };
     }
     setConnectingSavedId(stored.id);
     try {
@@ -57,11 +57,14 @@ export default function App() {
       if (success && connectionId) {
         setConnections((prev) => [...prev, { id: connectionId, info: stored.label }]);
         setShowConnectionForm(false);
+        return { success: true, connectionId };
       } else {
         alert(`连接失败: ${error ?? '未知错误'}`);
+        return { success: false };
       }
     } catch (e) {
       alert(`连接失败: ${e instanceof Error ? e.message : String(e)}`);
+      return { success: false };
     } finally {
       setConnectingSavedId(null);
     }
