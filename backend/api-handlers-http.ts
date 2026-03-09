@@ -10,12 +10,6 @@ import {
   subscribeSessionEvents,
   type SSEMessage,
 } from "./api-core";
-import {
-  listConnections,
-  saveConnection,
-  removeConnection,
-  getConnectionParams,
-} from "./connections-store";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
@@ -40,6 +34,10 @@ function postApi<M extends ApiMethod>(
 
 /** POST API 路由配置：path -> method，少数需特殊错误格式的单独标注 */
 const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean; status200?: boolean }> = [
+  { path: "/api/connections/list", method: "connections/list" },
+  { path: "/api/connections/save", method: "connections/save" },
+  { path: "/api/connections/delete", method: "connections/delete" },
+  { path: "/api/connections/connect", method: "connections/connect", useSucess: true, status200: true },
   { path: "/api/connect-postgres", method: "connect-postgres", useSucess: true, status200: true },
   { path: "/api/disconnect-postgres", method: "disconnect-postgres" },
   { path: "/api/postgres/query-stream", method: "postgres/query-stream" },
@@ -62,54 +60,6 @@ export function createApiRoutes(): Record<
 > {
   const routes: Record<string, { GET?: (req: unknown) => Response | Promise<Response>; POST?: RouteHandler }> = {
     "/api/hello": { GET: () => Response.json({ message: "Hello from API" }) },
-
-    "/api/connections/list": {
-      GET: () => Response.json(listConnections()),
-    },
-    "/api/connections/save": {
-      POST: async (req: Request) => {
-        try {
-          const body = await req.json() as { id: string; host: string; port: string; database: string; username: string; password: string };
-          const { id, host, port, database, username, password } = body;
-          if (!id || !host || !database || !username) {
-            return Response.json({ error: "缺少必填字段" }, { status: 400 });
-          }
-          saveConnection(id, { host, port: port || "5432", database, username, password: password || "" });
-          return Response.json({ success: true });
-        } catch (e: unknown) {
-          const err = e instanceof Error ? e.message : String(e);
-          return Response.json({ error: err, success: false }, { status: 500 });
-        }
-      },
-    },
-    "/api/connections/delete": {
-      POST: async (req: Request) => {
-        try {
-          const body = await req.json() as { id: string };
-          if (!body.id) return Response.json({ error: "缺少 id" }, { status: 400 });
-          removeConnection(body.id);
-          return Response.json({ success: true });
-        } catch (e: unknown) {
-          const err = e instanceof Error ? e.message : String(e);
-          return Response.json({ error: err, success: false }, { status: 500 });
-        }
-      },
-    },
-    "/api/connections/connect": {
-      POST: async (req: Request) => {
-        try {
-          const body = await req.json() as { id: string };
-          const params = getConnectionParams(body.id);
-          if (!params) return Response.json({ error: "未找到已保存的连接", sucess: false }, { status: 200 });
-          const { id, ...loginParams } = params;
-          const result = await handleApiRequest("connect-postgres", { connectionId: id, ...loginParams });
-          return Response.json(result);
-        } catch (e: unknown) {
-          const err = e instanceof Error ? e.message : String(e);
-          return Response.json({ error: err, sucess: false }, { status: 200 });
-        }
-      },
-    },
 
     "/api/events": {
       GET: (req: unknown) => {

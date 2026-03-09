@@ -6,6 +6,7 @@
 import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgresRequest } from "../shared/src";
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
+import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
@@ -77,6 +78,40 @@ export async function handleApiRequest<M extends ApiMethod>(
   };
 
   switch (method) {
+    case "connections/list": {
+      return listConnections();
+    }
+
+    case "connections/save": {
+      const { id, ...params } = payload as { id: string } & PostgresLoginParams;
+      if (!id || !params.host || !params.database || !params.username) {
+        throw new Error("缺少必填字段");
+      }
+      saveConnection(id, {
+        host: params.host,
+        port: params.port || "5432",
+        database: params.database,
+        username: params.username,
+        password: params.password || "",
+      });
+      return { success: true };
+    }
+
+    case "connections/delete": {
+      const { id } = payload as { id: string };
+      if (!id) throw new Error("缺少 id");
+      removeConnection(id);
+      return { success: true };
+    }
+
+    case "connections/connect": {
+      const { id } = payload as { id: string };
+      const params = getConnectionParams(id);
+      if (!params) return { sucess: false, error: "未找到已保存的连接" };
+      const { id: cid, ...loginParams } = params;
+      return handleApiRequest("connect-postgres", { connectionId: cid, ...loginParams } as any);
+    }
+
     case "connect-postgres": {
       const params = payload as ConnectPostgresRequest;
       const { connectionId: cid, ...connectParams } = params;

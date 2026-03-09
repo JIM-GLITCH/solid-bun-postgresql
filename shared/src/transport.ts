@@ -7,6 +7,10 @@ import type { PostgresLoginParams, SSEMessage, ConnectPostgresRequest } from "./
 
 /** API 方法名 */
 export type ApiMethod =
+  | "connections/list"
+  | "connections/save"
+  | "connections/delete"
+  | "connections/connect"
   | "connect-postgres"
   | "disconnect-postgres"
   | "postgres/query"
@@ -23,6 +27,10 @@ export type ApiMethod =
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
+  "connections/list": {};
+  "connections/save": { id: string } & PostgresLoginParams;
+  "connections/delete": { id: string };
+  "connections/connect": { id: string };
   "connect-postgres": ConnectPostgresRequest;
   "disconnect-postgres": { connectionId: string };
   "postgres/query": { query: string; connectionId: string };

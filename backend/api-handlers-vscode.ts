@@ -9,7 +9,7 @@
  */
 
 import type { ApiMethod, ApiRequestPayload } from "../shared/src";
-import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
+import { handleApiRequest, subscribeSessionEvents } from "./api-core";
 
 export interface VscodeWebview {
   postMessage(message: unknown): Thenable<boolean>;
@@ -19,29 +19,30 @@ export interface VscodeWebview {
 export function createVscodeMessageHandler(webview: VscodeWebview) {
   const eventUnsubscribes = new Map<string, () => void>();
 
-  return async (message: { id?: number; method?: string; payload?: unknown; type?: string; sessionId?: string }) => {
-    const { id, method, payload, type, sessionId } = message;
+  return async (message: { id?: number; method?: string; payload?: unknown; type?: string; sessionId?: string; connectionId?: string }) => {
+    const { id, method, payload, type, sessionId, connectionId } = message;
+    const sid = sessionId ?? connectionId;
 
     // 订阅/取消订阅事件推送
-    if (type === "subscribe-events" && sessionId) {
+    if (type === "subscribe-events" && sid) {
       try {
-        const unsub = subscribeSessionEvents(sessionId, (msg) => {
+        const unsub = subscribeSessionEvents(sid, (msg) => {
           webview.postMessage({ type: "sse", data: msg });
         });
-        eventUnsubscribes.set(sessionId, unsub);
+        eventUnsubscribes.set(sid, unsub);
       } catch (e) {
         webview.postMessage({ id, error: (e as Error).message });
       }
       return;
     }
 
-    if (type === "unsubscribe-events" && sessionId) {
-      eventUnsubscribes.get(sessionId)?.();
-      eventUnsubscribes.delete(sessionId);
+    if (type === "unsubscribe-events" && sid) {
+      eventUnsubscribes.get(sid)?.();
+      eventUnsubscribes.delete(sid);
       return;
     }
 
-    // RPC 请求
+    // RPC 请求（统一转发到 api-core）
     if (typeof id !== "number" || !method || payload == null) return;
 
     try {
