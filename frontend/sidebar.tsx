@@ -154,6 +154,15 @@ export default function Sidebar(props: SidebarProps) {
 
   // 响应外部刷新触发
 
+  // 递归收集节点及其所有子节点的 ID
+  function collectNodeIds(node: TreeNode): string[] {
+    const ids = [node.id];
+    for (const child of node.children) {
+      ids.push(...collectNodeIds(child));
+    }
+    return ids;
+  }
+
   // connections / savedConnections 变化时重建顶层节点
   createEffect(() => {
     const conns = props.connections ?? [];
@@ -165,11 +174,22 @@ export default function Sidebar(props: SidebarProps) {
         if (parts.length < 2) return true;
         return connIds.has(parts[1]);
       }));
+      
+      // 递归收集所有要删除的连接节点的 ID（包括子节点）
+      const nodeIdsToRemove = new Set<string>();
+      for (const node of s.nodes) {
+        if (node.type === "connection" && node.connectionId && !connIds.has(node.connectionId)) {
+          collectNodeIds(node).forEach((id) => nodeIdsToRemove.add(id));
+        }
+      }
+      
+      // 清除这些节点的 loadedIds
+      s.loadedIds = new Set([...s.loadedIds].filter((id) => !nodeIdsToRemove.has(id)));
+      
       s.nodes = newRoots.map((r) => {
         if (r.type === "connection" && r.connectionId) {
           const existing = s.nodes.find((n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection"));
           if (existing && existing.children.length > 0) return { ...r, children: existing.children };
-          s.loadedIds = new Set([...s.loadedIds].filter((id) => id !== r.id));
         }
         return r;
       });
