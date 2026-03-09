@@ -22,6 +22,11 @@ if (!frontendBuild.success) {
     process.exit(1);
 }
 console.log("1. 前端打包完成\n");
+// 1.1 复制 Monaco workers/runtime (min/vs) -> out/vs
+const monacoVsDir = join(rootDir, "node_modules", "monaco-editor", "min", "vs");
+await Bun.$`rm -rf ${join(outDir, "vs")}`;
+await Bun.$`cp -R ${monacoVsDir} ${join(outDir, "vs")}`;
+console.log("1.1 Monaco vs 资源复制完成\n");
 // 2. 复制 index.html 到 out 文件夹
 const indexHtml = join(extDir, "src", "index.html");
 await Bun.$`cp ${indexHtml} ${outDir}/index.html`;

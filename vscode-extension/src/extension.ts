@@ -54,20 +54,28 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(context.extensionUri, "out", "index-webview.js")
   );
+  const monacoBaseUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(context.extensionUri, "out", "vs")
+  );
   const htmlUri = vscode.Uri.joinPath(context.extensionUri, "out", "index.html");
   const bytes = await vscode.workspace.fs.readFile(htmlUri);
   const html = new TextDecoder("utf-8").decode(bytes);
 
   const csp = [
     "default-src 'none'",
-    "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource + " " + scriptUri.toString(),
+    // 使用 webview.cspSource 即可，不要把具体 script URI 塞进 script-src（会被判定为无效 source）
+    "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource,
     "style-src 'unsafe-inline' " + webview.cspSource,
-    "connect-src 'none'",
+    // Monaco 依赖 Web Worker；允许从 webview 资源和 blob 启动 worker
+    "worker-src " + webview.cspSource + " blob:",
+    // 允许 Webview 同源 fetch（例如连接存储接口）；避免被 CSP 直接拦截
+    "connect-src 'self' " + webview.cspSource,
   ].join("; ");
 
   let newHtml = html
     .replace("{{CSP}}", csp)
-    .replace("{{SCRIPT_URI}}", scriptUri.toString());
+    .replace("{{SCRIPT_URI}}", scriptUri.toString())
+    .replace("{{MONACO_BASE_URI}}", monacoBaseUri.toString());
 
   webview.html = newHtml;
 }

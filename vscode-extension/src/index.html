@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes" />
   <meta http-equiv="Content-Security-Policy" content="{{CSP}}" />
   <title>DB Player</title>
+  <!-- Monaco Editor CSS - 在其他样式之前加载 -->
+  <link rel="stylesheet" href="{{MONACO_BASE_URI}}/editor/editor.main.css" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-    html { -webkit-text-size-adjust: 100%; }
-    body { transform-origin: 0 0; }
+    html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
     body {
       color: #1e1e1e;
       background: #ffffff;
@@ -20,30 +20,74 @@
     #root { height: 100%; overflow: hidden; color: inherit; background: inherit; }
     a { color: #0066cc; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    input, button, select, textarea { color: #1e1e1e; background: #fff; }
+    input, button, select { color: #1e1e1e; background: #fff; }
+    
+    /* 修复 VSCode Webview 下 Monaco 内部输入层可见（白/黑条、光标错位） */
+    /* 完全隐藏 Monaco 的输入层和输入法层 */
+    textarea.inputarea,
+    textarea.ime-text-area {
+      position: absolute !important;
+      top: -9999px !important;
+      left: -9999px !important;
+      width: 1px !important;
+      height: 1px !important;
+      opacity: 0 !important;
+      background: transparent !important;
+      color: transparent !important;
+      border: none !important;
+      outline: none !important;
+      box-shadow: none !important;
+      caret-color: transparent !important;
+      resize: none !important;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      pointer-events: none !important;
+      z-index: -9999 !important;
+    }
+
+    /* 修复 Monaco 在 VSCode Webview 中的布局问题 */
+    .monaco-editor {
+      position: relative !important;
+    }
+    
+    /* 隐藏 Monaco 的其他可能的文本输入元素 */
+    .monaco-editor input[type="text"],
+    .monaco-editor input[type="search"] {
+      position: absolute !important;
+      top: -9999px !important;
+      left: -9999px !important;
+      width: 1px !important;
+      height: 1px !important;
+      opacity: 0 !important;
+    }
+
+    /* 确保编辑器框架正确 */
+    .monaco-editor-background {
+      position: absolute !important;
+    }
+
+    /* 修复光标位置 */
+    .monaco-editor .cursors-layer {
+      z-index: 1 !important;
+    }
+
+    /* 完全隐藏输入法编辑器背景 */
+    .monaco-editor .inputarea,
+    .monaco-editor .ime-text-area {
+      position: absolute !important;
+      top: -9999px !important;
+      left: -9999px !important;
+    }
+
     .err { padding: 1em; color: #c00; font-family: sans-serif; white-space: pre-wrap; }
   </style>
 </head>
 <body>
   <div id="root"></div>
   <script>
-    (function() {
-      var scale = 1;
-      var min = 0.5, max = 3;
-      function apply() {
-        document.body.style.transform = "scale(" + scale + ")";
-        document.body.style.width = (100 / scale) + "%";
-        document.body.style.height = (100 / scale) + "%";
-      }
-      document.addEventListener("wheel", function(e) {
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          scale += e.deltaY > 0 ? -0.1 : 0.1;
-          scale = Math.max(min, Math.min(max, scale));
-          apply();
-        }
-      }, { passive: false });
-    })();
+    window.__MONACO_BASE__ = "{{MONACO_BASE_URI}}";
   </script>
   <script type="module" src="{{SCRIPT_URI}}"></script>
 </body>
