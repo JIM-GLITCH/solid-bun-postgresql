@@ -2,6 +2,8 @@
 import * as vscode from "vscode";
 import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
 
+let currentPanel: vscode.WebviewPanel | null = null;
+
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("db-player.helloWorld", () => {
@@ -21,9 +23,6 @@ export function activate(context: vscode.ExtensionContext) {
   statusBar.show();
   context.subscriptions.push(statusBar);
 
-  // Keep reference to the currently opened webview panel so we can post messages
-  let currentPanel: vscode.WebviewPanel | null = null;
-
   // Helper to map VS Code theme to a monaco theme and simple kind
   function getThemeInfo(): { themeKind: 'light' | 'dark' | 'high-contrast'; monacoTheme: string } {
     const kind = vscode.window.activeColorTheme.kind;
@@ -32,12 +31,11 @@ export function activate(context: vscode.ExtensionContext) {
     return { themeKind: 'light', monacoTheme: 'vs' };
   }
 
-  // Listen for VS Code theme changes and notify the webview
+  // Listen for VS Code theme changes and notify the webview (no reload needed - theme-sync updates Monaco via subscribe)
   const themeListener = vscode.window.onDidChangeActiveColorTheme(() => {
     const info = getThemeInfo();
     if (currentPanel) {
-      // Notify webview and request a reload so the frontend re-reads injected CSS variables
-      currentPanel.webview.postMessage({ type: 'theme', themeKind: info.themeKind, monacoTheme: info.monacoTheme, reload: true });
+      currentPanel.webview.postMessage({ type: 'theme', themeKind: info.themeKind, monacoTheme: info.monacoTheme });
     }
   });
   context.subscriptions.push(themeListener);

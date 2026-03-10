@@ -37,6 +37,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
 
   onMount(() => {
+    (window as any).monaco = monaco;
     const initialTheme = getTheme()?.monacoTheme ?? 'vs-dark';
     editor = monaco.editor.create(container, {
       value: props.value,
