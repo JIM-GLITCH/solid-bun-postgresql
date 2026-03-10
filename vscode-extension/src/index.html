@@ -92,33 +92,16 @@
   <!-- Ensure a global `monaco` binding exists to avoid ReferenceError from chunks
        that reference the identifier before the editor initializes. -->
   <script>var monaco;</script>
-  <!-- Theme sync: listen for theme messages from extension and apply -->
+  <!-- Theme sync: 仅设置 data-vscode-theme 属性，Monaco 主题由 theme-sync + sql-editor 通过 CSS 变量构建 -->
   <script>
     (function(){
-      // apply theme kind as attribute for CSS usage
-      function applyTheme(themeKind, monacoTheme) {
-        try {
-          document.documentElement.setAttribute('data-vscode-theme', themeKind);
-          var __mc = window.monaco;
-          if (__mc && __mc.editor && __mc.editor.setTheme) {
-            __mc.editor.setTheme(monacoTheme);
-          }
-        } catch (e) {
-          // ignore
-        }
-      }
-
-      // Receive messages from extension
       window.addEventListener('message', (e) => {
         const msg = e.data;
-        if (!msg) return;
-        if (msg.type === 'theme') {
-          applyTheme(msg.themeKind, msg.monacoTheme);
-        }
+        if (!msg || msg.type !== 'theme') return;
+        try {
+          document.documentElement.setAttribute('data-vscode-theme', msg.themeKind || 'light');
+        } catch (e) {}
       });
-
-      // Note: the extension will post the initial theme after HTML is set. Do not call acquireVsCodeApi()
-      // here to avoid acquiring the VS Code API multiple times which can throw.
     })();
   </script>
   <script type="module" src="{{SCRIPT_URI}}"></script>

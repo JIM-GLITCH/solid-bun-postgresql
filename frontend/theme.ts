@@ -1,14 +1,14 @@
 /**
  * VS Code 风格主题色
- * 参考 Dark+ 主题
+ * fallback 与 Monaco vs-dark 一致（见 monaco-editor themes.js + editorColors.js）
  */
 export const vscode = {
-  // 主背景 - use CSS variable references so inline styles update when vars change
-  editorBg: "var(--vscode-editor-background, #1e1e1e)",
+  // 主背景
+  editorBg: "var(--vscode-editor-background, #1E1E1E)",
   sidebarBg: "var(--vscode-sideBar-background, #252526)",
   activityBarBg: "var(--vscode-activityBar-background, #333333)",
-  tabBarBg: "var(--vscode-tab-inactiveBackground, #2d2d2d)",
-  tabActiveBg: "var(--vscode-tab-activeBackground, #1e1e1e)",
+  tabBarBg: "var(--vscode-tab-inactiveBackground, #2D2D2D)",
+  tabActiveBg: "var(--vscode-tab-activeBackground, #1E1E1E)",
   titleBarBg: "var(--vscode-titleBar-activeBackground, #323233)",
 
   // 边框
@@ -20,14 +20,14 @@ export const vscode = {
   listSelect: "var(--vscode-list-focusBackground, #094771)",
   listSelectInactive: "var(--vscode-list-inactiveSelectionBackground, #37373d)",
 
-  // 文字
-  foreground: "var(--vscode-editor-foreground, #cccccc)",
+  // 文字 - vs-dark token foreground #D4D4D4
+  foreground: "var(--vscode-editor-foreground, #D4D4D4)",
   foregroundDim: "var(--vscode-descriptionForeground, #858585)",
   foregroundMuted: "var(--vscode-editor-foreground, #6e6e6e)",
 
-  // 强调
-  accent: "var(--vscode-editor-selectionBackground, #007acc)",
-  accentHover: "var(--vscode-editorHoverWidget-background, #1a8ad4)",
+  // 强调 - Monaco editorColors editor.selectionBackground dark: #264F78
+  accent: "var(--vscode-editor-selectionBackground, #264F78)",
+  accentHover: "var(--vscode-editorHoverWidget-background, #252526)",
   success: "var(--vscode-charts-green, #4ec9b0)",
   error: "var(--vscode-charts-red, #f48771)",
   warning: "var(--vscode-charts-yellow, #dcdcaa)",
@@ -41,15 +41,5 @@ export const vscode = {
   // 输入框
   inputBg: "var(--vscode-input-background, #3c3c3c)",
   inputBorder: "var(--vscode-input-border, #3c3c3c)",
-  inputFg: "var(--vscode-input-foreground, #cccccc)",
+  inputFg: "var(--vscode-input-foreground, #D4D4D4)",
 } as const;
-
-function getCssVar(name: string, fallback: string) {
-  try {
-    if (typeof window !== 'undefined' && window.getComputedStyle) {
-      const v = getComputedStyle(document.documentElement).getPropertyValue(name);
-      if (v && v.trim()) return v.trim();
-    }
-  } catch (e) {}
-  return fallback;
-}

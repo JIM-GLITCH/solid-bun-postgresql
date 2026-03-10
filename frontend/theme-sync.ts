@@ -1,6 +1,8 @@
+import { VSCODE_MONACO_THEME } from "./monaco-vscode-theme";
+
 type ThemeInfo = { themeKind: 'light' | 'dark' | 'high-contrast'; monacoTheme: string };
 
-let current: ThemeInfo = { themeKind: 'light', monacoTheme: 'vs' };
+let current: ThemeInfo = { themeKind: 'dark', monacoTheme: 'vs-dark' };
 const subscribers: ((t: ThemeInfo) => void)[] = [];
 
 export function getTheme(): ThemeInfo {
@@ -31,18 +33,17 @@ export function initWebviewThemeListener() {
   try {
     const attr = document.documentElement.getAttribute('data-vscode-theme');
     if (attr) {
-      // map to monaco theme conservatively
-      const mon = attr === 'dark' ? 'vs-dark' : attr === 'high-contrast' ? 'hc-black' : 'vs';
-      setTheme({ themeKind: attr as ThemeInfo['themeKind'], monacoTheme: mon });
+      setTheme({ themeKind: attr as ThemeInfo['themeKind'], monacoTheme: VSCODE_MONACO_THEME });
     }
   } catch (e) {}
 
   window.addEventListener('message', (e) => {
     const msg = e.data;
     if (!msg) return;
-    if (msg.type === 'theme' && msg.monacoTheme) {
+    if (msg.type === 'theme') {
       const kind = (msg.themeKind as ThemeInfo['themeKind']) || 'light';
-      setTheme({ themeKind: kind, monacoTheme: msg.monacoTheme });
+      // 使用 VSCode CSS 变量构建的自定义主题，Monaco 会跟随 VSCode 主题切换
+      setTheme({ themeKind: kind, monacoTheme: VSCODE_MONACO_THEME });
     }
   });
 }
@@ -57,8 +58,8 @@ export function loadDefaultTheme() {
       return;
     }
   } catch (e) {}
-  // fallback
-  setTheme({ themeKind: 'light', monacoTheme: 'vs' });
+  // fallback：standalone 整体 UI 默认为黑色（theme.ts），Monaco 与之保持一致
+  setTheme({ themeKind: 'dark', monacoTheme: 'vs-dark' });
 }
 
 export function saveDefaultTheme(t: ThemeInfo) {

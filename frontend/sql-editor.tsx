@@ -5,6 +5,7 @@
 import { onMount, onCleanup, createEffect } from "solid-js";
 import * as monaco from "monaco-editor";
 import "monaco-editor/min/vs/editor/editor.main.css";
+import { buildAndDefineVscodeTheme, VSCODE_MONACO_THEME } from "./monaco-vscode-theme";
 import { getTheme, subscribe } from "./theme-sync";
 
 // Workers 从 ./vs 加载（Monaco 0.55.1 min hashed 文件名）
@@ -38,7 +39,11 @@ export default function SqlEditor(props: SqlEditorProps) {
 
   onMount(() => {
     (window as any).monaco = monaco;
-    const initialTheme = getTheme()?.monacoTheme ?? 'vs-dark';
+    const themeInfo = getTheme();
+    const initialTheme = themeInfo?.monacoTheme ?? 'vs-dark';
+    if (initialTheme === VSCODE_MONACO_THEME && themeInfo) {
+      buildAndDefineVscodeTheme(monaco, themeInfo.themeKind);
+    }
     editor = monaco.editor.create(container, {
       value: props.value,
       language: "sql",
@@ -54,6 +59,9 @@ export default function SqlEditor(props: SqlEditorProps) {
     // subscribe to theme changes
     const unsub = subscribe((t) => {
       try {
+        if (t.monacoTheme === VSCODE_MONACO_THEME) {
+          buildAndDefineVscodeTheme(monaco, t.themeKind);
+        }
         monaco.editor.setTheme(t.monacoTheme);
       } catch (e) {}
     });
