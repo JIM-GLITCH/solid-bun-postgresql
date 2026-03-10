@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import { vscode } from "./theme";
@@ -58,6 +58,36 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
   const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
+
+  // 单元格选区：{ startRow, startCol, endRow, endCol }，保证 startRow<=endRow, startCol<=endCol
+  const [selection, setSelection] = createSignal<{ startRow: number; startCol: number; endRow: number; endCol: number } | null>(null);
+  const [selectionAnchor, setSelectionAnchor] = createSignal<{ row: number; col: number } | null>(null);  // 框选起点（拖拽用）
+  const [selectionOrigin, setSelectionOrigin] = createSignal<{ row: number; col: number } | null>(null);  // Shift+点击 扩展选区的起点
+  const [tableContextMenu, setTableContextMenu] = createSignal<{
+    x: number;
+    y: number;
+    contextCell?: { rowIndex: number; colIndex: number };  // 右键所在的单元格，空白区域为 undefined
+  } | null>(null);
+
+  // 选区内的所有行索引（去重，升序）
+  const selectedRows = createMemo(() => {
+    const sel = selection();
+    if (!sel) return [];
+    const rows = new Set<number>();
+    for (let r = sel.startRow; r <= sel.endRow; r++) rows.add(r);
+    return Array.from(rows).sort((a, b) => a - b);
+  });
+  // 选区中最后一行（用于在下方插入）
+  const lastSelectedRow = () => {
+    const rows = selectedRows();
+    return rows.length > 0 ? rows[rows.length - 1] : -1;
+  };
+  // 判断单元格是否在选区内
+  const isCellSelected = (rowIndex: number, colIndex: number) => {
+    const sel = selection();
+    if (!sel) return false;
+    return rowIndex >= sel.startRow && rowIndex <= sel.endRow && colIndex >= sel.startCol && colIndex <= sel.endCol;
+  };
 
   // 虚拟滚动相关状态
   const [scrollTop, setScrollTop] = createSignal(0);
@@ -114,6 +144,105 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     };
     window.addEventListener("resize", onResize);
     onCleanup(() => window.removeEventListener("resize", onResize));
+  });
+
+  // 复制：当有选区且无文本选区时，将选中的单元格内容复制为制表符分隔格式（便于粘贴到 Excel）
+  const handleCopy = (e: ClipboardEvent) => {
+    const sel = selection();
+    if (!sel) return;
+    const textSel = window.getSelection()?.toString() ?? "";
+    if (textSel) return; // 用户选中了文本（如在编辑框内），不覆盖默认复制
+    const rows: string[] = [];
+    for (let r = sel.startRow; r <= sel.endRow; r++) {
+      const cells: string[] = [];
+      for (let c = sel.startCol; c <= sel.endCol; c++) {
+        const val = result[r]?.[c];
+        let s = formatCellDisplay(val ?? null);
+        s = s.replace(/\t/g, " ").replace(/\n/g, " ");
+        cells.push(s);
+      }
+      rows.push(cells.join("\t"));
+    }
+    e.clipboardData?.setData("text/plain", rows.join("\n"));
+    e.preventDefault();
+  };
+  createEffect(() => {
+    document.addEventListener("copy", handleCopy, true);
+    onCleanup(() => document.removeEventListener("copy", handleCopy, true));
+  });
+
+  // 单元格 mousedown：处理普通点击、Shift+点击、Ctrl+点击（Excel 逻辑）
+  function handleCellMouseDown(rowIndex: number, colIndex: number, e: MouseEvent) {
+    if (e.button !== 0) return;
+    const r = rowIndex;
+    const c = colIndex;
+
+    if (e.shiftKey) {
+      // Shift+点击：从 selectionOrigin 扩展到当前单元格
+      const origin = selectionOrigin();
+      const anchor = origin ?? { row: r, col: c };
+      setSelection({
+        startRow: Math.min(anchor.row, r),
+        startCol: Math.min(anchor.col, c),
+        endRow: Math.max(anchor.row, r),
+        endCol: Math.max(anchor.col, c)
+      });
+      if (!origin) setSelectionOrigin(anchor);
+      return; // 不启动框选拖拽
+    }
+
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl/Cmd+点击：将当前单元格加入选区（扩展矩形包含该单元格），锚点移至该单元格
+      const sel = selection();
+      if (!sel) {
+        setSelection({ startRow: r, startCol: c, endRow: r, endCol: c });
+      } else {
+        setSelection({
+          startRow: Math.min(sel.startRow, r),
+          startCol: Math.min(sel.startCol, c),
+          endRow: Math.max(sel.endRow, r),
+          endCol: Math.max(sel.endCol, c)
+        });
+      }
+      setSelectionOrigin({ row: r, col: c });
+      return; // 不启动框选拖拽
+    }
+
+    // 普通点击：选中该单元格，启动框选拖拽
+    setSelectionOrigin({ row: r, col: c });
+    setSelectionAnchor({ row: r, col: c });
+    setSelection({ startRow: r, startCol: c, endRow: r, endCol: c });
+  }
+
+  // 框选逻辑：mousedown 设锚点，mousemove 扩展选区，mouseup 清除锚点
+  const [tbodyRef, setTbodyRef] = createSignal<HTMLTableSectionElement | null>(null);
+  createEffect(() => {
+    const tbody = tbodyRef();
+    if (!tbody) return;
+    const onMouseMove = (e: MouseEvent) => {
+      const anchor = selectionAnchor();
+      if (!anchor) return;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || !tbody.contains(el)) return;
+      const td = el.closest("td[data-rowindex][data-colindex]");
+      if (!td) return;
+      const row = parseInt((td as HTMLElement).dataset.rowindex ?? "-1", 10);
+      const col = parseInt((td as HTMLElement).dataset.colindex ?? "-1", 10);
+      if (row < 0 || col < 0) return;
+      setSelection({
+        startRow: Math.min(anchor.row, row),
+        startCol: Math.min(anchor.col, col),
+        endRow: Math.max(anchor.row, row),
+        endCol: Math.max(anchor.col, col)
+      });
+    };
+    const onMouseUp = () => setSelectionAnchor(null);
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    onCleanup(() => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+    });
   });
 
   // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
@@ -349,16 +478,33 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     return `DELETE FROM ${colInfo.tableName} WHERE ${whereConditions.join(" AND ")}`;
   }
 
-  // 处理删除行（加入待执行列表）
+  // 处理删除单行（加入待执行列表）
   function handleDeleteRow(rowIndex: number) {
     const sql = generateDeleteSql(rowIndex);
     if (!sql) return;
     setPendingDeletes(prev => [...prev, { sql, rowIndex }]);
-    // 移除该行的所有待执行更新并还原单元格
     const updates = pendingUpdates();
     for (let i = updates.length - 1; i >= 0; i--) {
       if (updates[i].rowIndex === rowIndex) removePendingUpdate(i);
     }
+  }
+
+  // 删除选区内的所有行（排除已待删除的）
+  function handleDeleteSelectedRows() {
+    const rows = selectedRows();
+    const alreadyPending = new Set(pendingDeletes().map(d => d.rowIndex));
+    for (const rowIndex of rows) {
+      if (alreadyPending.has(rowIndex)) continue;
+      handleDeleteRow(rowIndex);
+    }
+    setTableContextMenu(null);
+  }
+
+  // 在选区最后一行下方插入（无选区则在末尾插入）
+  function handleInsertRowBelowSelection() {
+    const belowRow = lastSelectedRow();
+    handleAddRow(belowRow);
+    setTableContextMenu(null);
   }
 
   // 移除一条待执行的删除
@@ -411,6 +557,22 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       )
     );
   }
+
+  // 表格右键菜单：点击外部关闭
+  let tableContextMenuRef: HTMLDivElement | null = null;
+  createEffect(() => {
+    if (!tableContextMenu()) return;
+    const h = (e: MouseEvent) => {
+      if (tableContextMenuRef?.contains(e.target as Node)) return;
+      setTableContextMenu(null);
+    };
+    document.addEventListener("click", h, true);
+    document.addEventListener("contextmenu", h, true);
+    onCleanup(() => {
+      document.removeEventListener("click", h, true);
+      document.removeEventListener("contextmenu", h, true);
+    });
+  });
 
   // 处理单元格保存（newValue 为 null 表示设为 SQL NULL）
   function handleCellSave(rowIndex: number, colIndex: number, newValue: string | null) {
@@ -762,6 +924,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           ref={(el) => setTableContainerRef(el)}
           id="table-container"
           onScroll={handleScroll}
+          onContextMenu={(e) => {
+            if ((e.target as Element).closest("td")) return;
+            e.preventDefault();
+            setTableContextMenu({ x: e.clientX, y: e.clientY });
+          }}
           style={{
             flex: 1,
             overflow: "auto",
@@ -839,12 +1006,24 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   </For>
                 </tr>
               </thead>
-              <tbody style={{
-                // 使用占位行来实现虚拟滚动，这样可以保持完美的表格布局
-              }}>
+              <tbody
+                ref={setTbodyRef}
+                style={{
+                  "user-select": "none",
+                  // 防止框选时同时选中文本；复制由自定义 handler 处理
+                  // 使用占位行来实现虚拟滚动，这样可以保持完美的表格布局
+                }}
+              >
                 {/* 顶部占位行 */}
                 <tr style={{ height: `${offsetY()}px` }}>
-                  <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
+                  <td
+                    colSpan={Math.max(1, columns().length)}
+                    style={{ padding: 0, border: "none" }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setTableContextMenu({ x: e.clientX, y: e.clientY });
+                    }}
+                  />
                 </tr>
 
                 <For each={visible().indices}>
@@ -858,47 +1037,47 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       "border-left": pendingDel() ? `3px solid ${vscode.error}` : pendingIns() ? `3px solid ${vscode.success}` : undefined
                     }}>
                       <For each={columns()}>
-                        {(colInfo, colIndex) => (
+                        {(colInfo, colIndex) => {
+                          const c = colIndex();
+                          return (
                             <EditableCell
-                              value={() => result[rowIndex][colIndex()]}
+                              value={() => result[rowIndex][c]}
+                              rowIndex={rowIndex}
+                              colIndex={c}
                               isEditable={colInfo.isEditable || (pendingInserts().some(p => p.rowIndex === rowIndex) && !!colInfo.tableName && !!colInfo.columnName)}
-                              isModified={modifiedCells[rowIndex]?.[colIndex()] ?? false}
-                              isPendingDelete={pendingDeletes().some(d => d.rowIndex === rowIndex)}
-                              isPendingInsert={pendingInserts().some(p => p.rowIndex === rowIndex)}
-                              onUndo={colInfo.isEditable ? () => {
-                                  const c = colIndex();
-                                  if (pendingInserts().some(p => p.rowIndex === rowIndex)) {
-                                    setResult(rowIndex, c, null);
-                                    setModifiedCells(rowIndex, c, false);
-                                  } else {
-                                    const idx = pendingUpdates().findIndex(u => u.rowIndex === rowIndex && u.colIndex === c);
-                                    if (idx >= 0) removePendingUpdate(idx);
-                                  }
-                                } : undefined}
-                              onDeleteRow={canDeleteRow() && !pendingDeletes().some(d => d.rowIndex === rowIndex) ? () => handleDeleteRow(rowIndex) : undefined}
-                              onUndoDelete={pendingDeletes().some(d => d.rowIndex === rowIndex) ? () => {
-                                  const idx = pendingDeletes().findIndex(d => d.rowIndex === rowIndex);
-                                  if (idx >= 0) removePendingDelete(idx);
-                                } : undefined}
-                              onAddRow={canAddRow() ? () => handleAddRow(rowIndex) : undefined}
-                              onUndoInsert={pendingInserts().some(p => p.rowIndex === rowIndex) ? () => {
-                                  const idx = pendingInserts().findIndex(p => p.rowIndex === rowIndex);
-                                  if (idx >= 0) removePendingInsert(idx);
-                                } : undefined}
-                              align={() => getAlignment(result[rowIndex][colIndex()])}
-                              onSave={(newValue) => {
-                                handleCellSave(rowIndex, colIndex(), newValue);
+                              isModified={modifiedCells[rowIndex]?.[c] ?? false}
+                              isPendingDelete={pendingDel()}
+                              isPendingInsert={pendingIns()}
+                              isSelected={isCellSelected(rowIndex, c)}
+                              onMouseDown={(e) => handleCellMouseDown(rowIndex, c, e)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                setTableContextMenu({ x: e.clientX, y: e.clientY, contextCell: { rowIndex, colIndex: c } });
                               }}
+                              align={() => getAlignment(result[rowIndex][c])}
+                              onSave={(newValue) => handleCellSave(rowIndex, c, newValue)}
                             />
-                          )}
+                          );
+                        }}
                       </For>
                     </tr>
                   ); }}
                 </For>
 
-                {/* 底部占位行 */}
-                <tr style={{ height: `${Math.max(0, totalHeight() - offsetY() - (visible().indices.length * ROW_HEIGHT))}px` }}>
-                  <td colSpan={Math.max(1, columns().length)} style={{ padding: 0, border: "none" }} />
+                {/* 底部占位行（结果为空时保持最小高度以便右键添加行） */}
+                <tr style={{
+                  height: result.length === 0
+                    ? `${Math.max(100, containerHeight() - ROW_HEIGHT)}px`
+                    : `${Math.max(0, totalHeight() - offsetY() - (visible().indices.length * ROW_HEIGHT))}px`
+                }}>
+                  <td
+                    colSpan={Math.max(1, columns().length)}
+                    style={{ padding: 0, border: "none" }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setTableContextMenu({ x: e.clientX, y: e.clientY });
+                    }}
+                  />
                 </tr>
               </tbody>
             </table>
@@ -919,6 +1098,139 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.success)}
               onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
             />
+
+            {/* 统一表格右键菜单 */}
+            <Show when={tableContextMenu()}>
+              {(menu) => {
+                const ctx = () => menu().contextCell;
+                const rowIndex = () => ctx()?.rowIndex ?? -1;
+                const colIndex = () => ctx()?.colIndex ?? -1;
+                const hasContextCell = () => ctx() != null;
+                const colInfo = () => columns()[colIndex()];
+                const isCellModified = () => modifiedCells[rowIndex()]?.[colIndex()] ?? false;
+                const isRowPendingDelete = () => pendingDeletes().some(d => d.rowIndex === rowIndex());
+                const isRowPendingInsert = () => pendingInserts().some(p => p.rowIndex === rowIndex());
+                const isCellEditable = () => colInfo() && (colInfo()!.isEditable || (isRowPendingInsert() && !!colInfo()!.tableName && !!colInfo()!.columnName));
+                return (
+                  <div
+                    ref={(el) => (tableContextMenuRef = el)}
+                    role="menu"
+                    style={{
+                      position: "fixed",
+                      left: `${menu().x}px`,
+                      top: `${menu().y}px`,
+                      "z-index": 10000,
+                      background: vscode.sidebarBg,
+                      border: `1px solid ${vscode.border}`,
+                      color: vscode.foreground,
+                      "border-radius": "4px",
+                      "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
+                      "min-width": "120px",
+                      padding: "4px 0",
+                    }}
+                  >
+                    <Show when={hasContextCell() && isCellModified() && colInfo()?.isEditable}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const r = rowIndex();
+                          const c = colIndex();
+                          if (pendingInserts().some(p => p.rowIndex === r)) {
+                            setResult(r, c, null);
+                            setModifiedCells(r, c, false);
+                          } else {
+                            const idx = pendingUpdates().findIndex(u => u.rowIndex === r && u.colIndex === c);
+                            if (idx >= 0) removePendingUpdate(idx);
+                          }
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        撤销修改
+                      </button>
+                    </Show>
+                    <Show when={hasContextCell() && isCellEditable()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCellSave(rowIndex(), colIndex(), null);
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        Set null
+                      </button>
+                    </Show>
+                    <Show when={hasContextCell() && isRowPendingDelete()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const idx = pendingDeletes().findIndex(d => d.rowIndex === rowIndex());
+                          if (idx >= 0) removePendingDelete(idx);
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.success }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        撤销删除
+                      </button>
+                    </Show>
+                    <Show when={hasContextCell() && isRowPendingInsert()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const idx = pendingInserts().findIndex(p => p.rowIndex === rowIndex());
+                          if (idx >= 0) removePendingInsert(idx);
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.success }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        撤销添加
+                      </button>
+                    </Show>
+                    <Show when={canAddRow()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => { e.stopPropagation(); handleInsertRowBelowSelection(); }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.success }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        插入行
+                      </button>
+                    </Show>
+                    <Show when={selectedRows().length > 0 && canDeleteRow()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => { e.stopPropagation(); handleDeleteSelectedRows(); }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.error }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        删除行
+                      </button>
+                    </Show>
+                  </div>
+                );
+              }}
+            </Show>
           </div>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { createSignal, createEffect, Show, onCleanup } from "solid-js";
+import { createSignal, createEffect, Show } from "solid-js";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 import { vscode } from "./theme";
 
@@ -11,41 +11,25 @@ interface EditableCellProps {
   isPendingDelete?: boolean;
   /** 该行是否为待插入的新行 */
   isPendingInsert?: boolean;
+  /** 该单元格是否在选区内 */
+  isSelected?: boolean;
+  /** 行索引（用于选区与 data 属性） */
+  rowIndex?: number;
+  /** 列索引（用于选区与 data 属性） */
+  colIndex?: number;
   onSave?: (newValue: string | null) => void;
-  onUndo?: () => void;  // 撤销修改（仅对已修改单元格显示）
-  onDeleteRow?: () => void;  // 删除行（加入待执行列表）
-  onUndoDelete?: () => void;  // 撤销删除（仅对该行已标记删除时显示）
-  onAddRow?: () => void;  // 添加行（在末尾插入新行）
-  onUndoInsert?: () => void;  // 撤销添加（仅对该行待插入时显示）
+  onMouseDown?: (e: MouseEvent) => void;
+  onContextMenu?: (e: MouseEvent) => void;
   align?: "left" | "right" | "center" | (() => "left" | "right" | "center");
 }
 
 export default function EditableCell(props: EditableCellProps) {
   const [isEditing, setIsEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
-  const [menuPos, setMenuPos] = createSignal<{ x: number; y: number } | null>(null);
   let inputRef: HTMLInputElement | undefined;
-  let menuRef: HTMLDivElement | null = null;
 
   createEffect(() => {
     if (isEditing()) inputRef?.focus();
-  });
-
-  function closeMenu() {
-    setMenuPos(null);
-  }
-  createEffect(() => {
-    if (!menuPos()) return;
-    const h = (e: MouseEvent) => {
-      if (menuRef?.contains(e.target as Node)) return;
-      closeMenu();
-    };
-    document.addEventListener("click", h, true);
-    document.addEventListener("contextmenu", h, true);
-    onCleanup(() => {
-      document.removeEventListener("click", h, true);
-      document.removeEventListener("contextmenu", h, true);
-    });
   });
 
   const getValue = () => (typeof props.value === "function" ? props.value() : props.value);
@@ -63,19 +47,8 @@ export default function EditableCell(props: EditableCellProps) {
   }
 
   function handleContextMenu(e: MouseEvent) {
-    if (!props.isEditable && !props.onUndo && !props.onDeleteRow && !props.onUndoDelete && !props.onAddRow && !props.onUndoInsert) return;
     e.preventDefault();
-    setMenuPos({ x: e.clientX, y: e.clientY });
-  }
-
-  function handleUndo() {
-    closeMenu();
-    props.onUndo?.();
-  }
-
-  function handleSetNull() {
-    closeMenu();
-    saveValue(null);
+    props.onContextMenu?.(e);
   }
 
   function cancelEditing() {
@@ -92,8 +65,19 @@ export default function EditableCell(props: EditableCellProps) {
     }
   }
 
+  const bgColor = () => {
+    if (props.isPendingDelete) return "rgba(255, 100, 100, 0.12)";
+    if (props.isPendingInsert) return "rgba(100, 200, 100, 0.12)";
+    if (props.isModified) return "rgba(220, 220, 170, 0.1)";
+    if (props.isSelected) return "rgba(100, 150, 255, 0.25)";
+    return "transparent";
+  };
+
   return (
     <td
+      data-rowindex={props.rowIndex}
+      data-colindex={props.colIndex}
+      onMouseDown={props.onMouseDown}
       onDblClick={startEditing}
       onContextMenu={handleContextMenu}
       style={{
@@ -105,7 +89,7 @@ export default function EditableCell(props: EditableCellProps) {
         overflow: "hidden",
         "text-overflow": "ellipsis",
         color: props.isPendingDelete ? vscode.foregroundDim : vscode.foreground,
-        "background-color": props.isPendingDelete ? "rgba(255, 100, 100, 0.12)" : props.isPendingInsert ? "rgba(100, 200, 100, 0.12)" : props.isModified ? "rgba(220, 220, 170, 0.1)" : "transparent",
+        "background-color": bgColor(),
         "text-decoration": props.isPendingDelete ? "line-through" : "none",
         opacity: props.isPendingDelete ? 0.85 : 1
       }}
@@ -122,12 +106,14 @@ export default function EditableCell(props: EditableCellProps) {
           ref={(el) => inputRef = el}
           type="text"
           value={editValue()}
+          title="编辑单元格"
           onInput={(e) => setEditValue(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
           onBlur={() => saveValue()}
           style={{
             width: "100%",
             padding: "2px 4px",
+            "user-select": "text",
             border: `2px solid ${vscode.accent}`,
             "border-radius": "2px",
             "font-size": "inherit",
@@ -135,184 +121,10 @@ export default function EditableCell(props: EditableCellProps) {
             "box-sizing": "border-box",
             outline: "none",
             "text-align": getAlign(),
-            margin: "-4px -6px",  // 抵消 padding 差异，保持宽度不变
+            margin: "-4px -6px",
             "min-width": "calc(100% + 12px)"
           }}
         />
-      </Show>
-      <Show when={menuPos()}>
-        {(pos) => (
-          <div
-            ref={(el) => (menuRef = el)}
-            role="menu"
-            style={{
-              position: "fixed",
-              left: `${pos().x}px`,
-              top: `${pos().y}px`,
-              "z-index": 10000,
-              background: vscode.sidebarBg,
-              border: `1px solid ${vscode.border}`,
-              color: vscode.foreground,
-              "border-radius": "4px",
-              "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
-              "min-width": "120px",
-              padding: "4px 0",
-            }}
-          >
-            <Show when={props.isModified && props.onUndo}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleUndo();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                撤销修改
-              </button>
-            </Show>
-            <Show when={props.isEditable}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleSetNull();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                Set null
-              </button>
-            </Show>
-            <Show when={props.onUndoDelete}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMenu();
-                  props.onUndoDelete?.();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                  color: vscode.success,
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                撤销删除
-              </button>
-            </Show>
-            <Show when={props.onUndoInsert}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMenu();
-                  props.onUndoInsert?.();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                  color: vscode.success,
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                撤销添加
-              </button>
-            </Show>
-            <Show when={props.onAddRow}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMenu();
-                  props.onAddRow?.();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                  color: vscode.success,
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                添加行
-              </button>
-            </Show>
-            <Show when={props.onDeleteRow}>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeMenu();
-                  props.onDeleteRow?.();
-                }}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "6px 12px",
-                  border: "none",
-                  background: "none",
-                  "text-align": "left",
-                  cursor: "pointer",
-                  "font-size": "inherit",
-                  color: vscode.error,
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                删除行
-              </button>
-            </Show>
-          </div>
-        )}
       </Show>
     </td>
   );
