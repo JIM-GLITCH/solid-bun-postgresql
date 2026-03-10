@@ -3,13 +3,13 @@
  * 参考 Dark+ 主题
  */
 export const vscode = {
-  // 主背景
-  editorBg: "#1e1e1e",
-  sidebarBg: "#252526",
-  activityBarBg: "#333333",
-  tabBarBg: "#2d2d2d",
-  tabActiveBg: "#1e1e1e",
-  titleBarBg: "#323233",
+  // 主背景 - prefer VS Code injected CSS variables when available
+  editorBg: getCssVar('--vscode-editor-background', '#1e1e1e'),
+  sidebarBg: getCssVar('--vscode-sideBar-background', '#252526'),
+  activityBarBg: getCssVar('--vscode-activityBar-background', '#333333'),
+  tabBarBg: getCssVar('--vscode-tab-inactiveBackground', '#2d2d2d'),
+  tabActiveBg: getCssVar('--vscode-tab-activeBackground', '#1e1e1e'),
+  titleBarBg: getCssVar('--vscode-titleBar-activeBackground', '#323233'),
 
   // 边框
   border: "#3c3c3c",
@@ -21,9 +21,9 @@ export const vscode = {
   listSelectInactive: "#37373d",
 
   // 文字
-  foreground: "#cccccc",
-  foregroundDim: "#858585",
-  foregroundMuted: "#6e6e6e",
+  foreground: getCssVar('--vscode-editor-foreground', '#cccccc'),
+  foregroundDim: getCssVar('--vscode-descriptionForeground', '#858585'),
+  foregroundMuted: getCssVar('--vscode-editor-foreground', '#6e6e6e'),
 
   // 强调
   accent: "#007acc",
@@ -33,13 +33,23 @@ export const vscode = {
   warning: "#dcdcaa",
 
   // 按钮
-  buttonBg: "#0e639c",
-  buttonHover: "#1177bb",
-  buttonSecondary: "#3c3c3c",
-  buttonSecondaryHover: "#505050",
+  buttonBg: getCssVar('--vscode-button-background', '#0e639c'),
+  buttonHover: getCssVar('--vscode-button-hoverBackground', '#1177bb'),
+  buttonSecondary: getCssVar('--vscode-button-secondaryBackground', '#3c3c3c'),
+  buttonSecondaryHover: getCssVar('--vscode-button-secondaryHoverBackground', '#505050'),
 
   // 输入框
-  inputBg: "#3c3c3c",
-  inputBorder: "#3c3c3c",
-  inputFg: "#cccccc",
+  inputBg: getCssVar('--vscode-input-background', '#3c3c3c'),
+  inputBorder: getCssVar('--vscode-input-border', '#3c3c3c'),
+  inputFg: getCssVar('--vscode-input-foreground', '#cccccc'),
 } as const;
+
+function getCssVar(name: string, fallback: string) {
+  try {
+    if (typeof window !== 'undefined' && window.getComputedStyle) {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name);
+      if (v && v.trim()) return v.trim();
+    }
+  } catch (e) {}
+  return fallback;
+}

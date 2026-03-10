@@ -11,16 +11,16 @@
     html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; }
     html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
     body {
-      color: #1e1e1e;
-      background: #ffffff;
+      color: var(--vscode-editor-foreground, #1e1e1e);
+      background: var(--vscode-editor-background, #ffffff);
       font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
       font-size: var(--vscode-font-size, 13px);
       -webkit-font-smoothing: antialiased;
     }
-    #root { height: 100%; overflow: hidden; color: inherit; background: inherit; }
-    a { color: #0066cc; text-decoration: none; }
+    #root { height: 100%; overflow: hidden; color: var(--vscode-editor-foreground, inherit); background: var(--vscode-editor-background, inherit); }
+    a { color: var(--vscode-editorLink-foreground, #0066cc); text-decoration: none; }
     a:hover { text-decoration: underline; }
-    input, button, select { color: #1e1e1e; background: #fff; }
+    input, button, select { color: var(--vscode-input-foreground, #1e1e1e); background: var(--vscode-input-background, #fff); }
     
     /* 修复 VSCode Webview 下 Monaco 内部输入层可见（白/黑条、光标错位） */
     /* 完全隐藏 Monaco 的输入层和输入法层 */
@@ -88,6 +88,38 @@
   <div id="root"></div>
   <script>
     window.__MONACO_BASE__ = "{{MONACO_BASE_URI}}";
+  </script>
+  <!-- Ensure a global `monaco` binding exists to avoid ReferenceError from chunks
+       that reference the identifier before the editor initializes. -->
+  <script>var monaco;</script>
+  <!-- Theme sync: listen for theme messages from extension and apply -->
+  <script>
+    (function(){
+      // apply theme kind as attribute for CSS usage
+      function applyTheme(themeKind, monacoTheme) {
+        try {
+          document.documentElement.setAttribute('data-vscode-theme', themeKind);
+          var __mc = window.monaco;
+          if (__mc && __mc.editor && __mc.editor.setTheme) {
+            __mc.editor.setTheme(monacoTheme);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // Receive messages from extension
+      window.addEventListener('message', (e) => {
+        const msg = e.data;
+        if (!msg) return;
+        if (msg.type === 'theme') {
+          applyTheme(msg.themeKind, msg.monacoTheme);
+        }
+      });
+
+      // Note: the extension will post the initial theme after HTML is set. Do not call acquireVsCodeApi()
+      // here to avoid acquiring the VS Code API multiple times which can throw.
+    })();
   </script>
   <script type="module" src="{{SCRIPT_URI}}"></script>
 </body>

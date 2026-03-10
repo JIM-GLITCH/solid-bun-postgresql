@@ -5,9 +5,11 @@
 import { onMount, onCleanup, createEffect } from "solid-js";
 import * as monaco from "monaco-editor";
 import "monaco-editor/min/vs/editor/editor.main.css";
+import { getTheme, subscribe } from "./theme-sync";
 
 // Workers 从 ./vs 加载（Monaco 0.55.1 min hashed 文件名）
-const MONACO_BASE = "./vs";
+// When running inside the VS Code webview we allow overriding via window.__MONACO_BASE__
+const MONACO_BASE = (typeof window !== 'undefined' && (window as any).__MONACO_BASE__) || "./vs";
 if (typeof self !== "undefined") {
   (self as any).MonacoEnvironment = {
     getWorkerUrl: (_: string, label: string) => {
@@ -35,16 +37,24 @@ export default function SqlEditor(props: SqlEditorProps) {
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
 
   onMount(() => {
+    const initialTheme = getTheme()?.monacoTheme ?? 'vs-dark';
     editor = monaco.editor.create(container, {
       value: props.value,
       language: "sql",
-      theme: "vs-dark",
+      theme: initialTheme,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
       fontSize: 13,
       lineNumbers: "on",
       wordWrap: "on",
       automaticLayout: true,
+    });
+
+    // subscribe to theme changes
+    const unsub = subscribe((t) => {
+      try {
+        monaco.editor.setTheme(t.monacoTheme);
+      } catch (e) {}
     });
 
     editor.onDidChangeModelContent(() => {
@@ -57,6 +67,7 @@ export default function SqlEditor(props: SqlEditorProps) {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       props.onRun?.();
     });
+    onCleanup(() => unsub());
   });
 
   createEffect(() => {

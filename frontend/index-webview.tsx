@@ -5,8 +5,12 @@ import { render } from "solid-js/web";
 import { setTransport } from "./transport";
 import { VsCodeTransport } from "./transport/vscode-transport";
 import App from "./app";
+import { initWebviewThemeListener } from "./theme-sync";
 
 setTransport(new VsCodeTransport());
+
+// start listening for theme messages from extension
+initWebviewThemeListener();
 
 const root = document.getElementById("root");
 if (root) {

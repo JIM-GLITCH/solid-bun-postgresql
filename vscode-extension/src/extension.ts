@@ -20,6 +20,26 @@ export function activate(context: vscode.ExtensionContext) {
   statusBar.tooltip = 'Open DB Player';
   statusBar.show();
   context.subscriptions.push(statusBar);
+
+  // Keep reference to the currently opened webview panel so we can post messages
+  let currentPanel: vscode.WebviewPanel | null = null;
+
+  // Helper to map VS Code theme to a monaco theme and simple kind
+  function getThemeInfo(): { themeKind: 'light' | 'dark' | 'high-contrast'; monacoTheme: string } {
+    const kind = vscode.window.activeColorTheme.kind;
+    if (kind === vscode.ColorThemeKind.Dark) return { themeKind: 'dark', monacoTheme: 'vs-dark' };
+    if (kind === vscode.ColorThemeKind.HighContrast) return { themeKind: 'high-contrast', monacoTheme: 'hc-black' };
+    return { themeKind: 'light', monacoTheme: 'vs' };
+  }
+
+  // Listen for VS Code theme changes and notify the webview
+  const themeListener = vscode.window.onDidChangeActiveColorTheme(() => {
+    const info = getThemeInfo();
+    if (currentPanel) {
+      currentPanel.webview.postMessage({ type: 'theme', themeKind: info.themeKind, monacoTheme: info.monacoTheme });
+    }
+  });
+  context.subscriptions.push(themeListener);
 }
 
 export function deactivate() {}
@@ -49,6 +69,12 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
     }
   );
 
+  // set current panel reference and clear when disposed
+  currentPanel = panel;
+  panel.onDidDispose(() => {
+    if (currentPanel === panel) currentPanel = null;
+  });
+
   const webview = panel.webview;
   const output = vscode.window.createOutputChannel("DB Player");
   const baseHandler = createVscodeMessageHandler(webview);
@@ -74,16 +100,29 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
     // 使用 webview.cspSource 即可，不要把具体 script URI 塞进 script-src（会被判定为无效 source）
     "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource,
     "style-src 'unsafe-inline' " + webview.cspSource,
+    // Allow fonts and images from the webview resources and data: URIs (Monaco may load embedded fonts)
+    "font-src " + webview.cspSource + " data:",
+    "img-src " + webview.cspSource + " data:",
     // Monaco 依赖 Web Worker；允许从 webview 资源和 blob 启动 worker
     "worker-src " + webview.cspSource + " blob:",
     // 允许 Webview 同源 fetch（例如连接存储接口）；避免被 CSP 直接拦截
     "connect-src 'self' " + webview.cspSource,
   ].join("; ");
 
+  // Replace placeholders (use global replace for repeated occurrences)
   let newHtml = html
-    .replace("{{CSP}}", csp)
-    .replace("{{SCRIPT_URI}}", scriptUri.toString())
-    .replace("{{MONACO_BASE_URI}}", monacoBaseUri.toString());
+    .split("{{CSP}}").join(csp)
+    .split("{{SCRIPT_URI}}").join(scriptUri.toString())
+    .split("{{MONACO_BASE_URI}}").join(monacoBaseUri.toString());
 
   webview.html = newHtml;
+
+  // Send initial theme info to the webview so it can initialize correctly
+  const themeInfo = ((): { themeKind: string; monacoTheme: string } => {
+    const t = vscode.window.activeColorTheme.kind;
+    if (t === vscode.ColorThemeKind.Dark) return { themeKind: 'dark', monacoTheme: 'vs-dark' };
+    if (t === vscode.ColorThemeKind.HighContrast) return { themeKind: 'high-contrast', monacoTheme: 'hc-black' };
+    return { themeKind: 'light', monacoTheme: 'vs' };
+  })();
+  panel.webview.postMessage({ type: 'theme', themeKind: themeInfo.themeKind, monacoTheme: themeInfo.monacoTheme });
 }
