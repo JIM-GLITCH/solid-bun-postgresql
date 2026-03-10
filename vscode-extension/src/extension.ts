@@ -36,7 +36,8 @@ export function activate(context: vscode.ExtensionContext) {
   const themeListener = vscode.window.onDidChangeActiveColorTheme(() => {
     const info = getThemeInfo();
     if (currentPanel) {
-      currentPanel.webview.postMessage({ type: 'theme', themeKind: info.themeKind, monacoTheme: info.monacoTheme });
+      // Notify webview and request a reload so the frontend re-reads injected CSS variables
+      currentPanel.webview.postMessage({ type: 'theme', themeKind: info.themeKind, monacoTheme: info.monacoTheme, reload: true });
     }
   });
   context.subscriptions.push(themeListener);

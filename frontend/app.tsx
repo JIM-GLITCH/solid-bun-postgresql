@@ -151,7 +151,7 @@ export default function App() {
       'font-family': "'Segoe UI', 'Microsoft YaHei', sans-serif",
     }}>
       {/* 左侧 Database Navigator + 右侧主区域 */}
-      <Resizable
+        <Resizable
         initialSizes={[0.2, 0.8]}
         style={{
           flex: 1,

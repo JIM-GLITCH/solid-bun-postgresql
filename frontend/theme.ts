@@ -3,45 +3,45 @@
  * 参考 Dark+ 主题
  */
 export const vscode = {
-  // 主背景 - prefer VS Code injected CSS variables when available
-  editorBg: getCssVar('--vscode-editor-background', '#1e1e1e'),
-  sidebarBg: getCssVar('--vscode-sideBar-background', '#252526'),
-  activityBarBg: getCssVar('--vscode-activityBar-background', '#333333'),
-  tabBarBg: getCssVar('--vscode-tab-inactiveBackground', '#2d2d2d'),
-  tabActiveBg: getCssVar('--vscode-tab-activeBackground', '#1e1e1e'),
-  titleBarBg: getCssVar('--vscode-titleBar-activeBackground', '#323233'),
+  // 主背景 - use CSS variable references so inline styles update when vars change
+  editorBg: "var(--vscode-editor-background, #1e1e1e)",
+  sidebarBg: "var(--vscode-sideBar-background, #252526)",
+  activityBarBg: "var(--vscode-activityBar-background, #333333)",
+  tabBarBg: "var(--vscode-tab-inactiveBackground, #2d2d2d)",
+  tabActiveBg: "var(--vscode-tab-activeBackground, #1e1e1e)",
+  titleBarBg: "var(--vscode-titleBar-activeBackground, #323233)",
 
   // 边框
-  border: "#3c3c3c",
-  borderLight: "#454545",
+  border: "var(--vscode-border, #3c3c3c)",
+  borderLight: "var(--vscode-borderLight, #454545)",
 
   // 列表/树
-  listHover: "#2a2d2e",
-  listSelect: "#094771",
-  listSelectInactive: "#37373d",
+  listHover: "var(--vscode-list-hoverBackground, #2a2d2e)",
+  listSelect: "var(--vscode-list-focusBackground, #094771)",
+  listSelectInactive: "var(--vscode-list-inactiveSelectionBackground, #37373d)",
 
   // 文字
-  foreground: getCssVar('--vscode-editor-foreground', '#cccccc'),
-  foregroundDim: getCssVar('--vscode-descriptionForeground', '#858585'),
-  foregroundMuted: getCssVar('--vscode-editor-foreground', '#6e6e6e'),
+  foreground: "var(--vscode-editor-foreground, #cccccc)",
+  foregroundDim: "var(--vscode-descriptionForeground, #858585)",
+  foregroundMuted: "var(--vscode-editor-foreground, #6e6e6e)",
 
   // 强调
-  accent: "#007acc",
-  accentHover: "#1a8ad4",
-  success: "#4ec9b0",
-  error: "#f48771",
-  warning: "#dcdcaa",
+  accent: "var(--vscode-editor-selectionBackground, #007acc)",
+  accentHover: "var(--vscode-editorHoverWidget-background, #1a8ad4)",
+  success: "var(--vscode-charts-green, #4ec9b0)",
+  error: "var(--vscode-charts-red, #f48771)",
+  warning: "var(--vscode-charts-yellow, #dcdcaa)",
 
   // 按钮
-  buttonBg: getCssVar('--vscode-button-background', '#0e639c'),
-  buttonHover: getCssVar('--vscode-button-hoverBackground', '#1177bb'),
-  buttonSecondary: getCssVar('--vscode-button-secondaryBackground', '#3c3c3c'),
-  buttonSecondaryHover: getCssVar('--vscode-button-secondaryHoverBackground', '#505050'),
+  buttonBg: "var(--vscode-button-background, #0e639c)",
+  buttonHover: "var(--vscode-button-hoverBackground, #1177bb)",
+  buttonSecondary: "var(--vscode-button-secondaryBackground, #3c3c3c)",
+  buttonSecondaryHover: "var(--vscode-button-secondaryHoverBackground, #505050)",
 
   // 输入框
-  inputBg: getCssVar('--vscode-input-background', '#3c3c3c'),
-  inputBorder: getCssVar('--vscode-input-border', '#3c3c3c'),
-  inputFg: getCssVar('--vscode-input-foreground', '#cccccc'),
+  inputBg: "var(--vscode-input-background, #3c3c3c)",
+  inputBorder: "var(--vscode-input-border, #3c3c3c)",
+  inputFg: "var(--vscode-input-foreground, #cccccc)",
 } as const;
 
 function getCssVar(name: string, fallback: string) {

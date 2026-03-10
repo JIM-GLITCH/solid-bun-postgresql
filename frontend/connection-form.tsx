@@ -148,7 +148,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                     }}
                   />
                 </td>
-              </tr>
+        </tr>
             )}
           </For>
         </tbody>

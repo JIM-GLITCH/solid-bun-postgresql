@@ -114,6 +114,12 @@
         if (!msg) return;
         if (msg.type === 'theme') {
           applyTheme(msg.themeKind, msg.monacoTheme);
+          // If extension requests a reload (theme changed), reload to re-evaluate CSS vars
+          if (msg.reload) {
+            setTimeout(() => {
+              try { location.reload(); } catch (e) { /* ignore */ }
+            }, 60);
+          }
         }
       });
 
