@@ -93,6 +93,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   return (
     <div
       ref={container!}
+      data-sql-editor
       class={props.class}
       style={{
         height: "100%",

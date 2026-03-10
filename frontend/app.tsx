@@ -170,6 +170,7 @@ export default function App() {
             'border-right': `1px solid ${vscode.border}`,
           }}
         >
+          <div data-app-sidebar style={{ height: '100%', overflow: 'auto' }}>
           <Sidebar
             connections={connections}
             savedConnections={savedConnections}
@@ -182,6 +183,7 @@ export default function App() {
             connectingSavedId={connectingSavedId()}
             onRemoveSaved={handleRemoveSaved}
           />
+          </div>
         </Resizable.Panel>
         <Resizable.Handle
           aria-label="调整侧边栏宽度"
@@ -367,6 +369,7 @@ export default function App() {
                       >
                         <QueryInterface
                           activeConnectionId={() => tab.connectionId}
+                          isActiveTab={() => activeTabId() === tab.id}
                           externalQuery={() => {
                             const ext = externalQuery();
                             if (!ext || ext.connectionId !== tab.connectionId) return null;

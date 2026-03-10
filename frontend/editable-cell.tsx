@@ -17,6 +17,8 @@ interface EditableCellProps {
   rowIndex?: number;
   /** 列索引（用于选区与 data 属性） */
   colIndex?: number;
+  /** 列数据类型 OID（用于格式化显示，如 JSON 等） */
+  dataTypeOid?: number;
   onSave?: (newValue: string | null) => void;
   onMouseDown?: (e: MouseEvent) => void;
   onContextMenu?: (e: MouseEvent) => void;
@@ -37,7 +39,7 @@ export default function EditableCell(props: EditableCellProps) {
 
   function startEditing() {
     if (!props.isEditable) return;
-    setEditValue(formatCellToEditable(getValue()));
+    setEditValue(formatCellToEditable(getValue(), props.dataTypeOid));
     setIsEditing(true);
   }
 
@@ -97,8 +99,15 @@ export default function EditableCell(props: EditableCellProps) {
       <Show
         when={isEditing()}
         fallback={
-          <span title={props.isEditable ? "双击编辑" : ""}>
-            {formatCellDisplay(getValue())}
+          <span
+            title={props.isEditable ? "双击编辑" : ""}
+            style={
+              getValue() === null || getValue() === undefined
+                ? { "font-style": "italic", opacity: 0.5, color: vscode.foregroundDim }
+                : undefined
+            }
+          >
+            {formatCellDisplay(getValue(), props.dataTypeOid)}
           </span>
         }
       >

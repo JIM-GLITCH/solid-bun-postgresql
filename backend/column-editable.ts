@@ -83,17 +83,23 @@ async function getUniqueConstraints(
   }));
 }
 
-async function getColumnNames(
+interface ColumnMeta {
+  name: string;
+  attnotnull: boolean;
+}
+
+async function getColumnMeta(
   client: QueryClient,
   tableOids: number[]
-): Promise<Map<number, Map<number, string>>> {
+): Promise<Map<number, Map<number, ColumnMeta>>> {
   if (tableOids.length === 0) return new Map();
 
   const query = `
     SELECT 
       attrelid as table_oid,
       attnum as column_number,
-      attname as column_name
+      attname as column_name,
+      attnotnull as attnotnull
     FROM pg_attribute
     WHERE attrelid = ANY($1)
       AND attnum > 0
@@ -101,12 +107,15 @@ async function getColumnNames(
   `;
 
   const result = await client.query(query, [tableOids]);
-  const map = new Map<number, Map<number, string>>();
+  const map = new Map<number, Map<number, ColumnMeta>>();
   for (const row of result.rows) {
     if (!map.has(row.table_oid)) {
       map.set(row.table_oid, new Map());
     }
-    map.get(row.table_oid)!.set(row.column_number, row.column_name);
+    map.get(row.table_oid)!.set(row.column_number, {
+      name: row.column_name,
+      attnotnull: row.attnotnull === true,
+    });
   }
   return map;
 }
@@ -154,9 +163,9 @@ export async function calculateColumnEditable(
 
   const tableOids = [...new Set(fields.map((f) => f.tableID).filter((id) => id !== 0))];
 
-  const [uniqueConstraints, columnNameMap, tableNameMap] = await Promise.all([
+  const [uniqueConstraints, columnMetaMap, tableNameMap] = await Promise.all([
     getUniqueConstraints(client, tableOids),
-    getColumnNames(client, tableOids),
+    getColumnMeta(client, tableOids),
     getTableNames(client, tableOids),
   ]);
 
@@ -225,6 +234,12 @@ export async function calculateColumnEditable(
       dataTypeOid: field.dataTypeID,
     };
 
+    // 对于来自表的列，从 pg_attribute 获取 nullable（无论是否可编辑）
+    if (field.tableID !== 0) {
+      const meta = columnMetaMap.get(field.tableID)?.get(field.columnID);
+      if (meta) info.nullable = !meta.attnotnull;
+    }
+
     if (field.tableID === 0) return info;
 
     const alias = fieldAliases[fieldIndex];
@@ -235,20 +250,22 @@ export async function calculateColumnEditable(
     if (!constraint) return info;
 
     const tableInfo = tableNameMap.get(field.tableID);
-    const tableColumnNames = columnNameMap.get(field.tableID);
-    if (!tableInfo || !tableColumnNames) return info;
+    const tableColumnMeta = columnMetaMap.get(field.tableID);
+    if (!tableInfo || !tableColumnMeta) return info;
 
-    const columnName = tableColumnNames.get(field.columnID);
-    if (!columnName) return info;
+    const columnMeta = tableColumnMeta.get(field.columnID);
+    if (!columnMeta) return info;
+
+    const columnName = columnMeta.name;
 
     const uniqueKeyColumns: string[] = [];
     const uniqueKeyFieldIndices: number[] = [];
 
     for (const colNum of constraint.columnNumbers) {
-      const keyColName = tableColumnNames.get(colNum);
-      if (!keyColName) return info;
+      const keyColMeta = tableColumnMeta.get(colNum);
+      if (!keyColMeta) return info;
 
-      uniqueKeyColumns.push(keyColName);
+      uniqueKeyColumns.push(keyColMeta.name);
 
       const indices = instance.fieldIndices.get(colNum);
       if (!indices || indices.length === 0) return info;

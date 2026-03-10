@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getDataTypeName } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import { vscode } from "./theme";
@@ -16,6 +16,8 @@ interface QueryInterfaceProps {
   /** 外部触发的查询（如侧边栏点击表），处理后应清空 */
   externalQuery?: Accessor<{ connectionId: string; sql: string } | null>;
   onExternalQueryHandled?: () => void;
+  /** 当前是否为活跃 Tab（多 Tab 时仅保存活跃 Tab 的修改） */
+  isActiveTab?: Accessor<boolean>;
 }
 
 // 待执行的 UPDATE 语句
@@ -157,7 +159,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const cells: string[] = [];
       for (let c = sel.startCol; c <= sel.endCol; c++) {
         const val = result[r]?.[c];
-        let s = formatCellDisplay(val ?? null);
+        const dataTypeOid = columns()[c]?.dataTypeOid;
+        let s = formatCellDisplay(val ?? null, dataTypeOid);
         s = s.replace(/\t/g, " ").replace(/\n/g, " ");
         cells.push(s);
       }
@@ -169,6 +172,19 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   createEffect(() => {
     document.addEventListener("copy", handleCopy, true);
     onCleanup(() => document.removeEventListener("copy", handleCopy, true));
+  });
+
+  // Ctrl+S 保存结果：按上下文保存，不要求焦点；仅排除 SQL 编辑器（避免与 Monaco 冲突），多 Tab 时只保存当前 Tab
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (!((e.ctrlKey || e.metaKey) && e.key === "s")) return;
+    if (props.isActiveTab && !props.isActiveTab()) return;
+    if (document.activeElement?.closest("[data-sql-editor]")) return;
+    e.preventDefault();
+    saveAllChanges();
+  };
+  createEffect(() => {
+    document.addEventListener("keydown", handleKeyDown, true);
+    onCleanup(() => document.removeEventListener("keydown", handleKeyDown, true));
   });
 
   // 单元格 mousedown：处理普通点击、Shift+点击、Ctrl+点击（Excel 逻辑）
@@ -278,25 +294,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const seconds = ((ms % 60000) / 1000).toFixed(1);
       return `${minutes} m ${seconds} s`;
     }
-  }
-
-  // 判断值是否为数字类型
-  function isNumericValue(value: any): boolean {
-    if (value === null || value === undefined) return false;
-    if (typeof value === 'number') return true;
-    if (typeof value === 'string') {
-      const trimmed = value.trim();
-      return trimmed !== '' && !isNaN(Number(trimmed));
-    }
-    return false;
-  }
-
-  // 根据值类型获取对齐方式
-  function getAlignment(value: any): "left" | "right" {
-    if (typeof value === 'number' || typeof value === 'boolean' || isNumericValue(value)) {
-      return "right";
-    }
-    return "left";
   }
 
   // 开始拖动调整列宽
@@ -980,9 +977,14 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       >
                         <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
                           <span>{col.name}</span>
-                          {getDataTypeName(col.dataTypeOid) && (
+                          {(getDataTypeName(col.dataTypeOid) || col.nullable !== undefined) && (
                             <span style={{ "font-size": "11px", color: vscode.foregroundDim, "font-weight": "400" }}>
-                              {getDataTypeName(col.dataTypeOid)}
+                              {[
+                                getDataTypeName(col.dataTypeOid),
+                                col.nullable === true ? "nullable" : col.nullable === false ? "NOT NULL" : undefined
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
                             </span>
                           )}
                         </div>
@@ -1044,6 +1046,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                               value={() => result[rowIndex][c]}
                               rowIndex={rowIndex}
                               colIndex={c}
+                              dataTypeOid={colInfo.dataTypeOid}
                               isEditable={colInfo.isEditable || (pendingInserts().some(p => p.rowIndex === rowIndex) && !!colInfo.tableName && !!colInfo.columnName)}
                               isModified={modifiedCells[rowIndex]?.[c] ?? false}
                               isPendingDelete={pendingDel()}
@@ -1054,7 +1057,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                                 e.preventDefault();
                                 setTableContextMenu({ x: e.clientX, y: e.clientY, contextCell: { rowIndex, colIndex: c } });
                               }}
-                              align={() => getAlignment(result[rowIndex][c])}
+                              align={getAlignmentFromDataType(colInfo.dataTypeOid)}
                               onSave={(newValue) => handleCellSave(rowIndex, c, newValue)}
                             />
                           );
@@ -1146,7 +1149,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                           }
                           setTableContextMenu(null);
                         }}
-                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit" }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
                         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
@@ -1162,7 +1165,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                           handleCellSave(rowIndex(), colIndex(), null);
                           setTableContextMenu(null);
                         }}
-                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit" }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
                         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
@@ -1403,7 +1406,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               "background-color": "transparent",
             }}
           />
-          {/* 结果面板 */}
+          {/* 结果面板：仅活跃 Tab 加 data-result-panel，用于 Ctrl+S 范围判定 */}
           <Resizable.Panel
             minSize={0.2}
             style={{
@@ -1415,21 +1418,30 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               "box-sizing": "border-box",
             }}
           >
-            <div style={{ 
-              flex: 1, 
-              "min-height": 0,
-              "background-color": vscode.sidebarBg, 
-              padding: "16px", 
-              overflow: "hidden", 
-              display: "flex", 
-              "flex-direction": "column",
-              border: `1px solid ${vscode.border}`,
-            }}>
-              {renderResult()}
-            </div>
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                "flex-direction": "column",
+                "min-height": 0,
+                overflow: "hidden",
+              }}
+            >
+              <div style={{
+                flex: 1,
+                "min-height": 0,
+                "background-color": vscode.sidebarBg,
+                padding: "16px",
+                overflow: "hidden",
+                display: "flex",
+                "flex-direction": "column",
+                border: `1px solid ${vscode.border}`,
+              }}>
+                {renderResult()}
+              </div>
 
-            {/* 数据库通知消息 - 底部可折叠 */}
-            <div style={{
+              {/* 数据库通知消息 - 底部可折叠 */}
+              <div style={{
               "margin-top": "12px",
               "background-color": vscode.sidebarBg,
               padding: "10px",
@@ -1528,6 +1540,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   </div>
                 </div>
               </Show>
+            </div>
             </div>
           </Resizable.Panel>
         </Resizable>

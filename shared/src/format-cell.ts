@@ -1,10 +1,9 @@
 /**
- * 表格单元格格式化：兼容所有 PostgreSQL 类型，处理 timestamp 与 JS Date 精度问题
+ * 表格单元格格式化：兼容所有 PostgreSQL 类型
  *
- * 精度说明：
- * - PG timestamp/timestamptz 支持微秒（6 位小数）
- * - JS Date 仅支持毫秒（3 位）
- * - 策略：后端以字符串返回日期时间类型，前端保持字符串，不做 Date 转换
+ * 后端策略（connect-postgres.ts）：
+ * - 日期时间：以字符串返回，避免 JS Date 丢失微秒精度
+ * - 数组：由 node-pg 解析为 JS 数组，前端显示时转为 {a,b,c} 格式
  */
 
 /** PostgreSQL 类型 OID（常见） */
@@ -44,6 +43,28 @@ export const PG_OID = {
 
 import { PG_OID_TO_NAME } from "./pg-type-oids.js";
 
+/** 判断是否为 PostgreSQL 数组类型 OID */
+function isArrayTypeOid(dataTypeOid?: number): boolean {
+  if (dataTypeOid == null) return false;
+  const raw = PG_OID_TO_NAME[dataTypeOid];
+  return !!raw && raw.startsWith("_");
+}
+
+/** 将 JS 数组转为 PostgreSQL 数组字面量格式 {a,b,c} */
+function formatArrayToPgLiteral(arr: unknown[]): string {
+  const parts = arr.map((el) => {
+    if (el === null || el === undefined) return "NULL";
+    if (Array.isArray(el)) return formatArrayToPgLiteral(el);
+    if (typeof el === "boolean") return el ? "t" : "f";
+    if (typeof el === "string") {
+      const escaped = el.replace(/\\/g, "\\\\").replace(/"/g, '""');
+      return `"${escaped}"`;
+    }
+    return String(el);
+  });
+  return "{" + parts.join(",") + "}";
+}
+
 export function getDataTypeName(dataTypeOid?: number): string {
   if (dataTypeOid == null) return "";
   const raw = PG_OID_TO_NAME[dataTypeOid] ?? `oid:${dataTypeOid}`;
@@ -75,9 +96,21 @@ const DATE_TIME_OIDS = new Set([
   PG_OID.interval,
 ]);
 
+/** 右对齐类型 OID（数字、日期时间，参考 DBeaver 逻辑） */
+const RIGHT_ALIGN_OIDS = new Set([
+  ...NUMERIC_OIDS,
+  ...DATE_TIME_OIDS,
+]);
+
+/** 根据列的类型 OID 返回对齐方式（左/右），不依赖单元格内容 */
+export function getAlignmentFromDataType(dataTypeOid?: number): "left" | "right" {
+  if (dataTypeOid == null) return "left";
+  return RIGHT_ALIGN_OIDS.has(dataTypeOid as any) ? "right" : "left";
+}
+
 /** 格式化为表格显示 */
 export function formatCellDisplay(value: unknown, dataTypeOid?: number): string {
-  if (value === null || value === undefined) return "";
+  if (value === null || value === undefined) return "NULL";
   if (typeof value === "string") return value;
   if (typeof value === "number") return String(value);
   if (typeof value === "boolean") return value ? "t" : "f";
@@ -94,6 +127,16 @@ export function formatCellDisplay(value: unknown, dataTypeOid?: number): string 
     return "\\x" + hex;
   }
 
+  // PostgreSQL 数组类型：显示为 {a,b,c} 格式
+  if (Array.isArray(value) && isArrayTypeOid(dataTypeOid)) {
+    try {
+      const str = formatArrayToPgLiteral(value);
+      return str.length > 200 ? str.slice(0, 200) + "…" : str;
+    } catch {
+      return String(value);
+    }
+  }
+
   // JSON/JSONB：美化显示（截断过长内容）
   if (typeof value === "object") {
     try {
@@ -108,7 +151,7 @@ export function formatCellDisplay(value: unknown, dataTypeOid?: number): string 
 }
 
 /** 转为可编辑的字符串（用于编辑框初始值，不截断） */
-export function formatCellToEditable(value: unknown): string {
+export function formatCellToEditable(value: unknown, dataTypeOid?: number): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -117,6 +160,13 @@ export function formatCellToEditable(value: unknown): string {
   if (typeof value === "object" && value !== null && "type" in value && (value as any).type === "Buffer" && Array.isArray((value as any).data)) {
     const hex = Array.from((value as any).data as number[]).map((b: number) => b.toString(16).padStart(2, "0")).join("");
     return "\\x" + hex;
+  }
+  if (Array.isArray(value) && isArrayTypeOid(dataTypeOid)) {
+    try {
+      return formatArrayToPgLiteral(value);
+    } catch {
+      return String(value);
+    }
   }
   if (typeof value === "object") {
     try {

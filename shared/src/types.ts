@@ -33,4 +33,6 @@ export interface ColumnEditableInfo {
   uniqueKeyColumns?: string[];
   uniqueKeyFieldIndices?: number[];
   tableAlias?: string;
+  /** 列是否允许 NULL（来自 pg_attribute.attnotnull） */
+  nullable?: boolean;
 }
