@@ -13,6 +13,8 @@ interface EditableCellProps {
   isPendingInsert?: boolean;
   /** 该单元格是否在选区内 */
   isSelected?: boolean;
+  /** 相邻单元格是否选中（用于隐藏选区内部网格线） */
+  neighborSelected?: { left?: boolean; right?: boolean; top?: boolean; bottom?: boolean };
   /** 行索引（用于选区与 data 属性） */
   rowIndex?: number;
   /** 列索引（用于选区与 data 属性） */
@@ -70,8 +72,7 @@ export default function EditableCell(props: EditableCellProps) {
   const bgColor = () => {
     if (props.isPendingDelete) return "rgba(255, 100, 100, 0.12)";
     if (props.isPendingInsert) return "rgba(100, 200, 100, 0.12)";
-    if (props.isModified) return "rgba(220, 220, 170, 0.1)";
-    if (props.isSelected) return "rgba(100, 150, 255, 0.25)";
+    if (props.isModified) return "rgba(255, 240, 120, 0.15)";
     return "transparent";
   };
 
@@ -92,6 +93,13 @@ export default function EditableCell(props: EditableCellProps) {
         "text-overflow": "ellipsis",
         color: props.isPendingDelete ? vscode.foregroundDim : vscode.foreground,
         "background-color": bgColor(),
+        "box-shadow": props.isSelected ? [
+          "inset 0 0 0 9999px rgba(0, 176, 255, 0.2)",
+          !props.neighborSelected?.left && "inset 1px 0 0 0 #2aaaff",
+          !props.neighborSelected?.right && "inset -1px 0 0 0 #2aaaff",
+          !props.neighborSelected?.top && "inset 0 1px 0 0 #2aaaff",
+          !props.neighborSelected?.bottom && "inset 0 -1px 0 0 #2aaaff"
+        ].filter(Boolean).join(", ") : "none",
         "text-decoration": props.isPendingDelete ? "line-through" : "none",
         opacity: props.isPendingDelete ? 0.85 : 1
       }}

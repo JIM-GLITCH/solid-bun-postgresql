@@ -94,10 +94,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     return sel.has(cellKey(rowIndex, colIndex));
   };
 
+  const ROW_HEIGHT = 40;  // 虚拟滚动行高
+
   // 虚拟滚动相关状态
   const [scrollTop, setScrollTop] = createSignal(0);
   const [containerHeight, setContainerHeight] = createSignal(600);
-  const ROW_HEIGHT = 40; // 预估行高
   const OVERSCAN = 10; // 预渲染行数
 
   const visible = createMemo(() => {
@@ -367,9 +368,15 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         throw new Error(data.error);
       }
 
-      // 设置列信息
-      setColumns(data.columns || []);
-      setColumnWidths((data.columns || []).map(() => 120));
+      // 设置列信息；列数不变时保留已有列宽，避免 Set null/保存后突变
+      const newCols = data.columns || [];
+      setColumns(newCols);
+      const cur = columnWidths;
+      if (cur.length === newCols.length) {
+        setColumnWidths(cur.map((w, i) => w || 120));
+      } else {
+        setColumnWidths(newCols.map(() => 120));
+      }
 
       // 设置行数据
       const rows = data.rows || [];
@@ -961,12 +968,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           <div style={{ height: `${totalHeight()}px`, width: "100%", position: "absolute", top: 0, left: 0, "pointer-events": "none" }} />
 
           <div style={{
-            position: "sticky",
-            top: 0,
-            left: 0,
-            width: "max-content",
-            "z-index": 10
-          }}>
+              position: "sticky",
+              top: 0,
+              left: 0,
+              width: "max-content",
+              "z-index": 10
+            }}
+          >
             <table style={{
               "border-collapse": "collapse",
               width: tableWidth() ? `${tableWidth()}px` : "auto",
@@ -1075,6 +1083,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                               isPendingDelete={pendingDel()}
                               isPendingInsert={pendingIns()}
                               isSelected={isCellSelected(rowIndex, c)}
+                              neighborSelected={{
+                                left: c > 0 && isCellSelected(rowIndex, c - 1),
+                                right: c < columns().length - 1 && isCellSelected(rowIndex, c + 1),
+                                top: rowIndex > 0 && isCellSelected(rowIndex - 1, c),
+                                bottom: rowIndex < result.length - 1 && isCellSelected(rowIndex + 1, c)
+                              }}
                               onMouseDown={(e) => handleCellMouseDown(rowIndex, c, e)}
                               onContextMenu={(e) => {
                                 e.preventDefault();
@@ -1305,9 +1319,15 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         throw new Error(data.error);
       }
 
-      setColumns(data.columns || []);
-      setColumnWidths((data.columns || []).map(() => 120));
-      
+      const newCols = data.columns || [];
+      setColumns(newCols);
+      const cur = columnWidths;
+      if (cur.length === newCols.length) {
+        setColumnWidths(cur.map((w, i) => w || 120));
+      } else {
+        setColumnWidths(newCols.map(() => 120));
+      }
+
       const rows = data.rows || [];
       setResult(rows);
       
