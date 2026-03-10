@@ -12,6 +12,14 @@ export function activate(context: vscode.ExtensionContext) {
       });
     })
   );
+  // Create a status bar item that opens the DB Player when clicked
+  // Place it on the left but with low priority so it won't sit at the far-left edge
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  statusBar.command = 'db-player.helloWorld';
+  statusBar.text = '$(database) DB Player';
+  statusBar.tooltip = 'Open DB Player';
+  statusBar.show();
+  context.subscriptions.push(statusBar);
 }
 
 export function deactivate() {}
