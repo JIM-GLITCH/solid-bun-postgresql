@@ -61,8 +61,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
   const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
 
-  // 单元格选区：{ startRow, startCol, endRow, endCol }，保证 startRow<=endRow, startCol<=endCol
-  const [selection, setSelection] = createSignal<{ startRow: number; startCol: number; endRow: number; endCol: number } | null>(null);
+  // 单元格选区：Set<"row,col">，支持非连续多选（Ctrl+点击添加）
+  const [selection, setSelection] = createSignal<Set<string> | null>(null);
+  const cellKey = (r: number, c: number) => `${r},${c}`;
   const [selectionAnchor, setSelectionAnchor] = createSignal<{ row: number; col: number } | null>(null);  // 框选起点（拖拽用）
   const [selectionOrigin, setSelectionOrigin] = createSignal<{ row: number; col: number } | null>(null);  // Shift+点击 扩展选区的起点
   const [tableContextMenu, setTableContextMenu] = createSignal<{
@@ -74,9 +75,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   // 选区内的所有行索引（去重，升序）
   const selectedRows = createMemo(() => {
     const sel = selection();
-    if (!sel) return [];
+    if (!sel || sel.size === 0) return [];
     const rows = new Set<number>();
-    for (let r = sel.startRow; r <= sel.endRow; r++) rows.add(r);
+    for (const k of sel) {
+      rows.add(Number(k.split(",")[0]));
+    }
     return Array.from(rows).sort((a, b) => a - b);
   });
   // 选区中最后一行（用于在下方插入）
@@ -88,7 +91,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const isCellSelected = (rowIndex: number, colIndex: number) => {
     const sel = selection();
     if (!sel) return false;
-    return rowIndex >= sel.startRow && rowIndex <= sel.endRow && colIndex >= sel.startCol && colIndex <= sel.endCol;
+    return sel.has(cellKey(rowIndex, colIndex));
   };
 
   // 虚拟滚动相关状态
@@ -151,17 +154,22 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   // 复制：当有选区且无文本选区时，将选中的单元格内容复制为制表符分隔格式（便于粘贴到 Excel）
   const handleCopy = (e: ClipboardEvent) => {
     const sel = selection();
-    if (!sel) return;
+    if (!sel || sel.size === 0) return;
     const textSel = window.getSelection()?.toString() ?? "";
     if (textSel) return; // 用户选中了文本（如在编辑框内），不覆盖默认复制
+    let minR = Infinity, minC = Infinity, maxR = -1, maxC = -1;
+    for (const k of sel) {
+      const [r, c] = k.split(",").map(Number);
+      minR = Math.min(minR, r); minC = Math.min(minC, c);
+      maxR = Math.max(maxR, r); maxC = Math.max(maxC, c);
+    }
     const rows: string[] = [];
-    for (let r = sel.startRow; r <= sel.endRow; r++) {
+    for (let r = minR; r <= maxR; r++) {
       const cells: string[] = [];
-      for (let c = sel.startCol; c <= sel.endCol; c++) {
-        const val = result[r]?.[c];
+      for (let c = minC; c <= maxC; c++) {
+        const val = sel.has(cellKey(r, c)) ? (result[r]?.[c] ?? null) : null;
         const dataTypeOid = columns()[c]?.dataTypeOid;
-        let s = formatCellDisplay(val ?? null, dataTypeOid);
-        s = s.replace(/\t/g, " ").replace(/\n/g, " ");
+        const s = val !== null ? formatCellDisplay(val, dataTypeOid).replace(/\t/g, " ").replace(/\n/g, " ") : "";
         cells.push(s);
       }
       rows.push(cells.join("\t"));
@@ -194,32 +202,31 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const c = colIndex;
 
     if (e.shiftKey) {
-      // Shift+点击：从 selectionOrigin 扩展到当前单元格
+      // Shift+点击：从 selectionOrigin 扩展到当前单元格，将矩形范围内的单元格加入选区
       const origin = selectionOrigin();
       const anchor = origin ?? { row: r, col: c };
-      setSelection({
-        startRow: Math.min(anchor.row, r),
-        startCol: Math.min(anchor.col, c),
-        endRow: Math.max(anchor.row, r),
-        endCol: Math.max(anchor.col, c)
+      const r0 = Math.min(anchor.row, r), r1 = Math.max(anchor.row, r);
+      const c0 = Math.min(anchor.col, c), c1 = Math.max(anchor.col, c);
+      setSelection(prev => {
+        const next = new Set(prev || []);
+        for (let ri = r0; ri <= r1; ri++)
+          for (let ci = c0; ci <= c1; ci++)
+            next.add(cellKey(ri, ci));
+        return next;
       });
       if (!origin) setSelectionOrigin(anchor);
       return; // 不启动框选拖拽
     }
 
     if (e.ctrlKey || e.metaKey) {
-      // Ctrl/Cmd+点击：将当前单元格加入选区（扩展矩形包含该单元格），锚点移至该单元格
-      const sel = selection();
-      if (!sel) {
-        setSelection({ startRow: r, startCol: c, endRow: r, endCol: c });
-      } else {
-        setSelection({
-          startRow: Math.min(sel.startRow, r),
-          startCol: Math.min(sel.startCol, c),
-          endRow: Math.max(sel.endRow, r),
-          endCol: Math.max(sel.endCol, c)
-        });
-      }
+      // Ctrl/Cmd+点击：将当前单元格添加到选区（不替换已有选区）
+      const key = cellKey(r, c);
+      setSelection(prev => {
+        const next = new Set(prev || []);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next.size > 0 ? next : null;
+      });
       setSelectionOrigin({ row: r, col: c });
       return; // 不启动框选拖拽
     }
@@ -227,7 +234,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     // 普通点击：选中该单元格，启动框选拖拽
     setSelectionOrigin({ row: r, col: c });
     setSelectionAnchor({ row: r, col: c });
-    setSelection({ startRow: r, startCol: c, endRow: r, endCol: c });
+    setSelection(new Set([cellKey(r, c)]));
   }
 
   // 框选逻辑：mousedown 设锚点，mousemove 扩展选区，mouseup 清除锚点
@@ -245,12 +252,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const row = parseInt((td as HTMLElement).dataset.rowindex ?? "-1", 10);
       const col = parseInt((td as HTMLElement).dataset.colindex ?? "-1", 10);
       if (row < 0 || col < 0) return;
-      setSelection({
-        startRow: Math.min(anchor.row, row),
-        startCol: Math.min(anchor.col, col),
-        endRow: Math.max(anchor.row, row),
-        endCol: Math.max(anchor.col, col)
-      });
+      const r0 = Math.min(anchor.row, row), r1 = Math.max(anchor.row, row);
+      const c0 = Math.min(anchor.col, col), c1 = Math.max(anchor.col, col);
+      const next = new Set<string>();
+      for (let ri = r0; ri <= r1; ri++)
+        for (let ci = c0; ci <= c1; ci++)
+          next.add(cellKey(ri, ci));
+      setSelection(next);
     };
     const onMouseUp = () => setSelectionAnchor(null);
     document.addEventListener("mousemove", onMouseMove);
@@ -445,16 +453,31 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     }
   }
 
+  // 获取用于 WHERE 子句的行状态（用 pendingUpdates 的 oldValue 覆盖，以得到修改前的值）
+  function getRowForWhere(rowIndex: number): any[] {
+    const row = [...(result[rowIndex] || [])];
+    for (const u of pendingUpdates()) {
+      if (u.rowIndex === rowIndex) row[u.colIndex] = u.oldValue;
+    }
+    return row;
+  }
+
+  // 生成 WHERE 条件片段：NULL 须用 IS NULL，不能用 = NULL
+  function formatWhereCondition(colName: string, value: unknown, dataTypeOid?: number): string {
+    if (value === null || value === undefined) return `${colName} IS NULL`;
+    return `${colName} = ${formatSqlValueShared(value, dataTypeOid)}`;
+  }
+
   // 生成 UPDATE SQL（使用共享的 formatSqlValue 以兼容 timestamp 精度等）
   function generateUpdateSql(rowIndex: number, colIndex: number, newValue: string | null): string {
     const colInfo = columns()[colIndex];
-    const row = result[rowIndex];
+    const row = getRowForWhere(rowIndex);
 
     const whereConditions = colInfo.uniqueKeyColumns!.map((keyColName, i) => {
       const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
       const keyValue = row[keyColIndex];
       const keyOid = columns()[keyColIndex]?.dataTypeOid;
-      return `${keyColName} = ${formatSqlValueShared(keyValue, keyOid)}`;
+      return formatWhereCondition(keyColName, keyValue, keyOid);
     });
 
     return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid)} WHERE ${whereConditions.join(" AND ")}`;
@@ -465,12 +488,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const cols = columns();
     const colInfo = cols.find(c => c.uniqueKeyColumns?.length && c.tableName);
     if (!colInfo?.uniqueKeyColumns || !colInfo.uniqueKeyFieldIndices) return null;
-    const row = result[rowIndex];
+    const row = getRowForWhere(rowIndex);
     const whereConditions = colInfo.uniqueKeyColumns.map((keyColName, i) => {
       const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
       const keyValue = row[keyColIndex];
       const keyOid = cols[keyColIndex]?.dataTypeOid;
-      return `${keyColName} = ${formatSqlValueShared(keyValue, keyOid)}`;
+      return formatWhereCondition(keyColName, keyValue, keyOid);
     });
     return `DELETE FROM ${colInfo.tableName} WHERE ${whereConditions.join(" AND ")}`;
   }
@@ -1055,6 +1078,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                               onMouseDown={(e) => handleCellMouseDown(rowIndex, c, e)}
                               onContextMenu={(e) => {
                                 e.preventDefault();
+                                const key = cellKey(rowIndex, c);
+                                if (!selection()?.has(key)) {
+                                  setSelection(new Set([key]));
+                                  setSelectionOrigin({ row: rowIndex, col: c });
+                                }
                                 setTableContextMenu({ x: e.clientX, y: e.clientY, contextCell: { rowIndex, colIndex: c } });
                               }}
                               align={getAlignmentFromDataType(colInfo.dataTypeOid)}
@@ -1132,21 +1160,27 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       padding: "4px 0",
                     }}
                   >
-                    <Show when={hasContextCell() && isCellModified() && colInfo()?.isEditable}>
+                    <Show when={hasContextCell() && (() => { const s = selection(); const keys = (s && s.size > 0) ? [...s] : [cellKey(rowIndex(), colIndex())]; return keys.some(k => { const [r, c] = k.split(",").map(Number); return modifiedCells[r]?.[c]; }); })()}>
                       <button
                         type="button"
                         role="menuitem"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const r = rowIndex();
-                          const c = colIndex();
-                          if (pendingInserts().some(p => p.rowIndex === r)) {
-                            setResult(r, c, null);
-                            setModifiedCells(r, c, false);
-                          } else {
-                            const idx = pendingUpdates().findIndex(u => u.rowIndex === r && u.colIndex === c);
-                            if (idx >= 0) removePendingUpdate(idx);
+                          const sel = selection();
+                          const cellsToUndo = (sel && sel.size > 0) ? [...sel] : [cellKey(rowIndex(), colIndex())];
+                          const indicesToRemove: number[] = [];
+                          for (const k of cellsToUndo) {
+                            const [r, c] = k.split(",").map(Number);
+                            if (!(modifiedCells[r]?.[c])) continue;
+                            if (pendingInserts().some(p => p.rowIndex === r)) {
+                              setResult(r, c, null);
+                              setModifiedCells(r, c, false);
+                            } else {
+                              const idx = pendingUpdates().findIndex(u => u.rowIndex === r && u.colIndex === c);
+                              if (idx >= 0) indicesToRemove.push(idx);
+                            }
                           }
+                          for (const i of [...new Set(indicesToRemove)].sort((a, b) => b - a)) removePendingUpdate(i);
                           setTableContextMenu(null);
                         }}
                         style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
@@ -1162,7 +1196,18 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         role="menuitem"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleCellSave(rowIndex(), colIndex(), null);
+                          const sel = selection();
+                          const cols = columns();
+                          if (sel && sel.size > 0) {
+                            for (const k of sel) {
+                              const [r, c] = k.split(",").map(Number);
+                              const col = cols[c];
+                              const editable = col && (col.isEditable || (pendingInserts().some(p => p.rowIndex === r) && col.tableName && col.columnName));
+                              if (editable) handleCellSave(r, c, null);
+                            }
+                          } else {
+                            handleCellSave(rowIndex(), colIndex(), null);
+                          }
                           setTableContextMenu(null);
                         }}
                         style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
