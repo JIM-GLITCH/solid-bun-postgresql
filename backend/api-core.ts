@@ -315,6 +315,36 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { indexes: result.rows };
     }
 
+    case "postgres/data-types": {
+      const cid = getConnId();
+      const session = getS(cid);
+      const result = await session.backGroundPool.query(
+        `SELECT t.typname AS name
+         FROM pg_type t
+         JOIN pg_namespace n ON t.typnamespace = n.oid
+         WHERE n.nspname = 'pg_catalog'
+           AND t.typtype IN ('b', 'e', 'p')
+           AND t.typname !~ '^_'
+         ORDER BY t.typname`
+      );
+      return { types: result.rows.map((r: { name: string }) => r.name) };
+    }
+
+    case "postgres/execute-ddl": {
+      const cid = getConnId();
+      const { sql } = payload as { connectionId: string; sql: string };
+      const session = getS(cid);
+      try {
+        sendSSEMessage(cid, { type: "QUERY", message: `执行 DDL: ${sql.slice(0, 80)}...`, timestamp: Date.now() });
+        await session.backGroundPool.query(sql);
+        sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
+        return { success: true };
+      } catch (e: any) {
+        sendSSEMessage(cid, { type: "ERROR", message: `DDL 错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
+        throw e;
+      }
+    }
+
     case "postgres/foreign-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
@@ -338,6 +368,89 @@ export async function handleApiRequest<M extends ApiMethod>(
         [schema, table]
       );
       return { outgoing: outgoingResult.rows, incoming: incomingResult.rows };
+    }
+
+    case "postgres/table-ddl": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const pool = session.backGroundPool;
+
+      // 判断是表还是视图
+      const tblRes = await pool.query(
+        `SELECT table_type FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2`,
+        [schema, table]
+      );
+      if (tblRes.rows.length === 0) throw new Error(`表或视图 ${schema}.${table} 不存在`);
+      const isView = tblRes.rows[0].table_type === "VIEW";
+
+      if (isView) {
+        const defRes = await pool.query(
+          `SELECT pg_get_viewdef($1::regclass, true) AS def`,
+          [`"${schema.replace(/"/g, '""')}"."${table.replace(/"/g, '""')}"`]
+        );
+        const def = defRes.rows[0]?.def ?? "";
+        return { ddl: `CREATE OR REPLACE VIEW "${schema}"."${table}" AS\n${def}` };
+      }
+
+      // 表：获取列、约束、索引
+      const colsRes = await pool.query(
+        `SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale,
+         is_nullable, column_default, udt_name
+         FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
+        [schema, table]
+      );
+      const pkRes = await pool.query(
+        `SELECT kcu.column_name FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = $1 AND tc.table_name = $2 ORDER BY kcu.ordinal_position`,
+        [schema, table]
+      );
+      const pkCols = pkRes.rows.map((r: any) => r.column_name);
+      const idxRes = await pool.query(
+        `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2`,
+        [schema, table]
+      );
+      const fkRes = await pool.query(
+        `SELECT tc.constraint_name, kcu.column_name, ccu.table_schema AS ref_schema, ccu.table_name AS ref_table, ccu.column_name AS ref_column
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2`,
+        [schema, table]
+      );
+      const checkRes = await pool.query(
+        `SELECT cc.constraint_name, cc.check_clause FROM information_schema.check_constraints cc
+         JOIN information_schema.constraint_table_usage ctu ON cc.constraint_name = ctu.constraint_name
+         WHERE ctu.table_schema = $1 AND ctu.table_name = $2`,
+        [schema, table]
+      );
+
+      const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
+      const colDefs = colsRes.rows.map((c: any) => {
+        let type = c.udt_name || c.data_type;
+        if (c.character_maximum_length) type += `(${c.character_maximum_length})`;
+        else if (c.numeric_precision != null) type += `(${c.numeric_precision}${c.numeric_scale != null ? "," + c.numeric_scale : ""})`;
+        let def = quote(c.column_name) + " " + type;
+        if (c.is_nullable === "NO") def += " NOT NULL";
+        if (c.column_default) def += " DEFAULT " + c.column_default;
+        return def;
+      });
+      if (pkCols.length) {
+        colDefs.push("  PRIMARY KEY (" + pkCols.map(quote).join(", ") + ")");
+      }
+      let ddl = `CREATE TABLE ${quote(schema)}.${quote(table)} (\n  ` + colDefs.join(",\n  ");
+      const fkStmts = fkRes.rows.map((f: any) =>
+        `ALTER TABLE ${quote(schema)}.${quote(table)} ADD CONSTRAINT ${quote(f.constraint_name)} FOREIGN KEY (${quote(f.column_name)}) REFERENCES ${quote(f.ref_schema)}.${quote(f.ref_table)}(${quote(f.ref_column)})`
+      );
+      const checkStmts = checkRes.rows.map((c: any) =>
+        `ALTER TABLE ${quote(schema)}.${quote(table)} ADD CONSTRAINT ${quote(c.constraint_name)} CHECK (${c.check_clause})`
+      );
+      const idxStmts = idxRes.rows
+        .filter((r: any) => !r.indexname.endsWith("_pkey"))
+        .map((r: any) => r.indexdef);
+      ddl += "\n);\n\n" + [...fkStmts, ...checkStmts, ...idxStmts].filter(Boolean).join(";\n\n") + (fkStmts.length || checkStmts.length || idxStmts.length ? ";" : "");
+      return { ddl: ddl.trim() };
     }
 
     case "postgres/query": {

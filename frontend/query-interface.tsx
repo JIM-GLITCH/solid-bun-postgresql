@@ -558,14 +558,16 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   const canAddRow = () => columns().some(c => c.tableName && c.columnName);
 
-  // 处理添加行，在 belowRowIndex 下方插入
+  // 处理添加行，在 belowRowIndex 下方插入（空表时 belowRowIndex=-1，插入到索引 0）
   function handleAddRow(belowRowIndex: number) {
     const cols = columns();
     if (cols.length === 0) return;
-    const insertAt = belowRowIndex + 1;
+    const insertAt = Math.max(0, belowRowIndex + 1);
     const newRow = cols.map(() => null);
-    setResult(produce(prev => { prev.splice(insertAt, 0, newRow); }));
-    setModifiedCells(produce(prev => { prev.splice(insertAt, 0, cols.map(() => false)); }));
+    const newModifiedRow = cols.map(() => false);
+    // 使用不可变更新，兼容空表（produce 对空数组可能有兼容问题）
+    setResult(prev => [...prev.slice(0, insertAt), newRow, ...prev.slice(insertAt)]);
+    setModifiedCells(prev => [...prev.slice(0, insertAt), newModifiedRow, ...prev.slice(insertAt)]);
     // 更新后续行的索引
     setPendingInserts(prev => prev.map(p => p.rowIndex >= insertAt ? { rowIndex: p.rowIndex + 1 } : p).concat([{ rowIndex: insertAt }]));
     setPendingDeletes(prev => prev.map(d => ({ ...d, rowIndex: d.rowIndex >= insertAt ? d.rowIndex + 1 : d.rowIndex })));
@@ -1237,8 +1239,14 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         role="menuitem"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const idx = pendingDeletes().findIndex(d => d.rowIndex === rowIndex());
-                          if (idx >= 0) removePendingDelete(idx);
+                          const sel = selectedRows();
+                          const rowsToUndo = sel.length > 0 ? sel : [rowIndex()];
+                          const indices = pendingDeletes()
+                            .map((d, i) => (rowsToUndo.includes(d.rowIndex) ? i : -1))
+                            .filter(i => i >= 0);
+                          for (const i of [...new Set(indices)].sort((a, b) => b - a)) {
+                            removePendingDelete(i);
+                          }
                           setTableContextMenu(null);
                         }}
                         style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.success }}

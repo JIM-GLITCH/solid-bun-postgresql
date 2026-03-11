@@ -23,7 +23,10 @@ export type ApiMethod =
   | "postgres/tables"
   | "postgres/columns"
   | "postgres/indexes"
-  | "postgres/foreign-keys";
+  | "postgres/foreign-keys"
+  | "postgres/data-types"
+  | "postgres/execute-ddl"
+  | "postgres/table-ddl";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -44,6 +47,9 @@ export type ApiRequestPayload = {
   "postgres/columns": { schema: string; table: string; connectionId: string };
   "postgres/indexes": { schema: string; table: string; connectionId: string };
   "postgres/foreign-keys": { schema: string; table: string; connectionId: string };
+  "postgres/data-types": { connectionId: string };
+  "postgres/execute-ddl": { connectionId: string; sql: string };
+  "postgres/table-ddl": { connectionId: string; schema: string; table: string };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

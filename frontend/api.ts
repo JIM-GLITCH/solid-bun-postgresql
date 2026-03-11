@@ -86,6 +86,21 @@ export async function getForeignKeys(connectionId: string, schema: string, table
   }>;
 }
 
+/** 获取 PostgreSQL 数据类型列表 */
+export async function getDataTypes(connectionId: string) {
+  return api().request("postgres/data-types", { connectionId }) as Promise<{ types: string[]; error?: string }>;
+}
+
+/** 执行 DDL（CREATE/ALTER TABLE 等） */
+export async function executeDdl(connectionId: string, sql: string) {
+  return api().request("postgres/execute-ddl", { connectionId, sql }) as Promise<{ success: boolean; error?: string }>;
+}
+
+/** 获取表/视图的 DDL */
+export async function getTableDdl(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/table-ddl", { connectionId, schema, table }) as Promise<{ ddl: string; error?: string }>;
+}
+
 /** 订阅服务端推送事件 */
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
   return api().subscribeEvents(connectionId, callback);

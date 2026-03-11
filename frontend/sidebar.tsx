@@ -2,7 +2,11 @@ import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
-import { getSchemas, getTables, getColumns, getIndexes } from "./api";
+import { getSchemas, getTables, getColumns, getIndexes, getTableDdl } from "./api";
+import RenameTableModal from "./rename-table-modal";
+import CopyTableModal from "./copy-table-modal";
+import DeleteTableModal from "./delete-table-modal";
+import TruncateTableModal from "./truncate-table-modal";
 import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
 
@@ -41,9 +45,16 @@ interface SidebarProps {
   /** 已保存的连接（未连接时显示为可点击节点，已连接时合并到 connection 节点） */
   savedConnections?: Accessor<StoredConnection[]>;
   activeConnectionId?: string | null;
+  /** 当需要刷新某 schema 时，父组件设置此值；Sidebar 刷新后调用 onRefreshHandled 清空 */
+  refreshSchemaRequest?: Accessor<{ connectionId: string; schema: string } | null>;
+  onRefreshHandled?: () => void;
   onDisconnect?: (connectionId: string) => void;
   onQueryRequest?: (connectionId: string, sql: string) => void;
   onOpenQueryTab?: (connectionId: string, connectionInfo: string) => void;
+  onNewTable?: (connectionId: string, connectionInfo: string, schema: string) => void;
+  onEditTable?: (connectionId: string, connectionInfo: string, schema: string, table: string) => void;
+  onViewDdl?: (connectionId: string, connectionInfo: string, schema: string, table: string, ddl: string) => void;
+  onRequestSchemaRefresh?: (connectionId: string, schema: string) => void;
   onAddConnection?: () => void;
   onConnectFromSaved?: (stored: StoredConnection) => Promise<{ success: boolean; connectionId?: string }>;
   onRemoveSaved?: (id: string) => void;
@@ -124,6 +135,10 @@ export default function Sidebar(props: SidebarProps) {
 
   const [searchTerm, setSearchTerm] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; node: TreeNode } | null>(null);
+  const [renameModal, setRenameModal] = createSignal<{ connectionId: string; connectionInfo: string; schema: string; table: string } | null>(null);
+  const [copyModal, setCopyModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
+  const [deleteModal, setDeleteModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
+  const [truncateModal, setTruncateModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -309,6 +324,13 @@ export default function Sidebar(props: SidebarProps) {
       console.error("加载表失败:", e);
     }
   }
+
+  // 响应外部刷新请求（新建表/编辑表成功后）
+  createEffect(() => {
+    const req = props.refreshSchemaRequest?.();
+    if (!req) return;
+    loadTables(req.connectionId, req.schema).finally(() => props.onRefreshHandled?.());
+  });
 
   // 加载列信息
   async function loadColumns(connectionId: string, schema: string, table: string) {
@@ -533,6 +555,58 @@ export default function Sidebar(props: SidebarProps) {
       case "removeSaved":
         if (node.type === "savedConnection" && node.storedId) {
           props.onRemoveSaved?.(node.storedId);
+        }
+        break;
+      case "newTable":
+        if ((node.type === "schema" || node.type === "tables" || node.type === "table") && node.schema && cid) {
+          const conn = props.connections.find((c) => c.id === cid);
+          props.onNewTable?.(cid, conn?.info ?? node.name, node.schema);
+        }
+        break;
+      case "editTable":
+        if ((node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
+          const conn = props.connections.find((c) => c.id === cid);
+          props.onEditTable?.(cid, conn?.info ?? node.name, node.schema, node.table);
+        }
+        break;
+      case "deleteTable":
+        if (node.type === "table" && node.schema && node.table && cid) {
+          setDeleteModal({ connectionId: cid, schema: node.schema, table: node.table });
+        }
+        break;
+      case "truncateTable":
+        if (node.type === "table" && node.schema && node.table && cid) {
+          setTruncateModal({ connectionId: cid, schema: node.schema, table: node.table });
+        }
+        break;
+      case "copyTable":
+        if (node.type === "table" && node.schema && node.table && cid) {
+          setCopyModal({
+            connectionId: cid,
+            schema: node.schema,
+            table: node.table,
+          });
+        }
+        break;
+      case "renameTable":
+        if (node.type === "table" && node.schema && node.table && cid) {
+          const conn = props.connections.find((c) => c.id === cid);
+          setRenameModal({
+            connectionId: cid,
+            connectionInfo: conn?.info ?? node.name,
+            schema: node.schema,
+            table: node.table,
+          });
+        }
+        break;
+      case "viewDdl":
+        if ((node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
+          const schema = node.schema;
+          const table = node.table;
+          const conn = props.connections.find((c) => c.id === cid);
+          getTableDdl(cid, schema, table)
+            .then(({ ddl }) => ddl && props.onViewDdl?.(cid, conn?.info ?? node.name, schema, table, ddl))
+            .catch((e) => console.error("获取 DDL 失败:", e));
         }
         break;
     }
@@ -806,6 +880,141 @@ export default function Sidebar(props: SidebarProps) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
+            <Show when={menu().node.type === "schema" || menu().node.type === "tables" || menu().node.type === "table"}>
+              <div
+                onClick={() => handleMenuAction("newTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📋</span> 新增表
+              </div>
+            </Show>
+            <Show when={menu().node.type === "table"}>
+              <div
+                onClick={() => handleMenuAction("editTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>✏️</span> 编辑表
+              </div>
+              <div
+                onClick={() => handleMenuAction("copyTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📋</span> 复制表
+              </div>
+              <div
+                onClick={() => handleMenuAction("renameTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>✏️</span> 修改表名
+              </div>
+              <div
+                onClick={() => handleMenuAction("viewDdl")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📄</span> 查看 DDL
+              </div>
+              <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
+              <div
+                onClick={() => handleMenuAction("truncateTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🗑</span> 清空表
+              </div>
+              <div
+                onClick={() => handleMenuAction("deleteTable")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.error,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🗑</span> 删除表
+              </div>
+            </Show>
+            <Show when={menu().node.type === "view"}>
+              <div
+                onClick={() => handleMenuAction("viewDdl")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📄</span> 查看 DDL
+              </div>
+            </Show>
             <Show when={menu().node.type === "table" || menu().node.type === "view"}>
               <div
                 onClick={() => handleMenuAction("select")}
@@ -960,6 +1169,55 @@ export default function Sidebar(props: SidebarProps) {
               </div>
             </Show>
           </div>
+        )}
+      </Show>
+
+      <Show when={deleteModal()}>
+        {(modal) => (
+          <DeleteTableModal
+            connectionId={modal().connectionId}
+            schema={modal().schema}
+            table={modal().table}
+            onClose={() => setDeleteModal(null)}
+            onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+          />
+        )}
+      </Show>
+      <Show when={truncateModal()}>
+        {(modal) => (
+          <TruncateTableModal
+            connectionId={modal().connectionId}
+            schema={modal().schema}
+            table={modal().table}
+            onClose={() => setTruncateModal(null)}
+            onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+          />
+        )}
+      </Show>
+      <Show when={copyModal()}>
+        {(modal) => (
+          <CopyTableModal
+            connectionId={modal().connectionId}
+            schema={modal().schema}
+            table={modal().table}
+            onClose={() => setCopyModal(null)}
+            onSuccess={(connectionId, schema) => {
+              props.onRequestSchemaRefresh?.(connectionId, schema);
+            }}
+          />
+        )}
+      </Show>
+      <Show when={renameModal()}>
+        {(modal) => (
+          <RenameTableModal
+            connectionId={modal().connectionId}
+            schema={modal().schema}
+            table={modal().table}
+            onClose={() => setRenameModal(null)}
+            onSuccess={(connectionId, schema) => {
+              props.onRequestSchemaRefresh?.(connectionId, schema);
+            }}
+          />
         )}
       </Show>
 

@@ -246,9 +246,6 @@ export async function calculateColumnEditable(
     const instance = tableInstances.get(field.tableID)?.get(alias);
     if (!instance) return info;
 
-    const constraint = instance.constraint;
-    if (!constraint) return info;
-
     const tableInfo = tableNameMap.get(field.tableID);
     const tableColumnMeta = columnMetaMap.get(field.tableID);
     if (!tableInfo || !tableColumnMeta) return info;
@@ -257,6 +254,18 @@ export async function calculateColumnEditable(
     if (!columnMeta) return info;
 
     const columnName = columnMeta.name;
+
+    // 来自表的列：始终设置 tableName/columnName，便于生成 INSERT 语句（含无主键表）
+    info.tableName =
+      tableInfo.schemaName === "public"
+        ? tableInfo.tableName
+        : `${tableInfo.schemaName}.${tableInfo.tableName}`;
+    info.columnName = columnName;
+    info.tableAlias = alias;
+
+    // 有主键/唯一约束时才能编辑行（UPDATE/DELETE 需定位行）
+    const constraint = instance.constraint;
+    if (!constraint) return info;
 
     const uniqueKeyColumns: string[] = [];
     const uniqueKeyFieldIndices: number[] = [];
@@ -274,14 +283,8 @@ export async function calculateColumnEditable(
     }
 
     info.isEditable = true;
-    info.tableName =
-      tableInfo.schemaName === "public"
-        ? tableInfo.tableName
-        : `${tableInfo.schemaName}.${tableInfo.tableName}`;
-    info.columnName = columnName;
     info.uniqueKeyColumns = uniqueKeyColumns;
     info.uniqueKeyFieldIndices = uniqueKeyFieldIndices;
-    info.tableAlias = alias;
 
     return info;
   });
