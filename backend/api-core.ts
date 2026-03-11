@@ -7,6 +7,18 @@ import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgres
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
+import {
+  checkPldebuggerAvailable,
+  getDebuggableFunctions,
+  startDirectDebug,
+  debugContinue,
+  debugStepInto,
+  debugStepOver,
+  debugAbort,
+  getDebugState,
+  setBreakpoint,
+  dropBreakpoint,
+} from "./debug-pldebugger";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
@@ -20,6 +32,8 @@ export interface SSEMessage {
 export interface SessionConnection {
   userUsedClient: Client;
   backGroundPool: Pool;
+  /** 连接参数，调试时用于创建独立 Client 实例 */
+  loginParams: PostgresLoginParams;
   runningQueryPid?: number;
   eventPushers: Set<(msg: SSEMessage) => void>;
   cursor?: {
@@ -151,7 +165,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
       });
 
-      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, eventPushers: new Set() });
+      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, loginParams, eventPushers: new Set() });
       return { sucess: true, connectionId: cid };
     }
 
@@ -286,9 +300,22 @@ export async function handleApiRequest<M extends ApiMethod>(
         `SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_type, table_name`,
         [schema]
       );
+      let functions: Array<{ oid: number; schema: string; name: string; args: string }> = [];
+      try {
+        const funcResult = await session.backGroundPool.query(
+          `SELECT p.oid, n.nspname AS schema, p.proname AS name, pg_get_function_identity_arguments(p.oid) AS args
+           FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid JOIN pg_language l ON p.prolang = l.oid
+           WHERE l.lanname = 'plpgsql' AND n.nspname = $1 ORDER BY p.proname`,
+          [schema]
+        );
+        functions = funcResult.rows.map((r: any) => ({ oid: r.oid, schema: r.schema, name: r.name, args: r.args || "" }));
+      } catch {
+        // 忽略函数查询错误（如权限不足）
+      }
       return {
         tables: result.rows.filter((r) => r.table_type === "BASE TABLE").map((r) => r.table_name),
         views: result.rows.filter((r) => r.table_type === "VIEW").map((r) => r.table_name),
+        functions,
       };
     }
 
@@ -477,6 +504,81 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
         throw e;
       }
+    }
+
+    case "postgres/debug/check": {
+      const cid = getConnId();
+      const session = getS(cid);
+      return checkPldebuggerAvailable(session.backGroundPool);
+    }
+
+    case "postgres/debug/functions": {
+      const cid = getConnId();
+      const { schema } = payload as { connectionId: string; schema?: string };
+      const session = getS(cid);
+      return { functions: await getDebuggableFunctions(session.backGroundPool, schema) };
+    }
+
+    case "postgres/debug/start-direct": {
+      const cid = getConnId();
+      const { funcOid, args = [] } = payload as { connectionId: string; funcOid: number; args?: string[] };
+      const session = getS(cid);
+      const getExtraClient = () => connectPostgres(session.loginParams);
+      return startDirectDebug(cid, getExtraClient, funcOid, args);
+    }
+
+    case "postgres/debug/continue": {
+      const cid = getConnId();
+      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
+      const s = getSession(cid);
+      if (!s) throw new Error("未找到数据库连接");
+      return debugContinue(cid, debugSessionId);
+    }
+
+    case "postgres/debug/step-into": {
+      const cid = getConnId();
+      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
+      return debugStepInto(cid, debugSessionId);
+    }
+
+    case "postgres/debug/step-over": {
+      const cid = getConnId();
+      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
+      return debugStepOver(cid, debugSessionId);
+    }
+
+    case "postgres/debug/abort": {
+      const cid = getConnId();
+      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
+      return { success: await debugAbort(cid, debugSessionId) };
+    }
+
+    case "postgres/debug/state": {
+      const cid = getConnId();
+      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
+      return getDebugState(cid, debugSessionId);
+    }
+
+    case "postgres/debug/set-breakpoint": {
+      const cid = getConnId();
+      const { debugSessionId, funcOid, lineNumber } = payload as {
+        connectionId: string;
+        debugSessionId: string;
+        funcOid: number;
+        lineNumber: number;
+      };
+      return { success: await setBreakpoint(cid, debugSessionId, funcOid, lineNumber) };
+    }
+
+    case "postgres/debug/drop-breakpoint": {
+      const cid = getConnId();
+      const { debugSessionId, funcOid, lineNumber } = payload as {
+        connectionId: string;
+        debugSessionId: string;
+        funcOid: number;
+        lineNumber: number;
+      };
+      return { success: await dropBreakpoint(cid, debugSessionId, funcOid, lineNumber) };
     }
 
     default:

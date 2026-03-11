@@ -54,6 +54,16 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/execute-ddl", method: "postgres/execute-ddl" },
   { path: "/api/postgres/table-ddl", method: "postgres/table-ddl" },
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
+  { path: "/api/postgres/debug/check", method: "postgres/debug/check" },
+  { path: "/api/postgres/debug/functions", method: "postgres/debug/functions" },
+  { path: "/api/postgres/debug/start-direct", method: "postgres/debug/start-direct" },
+  { path: "/api/postgres/debug/continue", method: "postgres/debug/continue" },
+  { path: "/api/postgres/debug/step-into", method: "postgres/debug/step-into" },
+  { path: "/api/postgres/debug/step-over", method: "postgres/debug/step-over" },
+  { path: "/api/postgres/debug/abort", method: "postgres/debug/abort" },
+  { path: "/api/postgres/debug/state", method: "postgres/debug/state" },
+  { path: "/api/postgres/debug/set-breakpoint", method: "postgres/debug/set-breakpoint" },
+  { path: "/api/postgres/debug/drop-breakpoint", method: "postgres/debug/drop-breakpoint" },
 ];
 
 /** 创建 HTTP 格式的 API 路由（Bun.serve routes） */

@@ -64,7 +64,12 @@ export async function getSchemas(connectionId: string) {
 
 /** 获取表/视图 */
 export async function getTables(connectionId: string, schema: string) {
-  return api().request("postgres/tables", { connectionId, schema }) as Promise<{ tables: string[]; views: string[]; error?: string }>;
+  return api().request("postgres/tables", { connectionId, schema }) as Promise<{
+    tables: string[];
+    views: string[];
+    functions?: Array<{ oid: number; schema: string; name: string; args: string }>;
+    error?: string;
+  }>;
 }
 
 /** 获取列信息 */
@@ -104,4 +109,106 @@ export async function getTableDdl(connectionId: string, schema: string, table: s
 /** 订阅服务端推送事件 */
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
   return api().subscribeEvents(connectionId, callback);
+}
+
+/** 调试：检查 pldebugger 是否可用 */
+export async function debugCheck(connectionId: string) {
+  return api().request("postgres/debug/check", { connectionId }) as Promise<{ available: boolean; error?: string }>;
+}
+
+/** 调试：获取可调试函数列表 */
+export async function debugGetFunctions(connectionId: string, schema?: string) {
+  return api().request("postgres/debug/functions", { connectionId, schema }) as Promise<{
+    functions: Array<{ oid: number; schema: string; name: string; args: string }>;
+  }>;
+}
+
+/** 调试：开始直接调试 */
+export async function debugStartDirect(connectionId: string, funcOid: number, args: string[] = []) {
+  return api().request("postgres/debug/start-direct", { connectionId, funcOid, args }) as Promise<{
+    debugSessionId: string;
+    breakpoint?: { funcOid: number; lineNumber: number };
+    source?: string;
+    stack?: any[];
+    variables?: any[];
+  }>;
+}
+
+/** 调试：继续 */
+export async function debugContinue(connectionId: string, debugSessionId: string) {
+  return api().request("postgres/debug/continue", { connectionId, debugSessionId }) as Promise<{
+    stopped: boolean;
+    breakpoint?: { funcOid: number; lineNumber: number };
+    source?: string;
+    stack?: any[];
+    variables?: any[];
+    done?: boolean;
+  }>;
+}
+
+/** 调试：单步进入 */
+export async function debugStepInto(connectionId: string, debugSessionId: string) {
+  return api().request("postgres/debug/step-into", { connectionId, debugSessionId }) as Promise<{
+    stopped: boolean;
+    breakpoint?: { funcOid: number; lineNumber: number };
+    source?: string;
+    stack?: any[];
+    variables?: any[];
+  }>;
+}
+
+/** 调试：单步越过 */
+export async function debugStepOver(connectionId: string, debugSessionId: string) {
+  return api().request("postgres/debug/step-over", { connectionId, debugSessionId }) as Promise<{
+    stopped: boolean;
+    breakpoint?: { funcOid: number; lineNumber: number };
+    source?: string;
+    stack?: any[];
+    variables?: any[];
+  }>;
+}
+
+/** 调试：中止 */
+export async function debugAbort(connectionId: string, debugSessionId: string) {
+  return api().request("postgres/debug/abort", { connectionId, debugSessionId }) as Promise<{ success: boolean }>;
+}
+
+/** 调试：获取状态 */
+export async function debugGetState(connectionId: string, debugSessionId: string) {
+  return api().request("postgres/debug/state", { connectionId, debugSessionId }) as Promise<{
+    source?: string;
+    stack?: any[];
+    variables?: any[];
+    breakpoints?: any[];
+  }>;
+}
+
+/** 调试：设置断点 */
+export async function debugSetBreakpoint(
+  connectionId: string,
+  debugSessionId: string,
+  funcOid: number,
+  lineNumber: number
+) {
+  return api().request("postgres/debug/set-breakpoint", {
+    connectionId,
+    debugSessionId,
+    funcOid,
+    lineNumber,
+  }) as Promise<{ success: boolean }>;
+}
+
+/** 调试：删除断点 */
+export async function debugDropBreakpoint(
+  connectionId: string,
+  debugSessionId: string,
+  funcOid: number,
+  lineNumber: number
+) {
+  return api().request("postgres/debug/drop-breakpoint", {
+    connectionId,
+    debugSessionId,
+    funcOid,
+    lineNumber,
+  }) as Promise<{ success: boolean }>;
 }

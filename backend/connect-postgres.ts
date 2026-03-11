@@ -26,7 +26,7 @@ export function createPostgresPool(params: PostgresLoginParams) {
         database: params.database,
         user: params.username,
         password: params.password,
-        max: 3,
+        max: 6,  // 调试需 3 个连接：proxy、listener、target
         idleTimeoutMillis: 30000,
     });
 }

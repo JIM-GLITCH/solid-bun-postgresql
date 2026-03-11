@@ -2,7 +2,7 @@ import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
-import { getSchemas, getTables, getColumns, getIndexes, getTableDdl } from "./api";
+import { getSchemas, getTables, getColumns, getIndexes, getTableDdl, debugGetFunctions } from "./api";
 import RenameTableModal from "./rename-table-modal";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
@@ -11,7 +11,7 @@ import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
 
 // 数据库对象类型
-type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "table" | "view" | "column" | "indexes" | "index";
+type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
 
 interface TreeNode {
   id: string;
@@ -54,6 +54,7 @@ interface SidebarProps {
   onNewTable?: (connectionId: string, connectionInfo: string, schema: string) => void;
   onEditTable?: (connectionId: string, connectionInfo: string, schema: string, table: string) => void;
   onViewDdl?: (connectionId: string, connectionInfo: string, schema: string, table: string, ddl: string) => void;
+  onDebugFunction?: (connectionId: string, connectionInfo: string, funcOid: number, funcSchema: string, funcName: string, funcArgs: string) => void;
   onRequestSchemaRefresh?: (connectionId: string, schema: string) => void;
   onAddConnection?: () => void;
   onConnectFromSaved?: (stored: StoredConnection) => Promise<{ success: boolean; connectionId?: string }>;
@@ -69,8 +70,10 @@ function NodeIcon(props: { type: NodeType }) {
     schema: "📁",
     tables: "📋",
     views: "👁️",
+    functions: "⚙️",
     table: "📊",
     view: "👓",
+    function: "ƒ",
     column: "📎",
     indexes: "🔑",
     index: "🏷️",
@@ -204,7 +207,22 @@ export default function Sidebar(props: SidebarProps) {
       s.nodes = newRoots.map((r) => {
         if (r.type === "connection" && r.connectionId) {
           const existing = s.nodes.find((n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection"));
-          if (existing && existing.children.length > 0) return { ...r, children: existing.children };
+          if (existing && existing.children.length > 0) {
+            const schemas = existing.children.map((sch: TreeNode) => {
+              const hasFunctions = sch.children?.some((c: TreeNode) => c.type === "functions");
+              if (hasFunctions) return sch;
+              const funcNode: TreeNode = {
+                id: `functions:${r.connectionId}:${sch.schema}`,
+                name: "Functions",
+                type: "functions",
+                schema: sch.schema,
+                connectionId: r.connectionId,
+                children: [],
+              };
+              return { ...sch, children: [...(sch.children || []), funcNode] };
+            });
+            return { ...r, children: schemas };
+          }
         }
         return r;
       });
@@ -235,7 +253,28 @@ export default function Sidebar(props: SidebarProps) {
       for (let i = 0; i < path.length - 1; i++) {
         current = current[path[i]].children;
       }
-      current[path[path.length - 1]].children = newChildren;
+      const target = current[path[path.length - 1]];
+      target.children = newChildren;
+    }));
+  }
+
+  // 通过 schema 节点更新 functions 子节点（path 的索引依次对应 nodes / node.children 层级）
+  function updateFunctionsBySchema(connectionId: string, schema: string, funcChildren: TreeNode[]) {
+    const schemaId = `schema:${connectionId}:${schema}`;
+    setState(produce((s) => {
+      const path = findNodePath(s.nodes, schemaId);
+      if (!path) return;
+      let current: any = s.nodes;
+      for (let i = 0; i < path.length; i++) {
+        const arr = i === 0 ? current : current.children;
+        current = arr?.[path[i]];
+      }
+      const schemaNode = current as TreeNode | undefined;
+      if (!schemaNode?.children) return;
+      const funcsNode = schemaNode.children.find((c: TreeNode) => c.type === "functions");
+      if (funcsNode) {
+        funcsNode.children = funcChildren;
+      }
     }));
   }
 
@@ -261,8 +300,18 @@ export default function Sidebar(props: SidebarProps) {
         const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => {
           const schemaId = `schema:${connectionId}:${schema}`;
           const existing = existingSchemas.find((s) => s.id === schemaId);
+          const baseChildren: TreeNode[] = [
+            { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] },
+            { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] },
+            { id: `functions:${connectionId}:${schema}`, name: "Functions", type: "functions" as NodeType, schema, connectionId, children: [] },
+          ];
           if (existing && existing.children.length >= 2) {
-            return { ...existing, name: schema };
+            const hasFunctions = existing.children.some((c: TreeNode) => c.type === "functions");
+            return {
+              ...existing,
+              name: schema,
+              children: hasFunctions ? existing.children : [...existing.children, baseChildren[2]],
+            };
           }
           return {
             id: schemaId,
@@ -270,10 +319,7 @@ export default function Sidebar(props: SidebarProps) {
             type: "schema" as NodeType,
             schema,
             connectionId,
-            children: [
-              { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] },
-              { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] },
-            ],
+            children: baseChildren,
           };
         });
         updateNodeChildren(connectionNodeId, schemaNodes);
@@ -306,6 +352,18 @@ export default function Sidebar(props: SidebarProps) {
         ],
       }));
       updateNodeChildren(tablesId, tableChildren);
+
+      // 更新 functions 节点（来自 metadata 一并返回，通过 schema 节点更新更可靠）
+      const funcChildren: TreeNode[] = (data.functions || []).map((f: any) => ({
+        id: `function:${connectionId}:${schema}.${f.name}`,
+        name: `${f.name}(${f.args || ""})`,
+        type: "function" as NodeType,
+        schema,
+        connectionId,
+        children: [],
+        meta: { oid: f.oid, args: f.args || "" },
+      }));
+      updateFunctionsBySchema(connectionId, schema, funcChildren);
 
       // 更新 views 节点
       const viewChildren: TreeNode[] = (data.views || []).map((v: string) => ({
@@ -351,6 +409,25 @@ export default function Sidebar(props: SidebarProps) {
       updateNodeChildren(columnsId, columnChildren);
     } catch (e) {
       console.error("加载列失败:", e);
+    }
+  }
+
+  // 加载函数列表（独立展开 Functions 时的兜底）
+  async function loadFunctions(connectionId: string, schema: string) {
+    try {
+      const data = await debugGetFunctions(connectionId, schema);
+      const funcChildren: TreeNode[] = (data.functions || []).map((f: any) => ({
+        id: `function:${connectionId}:${schema}.${f.name}`,
+        name: `${f.name}(${f.args || ""})`,
+        type: "function" as NodeType,
+        schema,
+        connectionId,
+        children: [],
+        meta: { oid: f.oid, args: f.args || "" },
+      }));
+      updateFunctionsBySchema(connectionId, schema, funcChildren);
+    } catch (e) {
+      console.error("加载函数失败:", e);
     }
   }
 
@@ -408,6 +485,16 @@ export default function Sidebar(props: SidebarProps) {
           });
           setState("loadedIds", (prev) => new Set(prev).add(node.id));
         });
+      } else if (node.type === "functions" && node.schema && cid) {
+        setState("loadingIds", (prev) => new Set(prev).add(node.id));
+        loadFunctions(cid, node.schema).finally(() => {
+          setState("loadingIds", (prev) => {
+            const s = new Set(prev);
+            s.delete(node.id);
+            return s;
+          });
+          setState("loadedIds", (prev) => new Set(prev).add(node.id));
+        });
       } else if ((node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
         setState("loadingIds", (prev) => new Set(prev).add(node.id));
         Promise.all([
@@ -458,12 +545,18 @@ export default function Sidebar(props: SidebarProps) {
     }
 
     const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
-      node.type === "tables" || node.type === "views" || node.type === "indexes";
+      node.type === "tables" || node.type === "views" || node.type === "functions" || node.type === "indexes";
     if (canExpand) toggleNode(node);
 
     const cid = node.connectionId;
     if (e.detail === 2 && (node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
       props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table}`);
+    }
+    if (e.detail === 2 && node.type === "function" && node.schema && node.meta?.oid != null && cid) {
+      const funcName = node.name.split("(")[0] || node.name;
+      const funcArgs = node.meta.args ?? "";
+      const conn = props.connections.find((c) => c.id === cid);
+      props.onDebugFunction?.(cid, conn?.info ?? node.name, node.meta.oid, node.schema, funcName, funcArgs);
     }
   }
 
@@ -609,6 +702,14 @@ export default function Sidebar(props: SidebarProps) {
             .catch((e) => console.error("获取 DDL 失败:", e));
         }
         break;
+      case "debugFunction":
+        if (node.type === "function" && node.schema && node.meta?.oid != null && cid) {
+          const funcName = node.name.split("(")[0] || node.name;
+          const funcArgs = node.meta.args ?? "";
+          const conn = props.connections.find((c) => c.id === cid);
+          props.onDebugFunction?.(cid, conn?.info ?? node.name, node.meta.oid, node.schema, funcName, funcArgs);
+        }
+        break;
     }
     closeContextMenu();
   }
@@ -639,7 +740,7 @@ export default function Sidebar(props: SidebarProps) {
     const isSelected = () => state.selectedId === node.id;
     const hasChildren = () => node.children.length > 0;
     const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
-      node.type === "tables" || node.type === "views" || node.type === "indexes";
+      node.type === "tables" || node.type === "views" || node.type === "functions" || node.type === "indexes";
 
     return (
       <div>
@@ -995,6 +1096,24 @@ export default function Sidebar(props: SidebarProps) {
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
                 <span>🗑</span> 删除表
+              </div>
+            </Show>
+            <Show when={menu().node.type === "function"}>
+              <div
+                onClick={() => handleMenuAction("debugFunction")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🐛</span> 调试
               </div>
             </Show>
             <Show when={menu().node.type === "view"}>

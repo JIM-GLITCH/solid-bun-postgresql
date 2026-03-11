@@ -5,6 +5,7 @@ import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
+import ProcedureDebugger from './procedure-debugger';
 import Sidebar from './sidebar';
 import { disconnectPostgres } from './api';
 import {
@@ -47,7 +48,18 @@ export interface DdlViewTab {
   ddl: string;
 }
 
-export type Tab = QueryTab | DesignTableTab | DdlViewTab;
+export interface DebugTab {
+  id: string;
+  type: "debug";
+  connectionId: string;
+  connectionInfo: string;
+  funcOid: number;
+  funcSchema: string;
+  funcName: string;
+  funcArgs: string;
+}
+
+export type Tab = QueryTab | DesignTableTab | DdlViewTab | DebugTab;
 
 export default function App() {
   const [connections, setConnections] = createStore<ConnectionInfo[]>([]);
@@ -184,6 +196,19 @@ export default function App() {
     addDdlViewTab(connectionId, connectionInfo, schema, table, ddl);
   };
 
+  const addDebugTab = (connectionId: string, connectionInfo: string, funcOid: number, funcSchema: string, funcName: string, funcArgs: string) => {
+    const conn = connections.find((c) => c.id === connectionId);
+    const info = conn?.info ?? connectionInfo;
+    const tabId = `debug-${connectionId}-${funcSchema}-${funcName}-${Date.now()}`;
+    const tab: DebugTab = { id: tabId, type: "debug", connectionId, connectionInfo: info, funcOid, funcSchema, funcName, funcArgs };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  };
+
+  const handleDebugFunction = (connectionId: string, connectionInfo: string, funcOid: number, funcSchema: string, funcName: string, funcArgs: string) => {
+    addDebugTab(connectionId, connectionInfo, funcOid, funcSchema, funcName, funcArgs);
+  };
+
   // 当前高亮的连接：有标签页时取当前标签的连接，否则为 null
   const activeConnectionIdForSidebar = () => {
     const tab = tabs().find((t) => t.id === activeTabId());
@@ -241,6 +266,7 @@ export default function App() {
             onNewTable={handleNewTable}
             onEditTable={handleEditTable}
             onViewDdl={handleViewDdl}
+            onDebugFunction={handleDebugFunction}
             onRequestSchemaRefresh={(connectionId, schema) => setRefreshSidebarRequest({ connectionId, schema })}
             onConnectFromSaved={handleConnectFromSaved}
             connectingSavedId={connectingSavedId()}
@@ -378,10 +404,12 @@ export default function App() {
                           ? tab.connectionInfo
                           : tab.type === 'ddl-view'
                             ? `DDL: ${tab.schema}.${tab.table}`
-                            : tab.mode === 'create'
-                              ? `设计表: ${tab.schema}.新建`
-                              : `设计表: ${tab.schema}.${tab.table}`;
-                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'ddl-view' ? '📄' : '📋');
+                            : tab.type === 'debug'
+                              ? `调试: ${tab.funcSchema}.${tab.funcName}`
+                              : tab.mode === 'create'
+                                ? `设计表: ${tab.schema}.新建`
+                                : `设计表: ${tab.schema}.${tab.table}`;
+                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'ddl-view' ? '📄' : tab.type === 'debug' ? '🐛' : '📋');
                       return (
                         <div
                           onClick={() => setActiveTabId(tab.id)}
@@ -452,6 +480,16 @@ export default function App() {
                           />
                         ) : tab.type === 'ddl-view' ? (
                           <DdlViewer schema={tab.schema} table={tab.table} ddl={tab.ddl} />
+                        ) : tab.type === 'debug' ? (
+                          <ProcedureDebugger
+                            connectionId={tab.connectionId}
+                            connectionInfo={tab.connectionInfo}
+                            funcOid={tab.funcOid}
+                            funcSchema={tab.funcSchema}
+                            funcName={tab.funcName}
+                            funcArgs={tab.funcArgs}
+                            onClose={() => removeTab(tab.id)}
+                          />
                         ) : (
                           <TableDesigner
                             connectionId={tab.connectionId}
