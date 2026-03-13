@@ -8,13 +8,16 @@ export interface DdlViewerProps {
   schema: string;
   table: string;
   ddl: string;
+  /** 可选标题，如 "函数: public.my_func" */
+  title?: string;
 }
 
 export default function DdlViewer(props: DdlViewerProps) {
+  const heading = () => props.title ?? `DDL: ${props.schema}.${props.table}`;
   return (
     <div style={{ padding: "24px", overflow: "auto", height: "100%", display: "flex", "flex-direction": "column" }}>
       <h2 style={{ "font-size": "18px", margin: "0 0 8px 0", color: vscode.foreground }}>
-        DDL: {props.schema}.{props.table}
+        {heading()}
       </h2>
       <div style={{ color: vscode.foregroundDim, "font-size": "13px", "margin-bottom": "16px" }}>只读 · 可选中复制</div>
       <pre

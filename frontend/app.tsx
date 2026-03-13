@@ -5,7 +5,6 @@ import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
-import ProcedureDebugger from './procedure-debugger';
 import Sidebar from './sidebar';
 import { disconnectPostgres } from './api';
 import {
@@ -48,18 +47,17 @@ export interface DdlViewTab {
   ddl: string;
 }
 
-export interface DebugTab {
+export interface FunctionDdlTab {
   id: string;
-  type: "debug";
+  type: "function-ddl";
   connectionId: string;
   connectionInfo: string;
-  funcOid: number;
-  funcSchema: string;
-  funcName: string;
-  funcArgs: string;
+  schema: string;
+  function: string;
+  ddl: string;
 }
 
-export type Tab = QueryTab | DesignTableTab | DdlViewTab | DebugTab;
+export type Tab = QueryTab | DesignTableTab | DdlViewTab | FunctionDdlTab;
 
 export default function App() {
   const [connections, setConnections] = createStore<ConnectionInfo[]>([]);
@@ -168,6 +166,15 @@ export default function App() {
     setActiveTabId(tab.id);
   };
 
+  const addFunctionDdlTab = (connectionId: string, connectionInfo: string, schema: string, funcName: string, ddl: string) => {
+    const conn = connections.find((c) => c.id === connectionId);
+    const info = conn?.info ?? connectionInfo;
+    const tabId = `func-ddl-${connectionId}-${schema}-${funcName}-${Date.now()}`;
+    const tab: FunctionDdlTab = { id: tabId, type: "function-ddl", connectionId, connectionInfo: info, schema, function: funcName, ddl };
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
+  };
+
   const removeTab = (tabId: string) => {
     setTabs((prev) => prev.filter((t) => t.id !== tabId));
     if (activeTabId() === tabId) {
@@ -196,17 +203,8 @@ export default function App() {
     addDdlViewTab(connectionId, connectionInfo, schema, table, ddl);
   };
 
-  const addDebugTab = (connectionId: string, connectionInfo: string, funcOid: number, funcSchema: string, funcName: string, funcArgs: string) => {
-    const conn = connections.find((c) => c.id === connectionId);
-    const info = conn?.info ?? connectionInfo;
-    const tabId = `debug-${connectionId}-${funcSchema}-${funcName}-${Date.now()}`;
-    const tab: DebugTab = { id: tabId, type: "debug", connectionId, connectionInfo: info, funcOid, funcSchema, funcName, funcArgs };
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
-  };
-
-  const handleDebugFunction = (connectionId: string, connectionInfo: string, funcOid: number, funcSchema: string, funcName: string, funcArgs: string) => {
-    addDebugTab(connectionId, connectionInfo, funcOid, funcSchema, funcName, funcArgs);
+  const handleViewFunctionDdl = (connectionId: string, connectionInfo: string, schema: string, funcName: string, ddl: string) => {
+    addFunctionDdlTab(connectionId, connectionInfo, schema, funcName, ddl);
   };
 
   // 当前高亮的连接：有标签页时取当前标签的连接，否则为 null
@@ -266,7 +264,7 @@ export default function App() {
             onNewTable={handleNewTable}
             onEditTable={handleEditTable}
             onViewDdl={handleViewDdl}
-            onDebugFunction={handleDebugFunction}
+            onViewFunctionDdl={handleViewFunctionDdl}
             onRequestSchemaRefresh={(connectionId, schema) => setRefreshSidebarRequest({ connectionId, schema })}
             onConnectFromSaved={handleConnectFromSaved}
             connectingSavedId={connectingSavedId()}
@@ -404,12 +402,12 @@ export default function App() {
                           ? tab.connectionInfo
                           : tab.type === 'ddl-view'
                             ? `DDL: ${tab.schema}.${tab.table}`
-                            : tab.type === 'debug'
-                              ? `调试: ${tab.funcSchema}.${tab.funcName}`
+                            : tab.type === 'function-ddl'
+                              ? `函数: ${tab.schema}.${tab.function}`
                               : tab.mode === 'create'
                                 ? `设计表: ${tab.schema}.新建`
                                 : `设计表: ${tab.schema}.${tab.table}`;
-                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'ddl-view' ? '📄' : tab.type === 'debug' ? '🐛' : '📋');
+                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'ddl-view' ? '📄' : tab.type === 'function-ddl' ? 'ƒ' : '📋');
                       return (
                         <div
                           onClick={() => setActiveTabId(tab.id)}
@@ -480,16 +478,8 @@ export default function App() {
                           />
                         ) : tab.type === 'ddl-view' ? (
                           <DdlViewer schema={tab.schema} table={tab.table} ddl={tab.ddl} />
-                        ) : tab.type === 'debug' ? (
-                          <ProcedureDebugger
-                            connectionId={tab.connectionId}
-                            connectionInfo={tab.connectionInfo}
-                            funcOid={tab.funcOid}
-                            funcSchema={tab.funcSchema}
-                            funcName={tab.funcName}
-                            funcArgs={tab.funcArgs}
-                            onClose={() => removeTab(tab.id)}
-                          />
+                        ) : tab.type === 'function-ddl' ? (
+                          <DdlViewer schema={tab.schema} table={tab.function} ddl={tab.ddl} title={`函数: ${tab.schema}.${tab.function}`} />
                         ) : (
                           <TableDesigner
                             connectionId={tab.connectionId}

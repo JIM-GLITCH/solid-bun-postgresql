@@ -27,16 +27,7 @@ export type ApiMethod =
   | "postgres/data-types"
   | "postgres/execute-ddl"
   | "postgres/table-ddl"
-  | "postgres/debug/check"
-  | "postgres/debug/functions"
-  | "postgres/debug/start-direct"
-  | "postgres/debug/continue"
-  | "postgres/debug/step-into"
-  | "postgres/debug/step-over"
-  | "postgres/debug/abort"
-  | "postgres/debug/state"
-  | "postgres/debug/set-breakpoint"
-  | "postgres/debug/drop-breakpoint";
+  | "postgres/function-ddl";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -60,16 +51,7 @@ export type ApiRequestPayload = {
   "postgres/data-types": { connectionId: string };
   "postgres/execute-ddl": { connectionId: string; sql: string };
   "postgres/table-ddl": { connectionId: string; schema: string; table: string };
-  "postgres/debug/check": { connectionId: string };
-  "postgres/debug/functions": { connectionId: string; schema?: string };
-  "postgres/debug/start-direct": { connectionId: string; funcOid: number; args?: string[] };
-  "postgres/debug/continue": { connectionId: string; debugSessionId: string };
-  "postgres/debug/step-into": { connectionId: string; debugSessionId: string };
-  "postgres/debug/step-over": { connectionId: string; debugSessionId: string };
-  "postgres/debug/abort": { connectionId: string; debugSessionId: string };
-  "postgres/debug/state": { connectionId: string; debugSessionId: string };
-  "postgres/debug/set-breakpoint": { connectionId: string; debugSessionId: string; funcOid: number; lineNumber: number };
-  "postgres/debug/drop-breakpoint": { connectionId: string; debugSessionId: string; funcOid: number; lineNumber: number };
+  "postgres/function-ddl": { connectionId: string; schema: string; function: string; oid?: number };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

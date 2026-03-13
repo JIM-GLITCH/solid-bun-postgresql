@@ -7,18 +7,6 @@ import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgres
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
-import {
-  checkPldebuggerAvailable,
-  getDebuggableFunctions,
-  startDirectDebug,
-  debugContinue,
-  debugStepInto,
-  debugStepOver,
-  debugAbort,
-  getDebugState,
-  setBreakpoint,
-  dropBreakpoint,
-} from "./debug-pldebugger";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
@@ -32,8 +20,6 @@ export interface SSEMessage {
 export interface SessionConnection {
   userUsedClient: Client;
   backGroundPool: Pool;
-  /** 连接参数，调试时用于创建独立 Client 实例 */
-  loginParams: PostgresLoginParams;
   runningQueryPid?: number;
   eventPushers: Set<(msg: SSEMessage) => void>;
   cursor?: {
@@ -165,7 +151,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
       });
 
-      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, loginParams, eventPushers: new Set() });
+      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, eventPushers: new Set() });
       return { sucess: true, connectionId: cid };
     }
 
@@ -310,7 +296,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         );
         functions = funcResult.rows.map((r: any) => ({ oid: r.oid, schema: r.schema, name: r.name, args: r.args || "" }));
       } catch {
-        // 忽略函数查询错误（如权限不足）
+        // 忽略函数查询错误
       }
       return {
         tables: result.rows.filter((r) => r.table_type === "BASE TABLE").map((r) => r.table_name),
@@ -480,6 +466,30 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { ddl: ddl.trim() };
     }
 
+    case "postgres/function-ddl": {
+      const cid = getConnId();
+      const { schema, function: funcName, oid } = payload as { connectionId: string; schema: string; function: string; oid?: number };
+      const session = getS(cid);
+      const pool = session.backGroundPool;
+
+      let targetOid: number;
+      if (oid != null) {
+        targetOid = oid;
+      } else {
+        const lookupRes = await pool.query(
+          `SELECT p.oid FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = $1 AND p.proname = $2 LIMIT 1`,
+          [schema, funcName]
+        );
+        if (lookupRes.rows.length === 0) throw new Error(`函数 ${schema}.${funcName} 不存在`);
+        targetOid = lookupRes.rows[0].oid;
+      }
+
+      const defRes = await pool.query(`SELECT pg_get_functiondef($1::oid) AS ddl`, [targetOid]);
+      const ddl = defRes.rows[0]?.ddl ?? "";
+      if (!ddl) throw new Error(`无法获取函数源码`);
+      return { ddl };
+    }
+
     case "postgres/query": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
@@ -504,81 +514,6 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
         throw e;
       }
-    }
-
-    case "postgres/debug/check": {
-      const cid = getConnId();
-      const session = getS(cid);
-      return checkPldebuggerAvailable(session.backGroundPool);
-    }
-
-    case "postgres/debug/functions": {
-      const cid = getConnId();
-      const { schema } = payload as { connectionId: string; schema?: string };
-      const session = getS(cid);
-      return { functions: await getDebuggableFunctions(session.backGroundPool, schema) };
-    }
-
-    case "postgres/debug/start-direct": {
-      const cid = getConnId();
-      const { funcOid, args = [] } = payload as { connectionId: string; funcOid: number; args?: string[] };
-      const session = getS(cid);
-      const getExtraClient = () => connectPostgres(session.loginParams);
-      return startDirectDebug(cid, getExtraClient, funcOid, args);
-    }
-
-    case "postgres/debug/continue": {
-      const cid = getConnId();
-      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
-      const s = getSession(cid);
-      if (!s) throw new Error("未找到数据库连接");
-      return debugContinue(cid, debugSessionId);
-    }
-
-    case "postgres/debug/step-into": {
-      const cid = getConnId();
-      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
-      return debugStepInto(cid, debugSessionId);
-    }
-
-    case "postgres/debug/step-over": {
-      const cid = getConnId();
-      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
-      return debugStepOver(cid, debugSessionId);
-    }
-
-    case "postgres/debug/abort": {
-      const cid = getConnId();
-      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
-      return { success: await debugAbort(cid, debugSessionId) };
-    }
-
-    case "postgres/debug/state": {
-      const cid = getConnId();
-      const { debugSessionId } = payload as { connectionId: string; debugSessionId: string };
-      return getDebugState(cid, debugSessionId);
-    }
-
-    case "postgres/debug/set-breakpoint": {
-      const cid = getConnId();
-      const { debugSessionId, funcOid, lineNumber } = payload as {
-        connectionId: string;
-        debugSessionId: string;
-        funcOid: number;
-        lineNumber: number;
-      };
-      return { success: await setBreakpoint(cid, debugSessionId, funcOid, lineNumber) };
-    }
-
-    case "postgres/debug/drop-breakpoint": {
-      const cid = getConnId();
-      const { debugSessionId, funcOid, lineNumber } = payload as {
-        connectionId: string;
-        debugSessionId: string;
-        funcOid: number;
-        lineNumber: number;
-      };
-      return { success: await dropBreakpoint(cid, debugSessionId, funcOid, lineNumber) };
     }
 
     default:

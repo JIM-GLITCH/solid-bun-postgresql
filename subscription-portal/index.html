@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DB Player - 订阅购买</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <span class="logo-icon">▣</span>
+        <span class="logo-text">DB Player</span>
+      </div>
+      <nav class="nav">
+        <span id="user-info" class="user-info hidden"></span>
+        <button id="btn-login" class="btn btn-ghost">用 GitHub 登录</button>
+        <button id="btn-logout" class="btn btn-ghost hidden">退出</button>
+      </nav>
+    </header>
+
+    <main class="main">
+      <section class="hero">
+        <h1>PostgreSQL 数据库管理工具</h1>
+        <p class="hero-desc">在 VS Code 中流畅地浏览、编辑、设计你的数据库</p>
+      </section>
+
+      <section class="pricing">
+        <h2>选择订阅</h2>
+        <div class="pricing-cards">
+          <div class="card card-free">
+            <div class="card-header">
+              <h3>免费版</h3>
+              <div class="price">
+                <span class="amount">¥0</span>
+                <span class="unit">/ 永久</span>
+              </div>
+            </div>
+            <ul class="features">
+              <li>✓ 基础查询与浏览</li>
+              <li>✓ 单连接</li>
+              <li>✗ 表格设计器</li>
+              <li>✗ 高级编辑</li>
+            </ul>
+          </div>
+
+          <div class="card card-pro featured">
+            <div class="badge">推荐</div>
+            <div class="card-header">
+              <h3>Pro</h3>
+              <div class="price">
+                <span class="amount">¥29</span>
+                <span class="unit">/ 月</span>
+              </div>
+            </div>
+            <ul class="features">
+              <li>✓ 全部功能</li>
+              <li>✓ 多连接</li>
+              <li>✓ 表格设计器</li>
+              <li>✓ 可视化查询构建</li>
+            </ul>
+            <button id="btn-subscribe" class="btn btn-primary">立即订阅</button>
+          </div>
+
+          <div class="card card-yearly">
+            <div class="card-header">
+              <h3>年付</h3>
+              <div class="price">
+                <span class="amount">¥249</span>
+                <span class="unit">/ 年</span>
+              </div>
+              <span class="save">省 ¥99</span>
+            </div>
+            <ul class="features">
+              <li>✓ 全部 Pro 功能</li>
+              <li>✓ 一次支付，全年使用</li>
+            </ul>
+            <button id="btn-subscribe-yearly" class="btn btn-secondary">年付订阅</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="subscription-status" class="subscription-status hidden">
+        <div class="status-card">
+          <h3>当前订阅</h3>
+          <div id="status-content"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>© DB Player · 需要帮助？联系 support@example.com</p>
+    </footer>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
