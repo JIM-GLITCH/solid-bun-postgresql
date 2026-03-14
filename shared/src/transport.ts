@@ -11,6 +11,10 @@ export type ApiMethod =
   | "connections/save"
   | "connections/delete"
   | "connections/connect"
+  | "query-history/add"
+  | "query-history/search"
+  | "query-history/delete"
+  | "query-history/clear"
   | "connect-postgres"
   | "disconnect-postgres"
   | "postgres/query"
@@ -35,6 +39,10 @@ export type ApiRequestPayload = {
   "connections/save": { id: string } & PostgresLoginParams;
   "connections/delete": { id: string };
   "connections/connect": { id: string };
+  "query-history/add": { sql: string; connectionId?: string };
+  "query-history/search": { keyword?: string; since?: number; until?: number };
+  "query-history/delete": { id: string };
+  "query-history/clear": {};
   "connect-postgres": ConnectPostgresRequest;
   "disconnect-postgres": { connectionId: string };
   "postgres/query": { query: string; connectionId: string };

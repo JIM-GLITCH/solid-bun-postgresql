@@ -7,6 +7,7 @@ import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgres
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
+import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { Client, Pool } from "pg";
 import Cursor from "pg-cursor";
 
@@ -110,6 +111,33 @@ export async function handleApiRequest<M extends ApiMethod>(
       if (!params) return { sucess: false, error: "未找到已保存的连接" };
       const { id: cid, ...loginParams } = params;
       return handleApiRequest("connect-postgres", { connectionId: cid, ...loginParams } as any);
+    }
+
+    case "query-history/add": {
+      const addPayload = payload as { sql: string; connectionId?: string };
+      addQueryHistory(addPayload.sql, addPayload.connectionId);
+      return { success: true };
+    }
+
+    case "query-history/search": {
+      const searchPayload = payload as { keyword?: string; since?: number; until?: number };
+      return searchHistory({
+        keyword: searchPayload.keyword,
+        since: searchPayload.since,
+        until: searchPayload.until,
+      });
+    }
+
+    case "query-history/delete": {
+      const { id } = payload as { id: string };
+      if (!id) throw new Error("缺少 id");
+      deleteHistoryEntry(id);
+      return { success: true };
+    }
+
+    case "query-history/clear": {
+      clearQueryHistory();
+      return { success: true };
     }
 
     case "connect-postgres": {

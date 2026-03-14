@@ -8,6 +8,8 @@ import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
+import QueryHistoryPanel from "./query-history-panel";
+import { addQuery } from "./query-history";
 import { vscode } from "./theme";
 
 interface QueryInterfaceProps {
@@ -60,6 +62,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
   const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
+  const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
 
   // 单元格选区：Set<"row,col">，支持非连续多选（Ctrl+点击添加）
   const [selection, setSelection] = createSignal<Set<string> | null>(null);
@@ -348,9 +351,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     document.addEventListener('mouseup', onMouseUp);
   }
 
-  async function runUserQuery() {
+  async function runUserQuery(overrideSql?: string) {
     const cid = props.activeConnectionId?.();
     if (!cid) return;
+    const sqlToRun = overrideSql ?? sql();
+    if (!sqlToRun.trim()) return;
     setLoading(true);
     setError(null);
     setResult([]);  // 清空 store
@@ -362,7 +367,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      const data = await queryStream(cid, sql(), 100);
+      const data = await queryStream(cid, sqlToRun, 100);
 
       if (data.error) {
         throw new Error(data.error);
@@ -390,6 +395,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       setHasMore(data.hasMore || false);
 
       setQueryDuration(performance.now() - startTime);
+      addQuery(sqlToRun, cid).catch((e) => console.warn("查询历史保存失败:", e));
       console.log(`查询完成: ${rows.length} 行, hasMore: ${data.hasMore}`);
     } catch (e: any) {
       setError(e.message || "请求失败");
@@ -1343,6 +1349,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       setModifiedCells(rows.map(() => Array(colCount).fill(false)));
       setHasMore(data.hasMore || false);
       setQueryDuration(performance.now() - startTime);
+      addQuery(querySql, connectionId).catch((e) => console.warn("查询历史保存失败:", e));
     } catch (e: any) {
       setError(e.message || "请求失败");
     } finally {
@@ -1395,7 +1402,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               "border-bottom": `1px solid ${vscode.border}`,
             }}>
             <button
-              onClick={runUserQuery}
+              onClick={() => runUserQuery()}
               disabled={loading() || sql().trim().length === 0}
               style={{
                 padding: "10px 24px",
@@ -1453,6 +1460,25 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>🔧</span> {showQueryBuilder() ? "关闭构建器" : "可视化构建"}
             </button>
+            <button
+              onClick={() => setShowHistoryPanel(!showHistoryPanel())}
+              style={{
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": showHistoryPanel() ? vscode.accent : vscode.buttonSecondary,
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+                transition: "background-color 0.2s ease"
+              }}
+            >
+              <span>📜</span> {showHistoryPanel() ? "关闭历史" : "查询历史"}
+            </button>
             <span style={{ 
               "margin-left": "auto", 
               color: vscode.foregroundDim, 
@@ -1462,13 +1488,35 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               Ctrl+Enter 执行
             </span>
             </div>
-            <div style={{ flex: 1, "min-height": "80px", overflow: "hidden" }}>
-              <SqlEditor
-                value={sql()}
-                onChange={setSql}
-                onRun={runUserQuery}
-                style={{ height: "100%" }}
-              />
+            <div style={{
+              flex: 1,
+              "min-height": "80px",
+              overflow: "hidden",
+              display: "flex",
+              gap: "8px",
+            }}>
+              <div style={{ flex: 1, "min-width": 0, overflow: "hidden" }}>
+                <SqlEditor
+                  value={sql()}
+                  onChange={setSql}
+                  onRun={runUserQuery}
+                  style={{ height: "100%" }}
+                />
+              </div>
+              <Show when={showHistoryPanel()}>
+                <div style={{ width: "300px", "flex-shrink": 0, overflow: "hidden" }}>
+                  <QueryHistoryPanel
+                    onSelect={(s) => setSql(s)}
+                    onInsertAtEnd={(s) => setSql((prev) => (prev || "").trimEnd() + "\n\n" + s)}
+                    onExecuteOnly={(s) => runUserQuery(s)}
+                    onSelectAndRun={(s) => {
+                      setSql(s);
+                      runUserQuery();
+                    }}
+                    onClose={() => setShowHistoryPanel(false)}
+                  />
+                </div>
+              </Show>
             </div>
           </Resizable.Panel>
           <Resizable.Handle
