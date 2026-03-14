@@ -29,7 +29,7 @@ window.DBPLAYER_API_URL = 'https://你的FC域名';
 
 1. 上传 `index.html`、`styles.css`、`app.js`、`config.js` 到 OSS Bucket
 2. 开启静态网站托管，默认首页设为 `index.html`
-3. 确保 subscription-api 的 CORS 允许跨域（已配置 `origin: "*"`）
+3. 确保 subscription/backend 的 CORS 允许跨域（已配置 `origin: "*"`）
 
 ## 页面说明
 

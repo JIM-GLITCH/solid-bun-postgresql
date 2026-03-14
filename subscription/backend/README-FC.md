@@ -18,17 +18,16 @@
 
 ## 3. 构建并推送镜像
 
-```bash
-cd subscription-api
+**TS 直接跑，无需编译**：Bun 原生执行 `src/index.ts`，Dockerfile 已配置。
 
-# 登录 ACR
+```bash
+cd subscription/backend
+
+# 登录 ACR（首次）
 docker login registry.cn-hangzhou.aliyuncs.com
 
-# 构建（替换 your-namespace 为你的 ACR 命名空间）
-docker build -t registry.cn-hangzhou.aliyuncs.com/your-namespace/db-player-subscription:latest .
-
-# 推送
-docker push registry.cn-hangzhou.aliyuncs.com/your-namespace/db-player-subscription:latest
+# 一键构建+推送（替换 your-namespace 为你的 ACR 命名空间）
+ACR_NAMESPACE=your-namespace bun run deploy
 ```
 
 ## 4. 配置环境变量

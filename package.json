@@ -18,7 +18,10 @@
     "build:electrobun:frontend": "bun run electrobun-app/build.ts",
     "electrobun:package:canary": "bun run build:electrobun:frontend && bunx electrobun build --env=canary",
     "electrobun:package:stable": "bun run build:electrobun:frontend && bunx electrobun build --env=stable",
-    "electrobun:portable": "bun run electrobun-app/package-portable.ts"
+    "electrobun:portable": "bun run electrobun-app/package-portable.ts",
+    "subscription:dev": "bun run subscription-dev.ts",
+    "subscription:dev:all": "cd subscription/backend && bun run dev-with-portal.ts",
+    "subscription:dev:watch": "cd subscription/backend && bun run dev:all"
   },
   "license": "MIT",
   "devDependencies": {

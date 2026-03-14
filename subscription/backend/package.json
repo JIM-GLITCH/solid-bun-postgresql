@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts"
+    "dev:all": "bun run --watch dev-with-portal.ts",
+    "start": "bun run src/index.ts",
+    "deploy": "bun run deploy.ts"
   },
   "dependencies": {
     "hono": "^4.6.0",

@@ -97,7 +97,11 @@
     </footer>
   </div>
 
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script>
+    if (location.hostname === 'localhost' && location.port === '3000' && !window.DBPLAYER_API_URL) {
+      window.DBPLAYER_API_URL = 'http://localhost:9000';
+    }
+  </script>
+  <script src="dist/app.js"></script>
 </body>
 </html>
