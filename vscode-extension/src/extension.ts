@@ -43,6 +43,58 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
+/** VSCode 插件内：保存文件（弹窗选路径后写入） */
+async function handleVscodeSaveFile(
+  webview: vscode.Webview,
+  id: number,
+  payload: { content: string; filename: string; isBase64?: boolean }
+): Promise<void> {
+  const uri = await vscode.window.showSaveDialog({
+    defaultUri: vscode.Uri.file(payload.filename),
+    saveLabel: "保存",
+  });
+  if (!uri) {
+    webview.postMessage({ id, data: { cancelled: true } });
+    return;
+  }
+  const content = payload.isBase64
+    ? Buffer.from(payload.content, "base64")
+    : new TextEncoder().encode(payload.content);
+  await vscode.workspace.fs.writeFile(uri, new Uint8Array(content));
+  webview.postMessage({ id, data: { success: true, path: uri.fsPath } });
+}
+
+/** VSCode 插件内：打开文件（弹窗选文件后读取内容返回） */
+async function handleVscodeReadFile(
+  webview: vscode.Webview,
+  id: number,
+  payload: { accept?: string[] }
+): Promise<void> {
+  const filters: Record<string, string[]> = {};
+  if (payload.accept?.length) {
+    filters["导入文件"] = payload.accept.map((e) => e.replace(/^\./, ""));
+  }
+  const uris = await vscode.window.showOpenDialog({
+    canSelectMany: false,
+    filters: Object.keys(filters).length ? filters : undefined,
+  });
+  if (!uris?.length) {
+    webview.postMessage({ id, data: { cancelled: true } });
+    return;
+  }
+  const uri = uris[0];
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  const name = uri.path.split(/[/\\]/).pop() ?? "file";
+  const isBinary = /\.(xlsx|xls)$/i.test(name);
+  if (isBinary) {
+    const base64 = Buffer.from(bytes).toString("base64");
+    webview.postMessage({ id, data: { contentBase64: base64, filename: name } });
+  } else {
+    const content = new TextDecoder("utf-8").decode(bytes);
+    webview.postMessage({ id, data: { content, filename: name } });
+  }
+}
+
 /** 脱敏后用于日志，避免把密码或密文打到输出 */
 function redactPayload(msg: unknown): unknown {
   if (msg && typeof msg === "object" && "payload" in msg && typeof (msg as any).payload === "object") {
@@ -77,9 +129,26 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
   const webview = panel.webview;
   const output = vscode.window.createOutputChannel("DB Player");
   const baseHandler = createVscodeMessageHandler(webview);
-  webview.onDidReceiveMessage((message: unknown) => {
+  webview.onDidReceiveMessage(async (message: unknown) => {
     const safe = redactPayload(message);
     output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
+    const msg = message as { id?: number; method?: string; payload?: unknown };
+    if (typeof msg.id === "number" && msg.method === "vscode/save-file" && msg.payload != null) {
+      try {
+        await handleVscodeSaveFile(webview, msg.id, msg.payload as { content: string; filename: string; isBase64?: boolean });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
+    if (typeof msg.id === "number" && msg.method === "vscode/read-file" && msg.payload != null) {
+      try {
+        await handleVscodeReadFile(webview, msg.id, msg.payload as { accept?: string[] });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
     baseHandler(message as any);
   });
 

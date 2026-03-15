@@ -3,8 +3,8 @@
  */
 
 import { createSignal, createEffect, For, Show } from "solid-js";
-import { getSchemas, getTables, getColumns, getPrimaryKeys, importRows } from "./api";
-import { parseImportFile, type ParsedImport } from "./import-parse";
+import { getSchemas, getTables, getColumns, getPrimaryKeys, importRows, readFileViaVscode } from "./api";
+import { parseImportFile, parseFromVscodeResult, type ParsedImport } from "./import-parse";
 import { vscode } from "./theme";
 
 interface ImportModalProps {
@@ -21,6 +21,7 @@ interface TableColumn {
 
 export default function ImportModal(props: ImportModalProps) {
   const [file, setFile] = createSignal<File | null>(null);
+  const [vscodeFileName, setVscodeFileName] = createSignal<string>("");
   const [parsed, setParsed] = createSignal<ParsedImport | null>(null);
   const [schemas, setSchemas] = createSignal<string[]>([]);
   const [tables, setTables] = createSignal<string[]>([]);
@@ -128,6 +129,7 @@ export default function ImportModal(props: ImportModalProps) {
     const f = input.files?.[0];
     if (!f) return;
     setFile(f);
+    setVscodeFileName("");
     setError(null);
     const result = await parseImportFile(f);
     if (result.error) {
@@ -135,6 +137,25 @@ export default function ImportModal(props: ImportModalProps) {
       setParsed(null);
     } else {
       setParsed(result);
+    }
+  }
+
+  async function handleChooseFile() {
+    setError(null);
+    try {
+      const data = await readFileViaVscode({ accept: [".csv", ".json", ".xlsx", ".xls"] });
+      if (!data) return;
+      const result = parseFromVscodeResult(data);
+      if (result.error) {
+        setError(result.error);
+        setParsed(null);
+      } else {
+        setParsed(result);
+        setFile(null);
+        setVscodeFileName(data.filename);
+      }
+    } catch {
+      document.getElementById("import-file-input")?.click();
     }
   }
 
@@ -252,25 +273,43 @@ export default function ImportModal(props: ImportModalProps) {
 
           <div>
             <label for="import-file-input" style={{ display: "block", "margin-bottom": "6px", color: vscode.foreground }}>选择文件</label>
-            <input
-              id="import-file-input"
-              type="file"
-              accept=".csv,.json,.xlsx,.xls,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-              aria-label="选择 CSV、JSON 或 Excel 文件"
-              onChange={handleFileChange}
-              style={{
-                padding: "8px",
-                "font-size": "14px",
-                "background-color": vscode.inputBg,
-                color: vscode.foreground,
-                border: `1px solid ${vscode.border}`,
-                "border-radius": "4px",
-                width: "100%",
-              }}
-            />
-            <Show when={file()}>
+            <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+              <button
+                type="button"
+                onClick={handleChooseFile}
+                style={{
+                  padding: "8px 16px",
+                  "font-size": "14px",
+                  "background-color": vscode.buttonBg,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: "pointer",
+                }}
+              >
+                选择文件
+              </button>
+              <span style={{ color: vscode.foregroundDim, "font-size": "13px" }}>或</span>
+              <input
+                id="import-file-input"
+                type="file"
+                accept=".csv,.json,.xlsx,.xls,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                aria-label="选择 CSV、JSON 或 Excel 文件"
+                onChange={handleFileChange}
+                style={{
+                  padding: "6px 8px",
+                  "font-size": "13px",
+                  "background-color": vscode.inputBg,
+                  color: vscode.foreground,
+                  border: `1px solid ${vscode.border}`,
+                  "border-radius": "4px",
+                  "flex": 1,
+                }}
+              />
+            </div>
+            <Show when={file() || vscodeFileName()}>
               <div style={{ "margin-top": "6px", color: vscode.foregroundDim, "font-size": "13px" }}>
-                {file()!.name}
+                {file()?.name ?? vscodeFileName()}
                 <Show when={parsedData()}>
                   {" "}
                   — {parsedData()!.headers.length} 列，{parsedData()!.rows.length} 行

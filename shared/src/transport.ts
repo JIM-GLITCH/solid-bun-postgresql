@@ -34,7 +34,9 @@ export type ApiMethod =
   | "postgres/function-ddl"
   | "postgres/primary-keys"
   | "postgres/unique-constraints"
-  | "postgres/import-rows";
+  | "postgres/import-rows"
+  | "vscode/save-file"
+  | "vscode/read-file";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -78,6 +80,10 @@ export type ApiRequestPayload = {
     /** 插入报错时：rollback=整体回退，discard=丢弃该行继续 */
     onError?: "rollback" | "discard";
   };
+  /** VSCode 插件内：保存文件到用户选择路径（Extension Host 弹窗 + 写盘） */
+  "vscode/save-file": { content: string; filename: string; isBase64?: boolean };
+  /** VSCode 插件内：打开文件选择器并返回文件内容（Extension Host 弹窗 + 读盘） */
+  "vscode/read-file": { accept?: string[] };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

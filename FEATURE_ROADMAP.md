@@ -6,7 +6,7 @@
 
 - ✅ **1. 查询历史 + 搜索** - 保存最近 500–1000 条查询，支持按内容/时间搜索、一键复用 *(Antares、DBCode、Database Client)*
 - **2. SSH 隧道** - 连接远程 PostgreSQL 时支持 SSH 跳板，适配云库和私有网络 *(Antares、DBView)*
-- ✅ **3. 导入 / 导出** - CSV/JSON 导入，查询结果导出为 CSV/JSON/Excel *(Antares、Database Client)*
+- ✅ **3. 导入 / 导出** - CSV/JSON/Excel导入，查询结果导出为 CSV/JSON/Excel *(Antares、Database Client)*
 - **4. 假数据生成** - 按表结构生成测试数据（姓名、日期、数字等） *(Antares、Database Client)*
 
 ---

@@ -99,6 +99,22 @@ export function parseXlsx(buffer: ArrayBuffer): ParsedImport {
   }
 }
 
+/** 将 VSCode readFile 返回的内容解析为 ParsedImport（用于插件内选择文件） */
+export function parseFromVscodeResult(
+  data: { content: string; filename: string } | { contentBase64: string; filename: string }
+): ParsedImport {
+  const name = data.filename.toLowerCase();
+  if ("contentBase64" in data) {
+    const binary = atob(data.contentBase64);
+    const buf = new ArrayBuffer(binary.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
+    return parseXlsx(buf);
+  }
+  if (name.endsWith(".json")) return parseJson(data.content);
+  return parseCsv(data.content);
+}
+
 export function parseImportFile(file: File): Promise<ParsedImport> {
   const name = file.name.toLowerCase();
   if (name.endsWith(".xlsx") || name.endsWith(".xls")) {

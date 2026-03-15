@@ -153,3 +153,23 @@ export async function importRows(
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
   return api().subscribeEvents(connectionId, callback);
 }
+
+/** VSCode 插件内：保存文件到用户选择路径。返回 true 表示已保存，false 表示用户取消，抛错时可回退到浏览器下载。 */
+export async function saveFileViaVscode(content: string, filename: string, options?: { isBase64?: boolean }): Promise<boolean> {
+  const result = await api().request("vscode/save-file", {
+    content,
+    filename,
+    isBase64: options?.isBase64,
+  }) as { success?: boolean; cancelled?: boolean };
+  if (result?.cancelled) return false;
+  return !!result?.success;
+}
+
+/** VSCode 插件内：打开文件选择器并返回内容。返回 null 表示用户取消。 */
+export async function readFileViaVscode(options?: { accept?: string[] }): Promise<{ content: string; filename: string } | { contentBase64: string; filename: string } | null> {
+  const result = await api().request("vscode/read-file", { accept: options?.accept ?? [".csv", ".json", ".xlsx", ".xls"] }) as { cancelled?: boolean; content?: string; filename?: string; contentBase64?: string };
+  if (result?.cancelled) return null;
+  if (result?.contentBase64 != null && result?.filename) return { contentBase64: result.contentBase64, filename: result.filename };
+  if (result?.content != null && result?.filename) return { content: result.content, filename: result.filename };
+  return null;
+}
