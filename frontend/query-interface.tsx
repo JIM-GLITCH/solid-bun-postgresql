@@ -11,6 +11,8 @@ import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
 import { vscode } from "./theme";
+import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
+import ImportModal from "./import-modal";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
@@ -63,6 +65,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
   const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
   const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
+  const [showExportMenu, setShowExportMenu] = createSignal(false);  // 导出下拉
+  const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
 
   // 单元格选区：Set<"row,col">，支持非连续多选（Ctrl+点击添加）
   const [selection, setSelection] = createSignal<Set<string> | null>(null);
@@ -609,6 +613,18 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     });
   });
 
+  // 导出下拉：点击外部关闭
+  let exportMenuRef: HTMLDivElement | null = null;
+  createEffect(() => {
+    if (!showExportMenu()) return;
+    const h = (e: MouseEvent) => {
+      if (exportMenuRef?.contains(e.target as Node)) return;
+      setShowExportMenu(false);
+    };
+    document.addEventListener("click", h, true);
+    onCleanup(() => document.removeEventListener("click", h, true));
+  });
+
   // 处理单元格保存（newValue 为 null 表示设为 SQL NULL）
   function handleCellSave(rowIndex: number, colIndex: number, newValue: string | null) {
     const currentValue = result[rowIndex][colIndex];
@@ -756,6 +772,73 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </Show>
           </span>
           <div style={{ display: "flex", "align-items": "center", gap: "12px" }}>
+            <Show when={result.length > 0}>
+              <div ref={(el) => (exportMenuRef = el)} style={{ position: "relative" }}>
+                <button
+                  onClick={() => setShowExportMenu(!showExportMenu())}
+                  style={{
+                    padding: "6px 16px",
+                    "font-size": "14px",
+                    "background-color": vscode.buttonSecondary,
+                    color: "#fff",
+                    border: "none",
+                    "border-radius": "4px",
+                    cursor: "pointer"
+                  }}
+                >
+                  导出 ▼
+                </button>
+                <Show when={showExportMenu()}>
+                  <div
+                    role="menu"
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      right: 0,
+                      "margin-top": "4px",
+                      "z-index": 100,
+                      background: vscode.sidebarBg,
+                      border: `1px solid ${vscode.border}`,
+                      "border-radius": "4px",
+                      "box-shadow": "0 2px 8px rgba(0,0,0,0.15)",
+                      "min-width": "140px",
+                      padding: "4px 0"
+                    }}
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { exportAsCsv(columns(), result, "query-result.csv"); setShowExportMenu(false); }}
+                      style={{ display: "block", width: "100%", padding: "8px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "13px", color: vscode.foreground }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                      导出 CSV
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { exportAsJson(columns(), result, "query-result.json"); setShowExportMenu(false); }}
+                      style={{ display: "block", width: "100%", padding: "8px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "13px", color: vscode.foreground }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                      导出 JSON
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { exportAsExcel(columns(), result, "query-result.xlsx"); setShowExportMenu(false); }}
+                      style={{ display: "block", width: "100%", padding: "8px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "13px", color: vscode.foreground }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                      导出 Excel
+                    </button>
+                  </div>
+                </Show>
+              </div>
+            </Show>
             <span style={{ color: (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.warning : vscode.foregroundDim }}>
               {pendingUpdates().length + pendingDeletes().length + pendingInserts().length} 个待保存的修改
             </span>
@@ -1479,6 +1562,24 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>📜</span> {showHistoryPanel() ? "关闭历史" : "查询历史"}
             </button>
+            <button
+              onClick={() => setShowImportModal(true)}
+              style={{
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": vscode.buttonSecondary,
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+              }}
+            >
+              <span>📥</span> 导入
+            </button>
             <span style={{ 
               "margin-left": "auto", 
               color: vscode.foregroundDim, 
@@ -1702,6 +1803,17 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               />
             </div>
           </div>
+        </Show>
+
+        {/* 导入弹窗 */}
+        <Show when={showImportModal()}>
+          <ImportModal
+            connectionId={props.activeConnectionId?.() ?? null}
+            onClose={() => setShowImportModal(false)}
+            onSuccess={(msg) => {
+              setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: msg, timestamp: Date.now() }]);
+            }}
+          />
         </Show>
     </div>
   );

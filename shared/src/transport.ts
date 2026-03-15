@@ -31,7 +31,10 @@ export type ApiMethod =
   | "postgres/data-types"
   | "postgres/execute-ddl"
   | "postgres/table-ddl"
-  | "postgres/function-ddl";
+  | "postgres/function-ddl"
+  | "postgres/primary-keys"
+  | "postgres/unique-constraints"
+  | "postgres/import-rows";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -60,6 +63,21 @@ export type ApiRequestPayload = {
   "postgres/execute-ddl": { connectionId: string; sql: string };
   "postgres/table-ddl": { connectionId: string; schema: string; table: string };
   "postgres/function-ddl": { connectionId: string; schema: string; function: string; oid?: number };
+  "postgres/primary-keys": { connectionId: string; schema: string; table: string };
+  "postgres/unique-constraints": { connectionId: string; schema: string; table: string };
+  "postgres/import-rows": {
+    connectionId: string;
+    schema: string;
+    table: string;
+    columns: string[];
+    rows: any[][];
+    /** 作为冲突检测的列（来自列映射中勾选“主键”的目标列），空则纯插入 */
+    conflictColumns?: string[];
+    /** 唯一约束冲突时：nothing=保留旧数据，update=更新为新数据 */
+    onConflict?: "nothing" | "update";
+    /** 插入报错时：rollback=整体回退，discard=丢弃该行继续 */
+    onError?: "rollback" | "discard";
+  };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

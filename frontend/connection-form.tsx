@@ -49,14 +49,17 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     setError(null);
   };
 
+  const buildPayload = (): PostgresLoginParams => form();
+
   const connect = async () => {
     setConnecting(true);
     setError(null);
     try {
       const connectionId = props.connectionId ?? generateConnectionId();
-      const { sucess, error: err } = await connectPostgres(connectionId, form());
+      const payload = buildPayload();
+      const { sucess, error: err } = await connectPostgres(connectionId, payload);
       if (sucess) {
-        const p = form();
+        const p = buildPayload();
         if (rememberPassword()) {
           try {
             await saveConnection(connectionId, p);
@@ -65,7 +68,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
             console.warn('保存连接失败:', e);
           }
         }
-        props.onConnected(connectionId, `${p.username}@${p.host}:${p.port}/${p.database}`);
+        props.onConnected(connectionId, `${p.username}@${form().host}:${form().port}/${p.database}`);
       } else {
         setError(String(err ?? '连接失败'));
       }
@@ -134,7 +137,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                 <td style={{ padding: '8px 0' }}>
                   <input
                     type={field.key === 'password' ? 'password' : 'text'}
-                    value={form()[field.key]}
+                    value={String(form()[field.key] ?? '')}
                     onInput={(e) => onChange(field.key, e.currentTarget.value)}
                     placeholder={field.example}
                     aria-label={`${field.label} 输入`}
@@ -153,7 +156,8 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </For>
         </tbody>
       </table>
-      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', cursor: 'pointer', fontSize: '13px', color: vscode.foregroundDim }}>
+
+      <label style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-top': '12px', cursor: 'pointer', 'font-size': '13px', color: vscode.foregroundDim }}>
         <input
           type="checkbox"
           checked={rememberPassword()}

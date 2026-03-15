@@ -53,11 +53,14 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/tables", method: "postgres/tables" },
   { path: "/api/postgres/columns", method: "postgres/columns" },
   { path: "/api/postgres/indexes", method: "postgres/indexes" },
+  { path: "/api/postgres/primary-keys", method: "postgres/primary-keys" },
+  { path: "/api/postgres/unique-constraints", method: "postgres/unique-constraints" },
   { path: "/api/postgres/foreign-keys", method: "postgres/foreign-keys" },
   { path: "/api/postgres/data-types", method: "postgres/data-types" },
   { path: "/api/postgres/execute-ddl", method: "postgres/execute-ddl" },
   { path: "/api/postgres/table-ddl", method: "postgres/table-ddl" },
   { path: "/api/postgres/function-ddl", method: "postgres/function-ddl" },
+  { path: "/api/postgres/import-rows", method: "postgres/import-rows" },
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
 ];
 

@@ -82,6 +82,19 @@ export async function getIndexes(connectionId: string, schema: string, table: st
   return api().request("postgres/indexes", { connectionId, schema, table }) as Promise<{ indexes: any[]; error?: string }>;
 }
 
+/** 获取主键列名 */
+export async function getPrimaryKeys(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/primary-keys", { connectionId, schema, table }) as Promise<{ columns: string[]; error?: string }>;
+}
+
+/** 获取唯一约束（含主键），用于导入时冲突处理 */
+export async function getUniqueConstraints(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/unique-constraints", { connectionId, schema, table }) as Promise<{
+    constraints: Array<{ name: string; type: string; columns: string[] }>;
+    error?: string;
+  }>;
+}
+
 /** 获取外键 */
 export async function getForeignKeys(connectionId: string, schema: string, table: string) {
   return api().request("postgres/foreign-keys", { connectionId, schema, table }) as Promise<{
@@ -109,6 +122,31 @@ export async function getTableDdl(connectionId: string, schema: string, table: s
 /** 获取函数的源码 DDL */
 export async function getFunctionDdl(connectionId: string, schema: string, funcName: string, oid?: number) {
   return api().request("postgres/function-ddl", { connectionId, schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
+}
+
+/** 批量导入行到表 */
+export async function importRows(
+  connectionId: string,
+  schema: string,
+  table: string,
+  columns: string[],
+  rows: any[][],
+  options?: {
+    conflictColumns?: string[];
+    onConflict?: "nothing" | "update";
+    onError?: "rollback" | "discard";
+  }
+) {
+  return api().request("postgres/import-rows", {
+    connectionId,
+    schema,
+    table,
+    columns,
+    rows,
+    conflictColumns: options?.conflictColumns,
+    onConflict: options?.onConflict,
+    onError: options?.onError,
+  }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
 /** 订阅服务端推送事件 */

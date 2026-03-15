@@ -7,26 +7,30 @@ import { Client, Pool, types } from "pg";
 const keepString = (v: string) => v;
 [1082, 1083, 1266, 1114, 1184, 1186].forEach((oid) => types.setTypeParser(oid, keepString));
 
+function toPgConfig(params: PostgresLoginParams) {
+  const host = params.host ?? "localhost";
+  const port = Number(params.port ?? 5432);
+  return {
+    host,
+    port,
+    database: params.database,
+    user: params.username,
+    password: params.password,
+  };
+}
+
 export async function connectPostgres(params: PostgresLoginParams) {
-    const client = new Client({
-        host: params.host,
-        port: Number(params.port),
-        database: params.database,
-        user: params.username,
-        password: params.password,
-    });
-    await client.connect();
-    return client;
+  const cfg = toPgConfig(params);
+  const client = new Client(cfg);
+  await client.connect();
+  return client;
 }
 
 export function createPostgresPool(params: PostgresLoginParams) {
-    return new Pool({
-        host: params.host,
-        port: Number(params.port),
-        database: params.database,
-        user: params.username,
-        password: params.password,
-        max: 6,  // 调试需 3 个连接：proxy、listener、target
-        idleTimeoutMillis: 30000,
-    });
+  const cfg = toPgConfig(params);
+  return new Pool({
+    ...cfg,
+    max: 6,
+    idleTimeoutMillis: 30000,
+  });
 }

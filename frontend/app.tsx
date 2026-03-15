@@ -57,7 +57,12 @@ export interface FunctionDdlTab {
   ddl: string;
 }
 
-export type Tab = QueryTab | DesignTableTab | DdlViewTab | FunctionDdlTab;
+export interface ConnectionFormTab {
+  id: string;
+  type: "connection-form";
+}
+
+export type Tab = QueryTab | DesignTableTab | DdlViewTab | FunctionDdlTab | ConnectionFormTab;
 
 export default function App() {
   const [connections, setConnections] = createStore<ConnectionInfo[]>([]);
@@ -76,6 +81,11 @@ export default function App() {
   const handleConnected = (connectionId: string, info: string) => {
     setConnections(connections.length, { id: connectionId, info });
     setShowConnectionForm(false);
+    const all = tabs();
+    const remaining = all.filter((t) => t.type !== "connection-form");
+    const wasOnFormTab = all.some((t) => t.type === "connection-form" && t.id === activeTabId());
+    setTabs(remaining);
+    if (wasOnFormTab) setActiveTabId(remaining[0]?.id ?? null);
   };
 
   const handleSavedRefresh = () => {
@@ -218,7 +228,19 @@ export default function App() {
   };
 
   const handleAddConnection = () => {
-    setShowConnectionForm(true);
+    if (connections.length > 0) {
+      const existing = tabs().find((t) => t.type === "connection-form");
+      if (existing) {
+        setActiveTabId(existing.id);
+        return;
+      }
+      const tabId = `connection-form-${Date.now()}`;
+      const tab: ConnectionFormTab = { id: tabId, type: "connection-form" };
+      setTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+    } else {
+      setShowConnectionForm(true);
+    }
   };
 
   return (
@@ -313,64 +335,26 @@ export default function App() {
             }>
               <div style={{
                 flex: 1,
+                minHeight: 0,
                 display: 'flex',
-                'align-items': 'center',
-                'justify-content': 'center',
-                padding: '24px',
-                'background-color': vscode.editorBg,
+                'flex-direction': 'column',
+                overflow: 'hidden',
               }}>
                 <div style={{
-                  width: '100%',
-                  'max-width': '480px',
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
                   padding: '24px',
-                  'background-color': vscode.sidebarBg,
-                  'border': `1px solid ${vscode.border}`,
+                  'background-color': vscode.editorBg,
                 }}>
-                  <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
+                  <div style={{ margin: '0 auto', maxWidth: '560px' }}>
+                    <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
+                  </div>
                 </div>
               </div>
             </Show>
           }>
-            <Show when={showConnectionForm()}>
-              <div style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                'align-items': 'center',
-                'justify-content': 'center',
-                'background-color': 'rgba(0,0,0,0.5)',
-                'z-index': 100,
-              }}>
-                <div style={{
-                  width: '100%',
-                  'max-width': '480px',
-                  padding: '24px',
-                  'background-color': vscode.sidebarBg,
-                  'border': `1px solid ${vscode.border}`,
-                  position: 'relative',
-                }}>
-                  <button
-                    onClick={() => setShowConnectionForm(false)}
-                    style={{
-                      position: 'absolute',
-                      top: '12px',
-                      right: '12px',
-                      padding: '4px 12px',
-                      'font-size': '12px',
-                      'background-color': vscode.buttonSecondary,
-                      color: vscode.foreground,
-                      border: 'none',
-                      cursor: 'pointer',
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
-                  >
-                    取消
-                  </button>
-                  <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
-                </div>
-              </div>
-            </Show>
             <Show when={tabs().length > 0} fallback={
               <div style={{
                 flex: 1,
@@ -400,14 +384,16 @@ export default function App() {
                       const tabLabel = () =>
                         tab.type === 'query'
                           ? tab.connectionInfo
-                          : tab.type === 'ddl-view'
-                            ? `DDL: ${tab.schema}.${tab.table}`
-                            : tab.type === 'function-ddl'
-                              ? `函数: ${tab.schema}.${tab.function}`
-                              : tab.mode === 'create'
-                                ? `设计表: ${tab.schema}.新建`
-                                : `设计表: ${tab.schema}.${tab.table}`;
-                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'ddl-view' ? '📄' : tab.type === 'function-ddl' ? 'ƒ' : '📋');
+                          : tab.type === 'connection-form'
+                            ? '新建连接'
+                            : tab.type === 'ddl-view'
+                              ? `DDL: ${tab.schema}.${tab.table}`
+                              : tab.type === 'function-ddl'
+                                ? `函数: ${tab.schema}.${tab.function}`
+                                : tab.mode === 'create'
+                                  ? `设计表: ${tab.schema}.新建`
+                                  : `设计表: ${tab.schema}.${tab.table}`;
+                      const tabIcon = () => (tab.type === 'query' ? '📝' : tab.type === 'connection-form' ? '🔌' : tab.type === 'ddl-view' ? '📄' : tab.type === 'function-ddl' ? 'ƒ' : '📋');
                       return (
                         <div
                           onClick={() => setActiveTabId(tab.id)}
@@ -465,7 +451,15 @@ export default function App() {
                           overflow: 'hidden',
                         }}
                       >
-                        {tab.type === 'query' ? (
+                        {tab.type === 'connection-form' ? (
+                          <div style={{ flex: 1, minHeight: 0, display: 'flex', 'flex-direction': 'column', overflow: 'hidden' }}>
+                            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '24px', 'background-color': vscode.editorBg }}>
+                              <div style={{ margin: '0 auto', maxWidth: '560px' }}>
+                                <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
+                              </div>
+                            </div>
+                          </div>
+                        ) : tab.type === 'query' ? (
                           <QueryInterface
                             activeConnectionId={() => tab.connectionId}
                             isActiveTab={() => activeTabId() === tab.id}

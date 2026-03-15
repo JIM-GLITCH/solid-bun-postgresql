@@ -1,0 +1,45 @@
+# SSH 隧道连接测试环境
+# 用法: docker compose -f docker-compose.ssh-test.yml up -d
+#
+# 连接参数：
+#   - DB host: postgres
+#   - DB port: 5432
+#   - DB user: postgres
+#   - DB password: secret
+#   - DB name: mydb
+#
+#   - SSH 跳板: host=localhost, port=5022, user=root, password=root
+#     （数据库不暴露到宿主机，必须通过 SSH 隧道访问）
+
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ssh-test-postgres
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: mydb
+      POSTGRES_USER: postgres
+    # 不暴露端口，仅通过 SSH 隧道访问
+    networks:
+      - ssh-test-net
+    volumes:
+      - ssh_test_pg_data:/var/lib/postgresql/data
+
+  bastion:
+    image: rastasheep/ubuntu-sshd
+    container_name: ssh-test-bastion
+    ports:
+      - "5022:22"
+    networks:
+      - ssh-test-net
+    depends_on:
+      - postgres
+
+networks:
+  ssh-test-net:
+    driver: bridge
+
+volumes:
+  ssh_test_pg_data:

@@ -8,7 +8,7 @@ import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
-import { Client, Pool } from "pg";
+import { Client, Pool, type PoolClient } from "pg";
 import Cursor from "pg-cursor";
 
 export interface SSEMessage {
@@ -179,7 +179,11 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
       });
 
-      connectionMap.set(cid, { userUsedClient: client, backGroundPool: adminPool, eventPushers: new Set() });
+      connectionMap.set(cid, {
+        userUsedClient: client,
+        backGroundPool: adminPool,
+        eventPushers: new Set(),
+      });
       return { sucess: true, connectionId: cid };
     }
 
@@ -269,6 +273,104 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { success: true, rowCount: result.rowCount };
     }
 
+    case "postgres/import-rows": {
+      const cid = getConnId();
+      const {
+        schema,
+        table,
+        columns: colNames,
+        rows,
+        conflictColumns,
+        onConflict,
+        onError = "rollback",
+      } = payload as {
+        connectionId: string;
+        schema: string;
+        table: string;
+        columns: string[];
+        rows: any[][];
+        conflictColumns?: string[];
+        onConflict?: "nothing" | "update";
+        onError?: "rollback" | "discard";
+      };
+      if (!colNames?.length || !Array.isArray(rows)) {
+        throw new Error("缺少 columns 或 rows");
+      }
+      const session = getS(cid);
+      const quote = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+      const qualified = `${quote(schema)}.${quote(table)}`;
+      const cols = colNames.map(quote).join(", ");
+      const BATCH = 100;
+      const runOne = async (chunk: any[][], client: PoolClient): Promise<number> => {
+        const placeholders: string[] = [];
+        const values: any[] = [];
+        let paramIndex = 1;
+        for (const row of chunk) {
+          placeholders.push("(" + colNames.map(() => `$${paramIndex++}`).join(", ") + ")");
+          for (let c = 0; c < colNames.length; c++) {
+            values.push(row[c] ?? null);
+          }
+        }
+        let sql = `INSERT INTO ${qualified} (${cols}) VALUES ${placeholders.join(", ")}`;
+        if (conflictColumns?.length && onConflict) {
+          const conflictCols = conflictColumns.map((c) => quote(c)).join(", ");
+          if (onConflict === "nothing") {
+            sql += ` ON CONFLICT (${conflictCols}) DO NOTHING`;
+          } else {
+            const setClause = colNames.map((c) => `${quote(c)} = EXCLUDED.${quote(c)}`).join(", ");
+            sql += ` ON CONFLICT (${conflictCols}) DO UPDATE SET ${setClause}`;
+          }
+        }
+        const result = await client.query(sql, values);
+        return result.rowCount ?? chunk.length;
+      };
+
+      let total = 0;
+      if (onError === "rollback") {
+        const client = await session.backGroundPool.connect();
+        try {
+          await client.query("BEGIN");
+          for (let i = 0; i < rows.length; i += BATCH) {
+            const chunk = rows.slice(i, i + BATCH);
+            total += await runOne(chunk, client);
+          }
+          await client.query("COMMIT");
+        } catch (e) {
+          await client.query("ROLLBACK");
+          throw e;
+        } finally {
+          client.release();
+        }
+      } else {
+        const client = await session.backGroundPool.connect();
+        try {
+          for (let i = 0; i < rows.length; i += BATCH) {
+            const chunk = rows.slice(i, i + BATCH);
+            try {
+              total += await runOne(chunk, client);
+            } catch {
+              for (const row of chunk) {
+                try {
+                  await runOne([row], client);
+                  total += 1;
+                } catch {
+                  // 丢弃该行，继续
+                }
+              }
+            }
+          }
+        } finally {
+          client.release();
+        }
+      }
+      sendSSEMessage(cid, {
+        type: "INFO",
+        message: `导入成功: ${total} 行`,
+        timestamp: Date.now(),
+      });
+      return { success: true, rowCount: total };
+    }
+
     case "postgres/cancel-query": {
       const cid = getConnId();
       const session = getS(cid);
@@ -354,6 +456,49 @@ export async function handleApiRequest<M extends ApiMethod>(
         [schema, table]
       );
       return { indexes: result.rows };
+    }
+
+    case "postgres/primary-keys": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const result = await session.backGroundPool.query(
+        `SELECT kcu.column_name FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = $1 AND tc.table_name = $2 ORDER BY kcu.ordinal_position`,
+        [schema, table]
+      );
+      return { columns: result.rows.map((r: any) => r.column_name) };
+    }
+
+    case "postgres/unique-constraints": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const result = await session.backGroundPool.query(
+        `SELECT tc.constraint_name, tc.constraint_type,
+         array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS columns
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema AND tc.table_name = kcu.table_name
+         WHERE tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_type IN ('UNIQUE', 'PRIMARY KEY')
+         GROUP BY tc.constraint_name, tc.constraint_type`,
+        [schema, table]
+      );
+      const toCols = (v: any): string[] => {
+        if (Array.isArray(v)) return v;
+        if (v == null) return [];
+        const s = String(v).trim();
+        if (s.startsWith("{") && s.endsWith("}")) return s.slice(1, -1).split(",").map((x) => x.trim());
+        return [s];
+      };
+      return {
+        constraints: result.rows.map((r: any) => ({
+          name: r.constraint_name,
+          type: r.constraint_type,
+          columns: toCols(r.columns),
+        })),
+      };
     }
 
     case "postgres/data-types": {
