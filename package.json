@@ -12,7 +12,7 @@
     "standalone:build:win": "bun run standalone/build-win.ts",
     "standalone:deploy": "bun run standalone/deploy.ts",
     "build-extension": "bun run vscode-extension/build.ts",
-    "publish-extension": "bun run vscode-extension/build.ts; cd vscode-extension; vsce publish",
+    "publish-extension": "bun run build-extensionc; cd vscode-extension; vsce publish",
     "electrobun:start": "bun run build:electrobun ; bunx electrobun dev",
     "build:electrobun": "bun run build:electrobun:frontend && bun install && bunx electrobun build",
     "build:electrobun:frontend": "bun run electrobun-app/build.ts",

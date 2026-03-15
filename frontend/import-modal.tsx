@@ -272,41 +272,30 @@ export default function ImportModal(props: ImportModalProps) {
           </Show>
 
           <div>
-            <label for="import-file-input" style={{ display: "block", "margin-bottom": "6px", color: vscode.foreground }}>选择文件</label>
-            <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
-              <button
-                type="button"
-                onClick={handleChooseFile}
-                style={{
-                  padding: "8px 16px",
-                  "font-size": "14px",
-                  "background-color": vscode.buttonBg,
-                  color: "#fff",
-                  border: "none",
-                  "border-radius": "4px",
-                  cursor: "pointer",
-                }}
-              >
-                选择文件
-              </button>
-              <span style={{ color: vscode.foregroundDim, "font-size": "13px" }}>或</span>
-              <input
-                id="import-file-input"
-                type="file"
-                accept=".csv,.json,.xlsx,.xls,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                aria-label="选择 CSV、JSON 或 Excel 文件"
-                onChange={handleFileChange}
-                style={{
-                  padding: "6px 8px",
-                  "font-size": "13px",
-                  "background-color": vscode.inputBg,
-                  color: vscode.foreground,
-                  border: `1px solid ${vscode.border}`,
-                  "border-radius": "4px",
-                  "flex": 1,
-                }}
-              />
-            </div>
+            <label style={{ display: "block", "margin-bottom": "6px", color: vscode.foreground }}>选择文件</label>
+            <input
+              id="import-file-input"
+              type="file"
+              accept=".csv,.json,.xlsx,.xls,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              aria-label="选择 CSV、JSON 或 Excel 文件"
+              onChange={handleFileChange}
+              style={{ position: "absolute", width: 0, height: 0, opacity: 0, "pointer-events": "none" }}
+            />
+            <button
+              type="button"
+              onClick={handleChooseFile}
+              style={{
+                padding: "8px 16px",
+                "font-size": "14px",
+                "background-color": vscode.buttonBg,
+                color: "#fff",
+                border: "none",
+                "border-radius": "4px",
+                cursor: "pointer",
+              }}
+            >
+              选择文件
+            </button>
             <Show when={file() || vscodeFileName()}>
               <div style={{ "margin-top": "6px", color: vscode.foregroundDim, "font-size": "13px" }}>
                 {file()?.name ?? vscodeFileName()}

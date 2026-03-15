@@ -27,6 +27,39 @@ export interface SessionConnection {
   };
 }
 
+/** 按不在引号内的 ; 拆成多条语句，逐条执行。 */
+function getStatements(sql: string): string[] {
+  const s = sql.trim();
+  if (!s) return [];
+  const list: string[] = [];
+  let start = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (!inSingle && !inDouble) {
+      if (c === ";") {
+        const stmt = s.slice(start, i).trim();
+        if (stmt) list.push(stmt);
+        start = i + 1;
+      } else if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+    } else if (inSingle) {
+      if (c === "'") {
+        if (s[i + 1] === "'") i++;
+        else inSingle = false;
+      }
+    } else if (inDouble) {
+      if (c === '"' && s[i - 1] !== "\\") inDouble = false;
+    }
+    i++;
+  }
+  const last = s.slice(start).trim();
+  if (last) list.push(last);
+  return list;
+}
+
 const sessionMap = new Map<string, SessionConnection>();
 
 function sendSSEMessage(sessionId: string, message: SSEMessage) {
@@ -247,16 +280,24 @@ export function createApiRoutes(): Record<string, { GET?: (req: any) => Response
         }
 
         let cursor: Cursor | undefined;
+        const statements = getStatements(query);
 
         try {
-          cursor = client.query(new Cursor(query, [], { rowMode: "array" }));
+          if (statements.length === 0) {
+            return Response.json({ rows: [], columns: [], hasMore: false });
+          }
+          for (let i = 0; i < statements.length - 1; i++) {
+            await client.query(statements[i]);
+          }
+          const lastStatement = statements[statements.length - 1];
+          cursor = client.query(new Cursor(lastStatement, [], { rowMode: "array" }));
 
           const rows = await new Promise<any[]>((resolve, reject) => {
             cursor!.read(batchSize, (err: any, rows: any[]) => (err ? reject(err) : resolve(rows)));
           });
 
           const fields = (cursor as any)._result?.fields;
-          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, query) : [];
+          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, lastStatement) : [];
 
           const isDone = rows.length < batchSize;
 

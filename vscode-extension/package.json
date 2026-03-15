@@ -4,6 +4,15 @@
   "description": "Database client (Postgres) in webview",
   "version": "0.0.4",
   "publisher": "lilr",
+  "keywords": [
+    "dbplayer",
+    "db player",
+    "database",
+    "postgres",
+    "postgresql",
+    "sql",
+    "webview"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/JIM-GLITCH/solid-bun-postgresql"
