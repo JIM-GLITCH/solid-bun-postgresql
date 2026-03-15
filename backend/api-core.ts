@@ -30,6 +30,42 @@ export interface SessionConnection {
   };
 }
 
+/**
+ * 按不在引号内的 ; 拆成多条语句（Prepared Statement 只能执行单条，需逐条执行）。
+ * 忽略单引号内 ''、双引号内 \"。
+ */
+function getStatements(sql: string): string[] {
+  const s = sql.trim();
+  if (!s) return [];
+  const list: string[] = [];
+  let start = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (!inSingle && !inDouble) {
+      if (c === ";") {
+        const stmt = s.slice(start, i).trim();
+        if (stmt) list.push(stmt);
+        start = i + 1;
+      } else if (c === "'") inSingle = true;
+      else if (c === '"') inDouble = true;
+    } else if (inSingle) {
+      if (c === "'") {
+        if (s[i + 1] === "'") i++;
+        else inSingle = false;
+      }
+    } else if (inDouble) {
+      if (c === '"' && s[i - 1] !== "\\") inDouble = false;
+    }
+    i++;
+  }
+  const last = s.slice(start).trim();
+  if (last) list.push(last);
+  return list;
+}
+
 /** 以 connectionId 为 key 存储多个连接 */
 const connectionMap = new Map<string, SessionConnection>();
 
@@ -209,7 +245,6 @@ export async function handleApiRequest<M extends ApiMethod>(
         session.cursor = undefined;
       }
 
-      // 使用 pg_backend_pid() 可靠获取当前连接的后端 PID，供取消查询使用
       try {
         const pidRes = await client.query("SELECT pg_backend_pid() as pid");
         session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
@@ -217,13 +252,24 @@ export async function handleApiRequest<M extends ApiMethod>(
         session.runningQueryPid = (client as any).processID;
       }
 
-      const cursor = client.query(new Cursor(query, [], { rowMode: "array" }));
+      const statements = getStatements(query);
+      if (statements.length === 0) {
+        return { rows: [], columns: [], hasMore: false };
+      }
+
+      // 前面的语句逐条用简单 query 执行（不支持 prepared 多命令）
+      for (let i = 0; i < statements.length - 1; i++) {
+        await client.query(statements[i]);
+      }
+
+      const lastStatement = statements[statements.length - 1];
+      const cursor = client.query(new Cursor(lastStatement, [], { rowMode: "array" }));
       const rows = await new Promise<any[]>((resolve, reject) => {
         cursor.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
       });
 
       const fields = (cursor as any)._result?.fields;
-      const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, query) : [];
+      const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, lastStatement) : [];
       const isDone = rows.length < batchSize;
 
       if (isDone) {
