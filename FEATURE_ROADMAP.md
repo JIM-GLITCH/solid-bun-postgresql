@@ -15,7 +15,7 @@
 
 - **5. EXPLAIN ANALYZE 可视化** - 执行计划树形展示、成本/耗时高亮 *(DBCode)*
 - **6. ER 图** - 按 schema 自动生成 ER 图，可交互浏览表关系 *(DBCode、DBView)*
-- **7. SQL 格式化** - 一键格式化 SQL，可配置缩进、关键字大小写等 *(Antares、DBCode)*
+- ✅ **7. SQL 格式化** - 一键格式化 SQL，可配置缩进、关键字大小写等 *(Antares、DBCode)*
 - **8. 连接管理增强** - 保存多个连接配置、连接分组、快速切换 *(各竞品基础能力)*
 - **9. 数据库 / Schema 备份** - 导出全库或指定 schema 的 SQL dump *(Antares、Database Client)*
 

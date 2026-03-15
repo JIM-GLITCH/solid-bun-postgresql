@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
@@ -67,6 +67,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
   const [showExportMenu, setShowExportMenu] = createSignal(false);  // 导出下拉
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
+
+  let sqlEditorFormatApi: { format: () => void } | null = null;  // 格式化由编辑器内 executeEdits 执行，支持 Ctrl+Z
 
   // 单元格选区：Set<"row,col">，支持非连续多选（Ctrl+点击添加）
   const [selection, setSelection] = createSignal<Set<string> | null>(null);
@@ -1526,6 +1528,25 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               </button>
             </Show>
             <button
+              onClick={() => sqlEditorFormatApi?.format()}
+              title="格式化 SQL（Shift+Alt+F）"
+              style={{
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": vscode.buttonSecondary,
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+              }}
+            >
+              <span>◇</span> 格式化
+            </button>
+            <button
               onClick={() => setShowQueryBuilder(!showQueryBuilder())}
               style={{
                 padding: "10px 24px",
@@ -1602,6 +1623,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   value={sql()}
                   onChange={setSql}
                   onRun={runUserQuery}
+                  onFormat={(s) => formatSql(s)}
+                  onEditorReady={(api) => { sqlEditorFormatApi = api; }}
                   style={{ height: "100%" }}
                 />
               </div>

@@ -78,6 +78,10 @@ export interface SqlEditorProps {
   onChange?: (value: string) => void;
   /** 执行时传入要运行的 SQL（选区或光标所在块）；不传则由调用方决定（如执行全部） */
   onRun?: (sqlToRun?: string) => void;
+  /** 格式化函数：传入当前 SQL 返回格式化后的 SQL，在编辑器内用 executeEdits 应用以便支持 Ctrl+Z */
+  onFormat?: (sql: string) => string | void;
+  /** 编辑器就绪后回调，可调用 api.format() 触发格式化（供工具栏按钮用） */
+  onEditorReady?: (api: { format: () => void }) => void;
   placeholder?: string;
   disabled?: boolean;
   class?: string;
@@ -87,6 +91,8 @@ export interface SqlEditorProps {
 export default function SqlEditor(props: SqlEditorProps) {
   let container: HTMLDivElement;
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
+  /** 刚通过 executeEdits 应用的格式化结果，effect 里若 val 等于它则跳过 setValue，避免清空撤销栈 */
+  let lastFormattedValue: string | null = null;
 
   onMount(() => {
     ensureExecHighlightStyle();
@@ -242,12 +248,36 @@ export default function SqlEditor(props: SqlEditorProps) {
         props.onRun?.();
       }
     });
+
+    const doFormat = () => {
+      const model = editor?.getModel();
+      if (!model || !props.onFormat) return;
+      const current = model.getValue();
+      const formatted = props.onFormat(current);
+      if (typeof formatted === "string" && formatted !== current) {
+        editor!.executeEdits("format", [
+          { range: model.getFullModelRange(), text: formatted },
+        ]);
+        lastFormattedValue = formatted;
+        props.onChange?.(formatted);
+      }
+    };
+
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, doFormat);
+
+    props.onEditorReady?.({ format: doFormat });
+
     onCleanup(() => unsub());
   });
 
   createEffect(() => {
     const val = props.value;
-    if (editor && editor.getValue() !== val) {
+    if (!editor) return;
+    if (val === lastFormattedValue) {
+      lastFormattedValue = null;
+      return;
+    }
+    if (editor.getValue() !== val) {
       editor.setValue(val);
     }
   });
