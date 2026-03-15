@@ -18,9 +18,17 @@ export async function disconnectPostgres(connectionId: string) {
   return api().request("disconnect-postgres", { connectionId }) as Promise<{ success: boolean; error?: string }>;
 }
 
-/** 流式查询 - 第一批 */
-export async function queryStream(connectionId: string, query: string, batchSize = 100) {
-  return api().request("postgres/query-stream", { query, connectionId, batchSize }) as Promise<{
+/** 流式查询 - 第一批。传 statements 时后端不再分句，避免重复计算。 */
+export async function queryStream(
+  connectionId: string,
+  queryOrStatements: string | string[],
+  batchSize = 100
+) {
+  const payload =
+    typeof queryOrStatements === "string"
+      ? { query: queryOrStatements, connectionId, batchSize }
+      : { statements: queryOrStatements, connectionId, batchSize };
+  return api().request("postgres/query-stream", payload) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;

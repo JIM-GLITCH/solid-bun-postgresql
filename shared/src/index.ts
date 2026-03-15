@@ -3,3 +3,4 @@
 export * from "./types";
 export * from "./transport";
 export * from "./format-cell";
+export * from "./sql-split";

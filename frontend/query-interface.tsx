@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
@@ -360,6 +360,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (!cid) return;
     const sqlToRun = overrideSql ?? sql();
     if (!sqlToRun.trim()) return;
+    const statements = getStatementsFromText(sqlToRun);
     setLoading(true);
     setError(null);
     setResult([]);  // 清空 store
@@ -371,7 +372,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      const data = await queryStream(cid, sqlToRun, 100);
+      const data = await queryStream(cid, statements, 100);
 
       if (data.error) {
         throw new Error(data.error);

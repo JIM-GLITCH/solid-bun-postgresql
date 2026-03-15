@@ -51,7 +51,7 @@ export type ApiRequestPayload = {
   "connect-postgres": ConnectPostgresRequest;
   "disconnect-postgres": { connectionId: string };
   "postgres/query": { query: string; connectionId: string };
-  "postgres/query-stream": { query: string; batchSize?: number; connectionId: string };
+  "postgres/query-stream": { connectionId: string; query?: string; statements?: string[]; batchSize?: number };
   "postgres/query-stream-more": { batchSize?: number; connectionId: string };
   "postgres/save-changes": { sql: string; connectionId: string };
   "postgres/cancel-query": { connectionId: string };

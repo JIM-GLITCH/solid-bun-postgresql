@@ -13,90 +13,49 @@ function ensureExecHighlightStyle() {
   const el = document.createElement("style");
   el.id = "monaco-sql-exec-highlight-style";
   el.textContent = `
-    .monaco-sql-exec-highlight { background: rgba(255, 193, 7, 0.4) !important; border-radius: 2px; }
+    .monaco-sql-exec-highlight { background: rgba(33, 150, 243, 0.4) !important; border-radius: 2px; }
+    .monaco-sql-codelens {
+      display: flex; align-items: center; gap: 0;       padding: 0;
+      width: 100%; box-sizing: border-box; min-height: 12px;
+      font-size: 11px; font-family: var(--monaco-monospace-font, "Menlo", "Monaco", "Consolas", monospace);
+      pointer-events: auto; user-select: none; position: relative; z-index: 10;
+      color: var(--vscode-editorCodeLens-foreground, #999);
+    }
+    .monaco-sql-codelens .sql-codelens-link {
+      cursor: pointer; border: none; background: none; padding: 0 6px 0 0;
+      color: inherit; font: inherit; display: inline-flex; align-items: center; gap: 2px;
+      text-decoration: none; pointer-events: auto;
+    }
+    .monaco-sql-codelens .sql-codelens-link:hover { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: underline; }
+    .monaco-sql-codelens .sql-codelens-link .sql-codelens-icon { font-size: 9px; opacity: 0.9; }
+    .monaco-sql-codelens .sql-codelens-sep { color: var(--vscode-editorCodeLens-foreground, #999); opacity: 0.6; padding: 0 6px; user-select: none; }
   `;
   document.head.appendChild(el);
 }
 import { getTheme, subscribe } from "./theme-sync";
+import { getSqlSegments } from "../shared/src";
 
-/**
- * 按「分号」或「空行」分块：任一到就结束当前块（方便不写分号的写法）。
- * 分号在引号内不视为分隔符。空行 = 仅空白的一行，块在空行前结束，下一块从空行后开始。
- * 返回光标所在块的文本及在全文中的起止偏移。
- */
+/** 光标所在块的文本及起止偏移（与后端 getStatements 同一套分块规则，前端多「空行」边界）。 */
 function getSqlBlockAtCursor(
   text: string,
   offset: number
 ): { text: string; start: number; end: number } {
   const empty = { text: "", start: 0, end: 0 };
   if (!text.length) return empty;
-
-  const parts: { start: number; end: number }[] = [];
-  let blockStart = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let i = 0;
-
-  while (i < text.length) {
-    const c = text[i];
-
-    if (inSingle) {
-      if (c === "'") {
-        if (i + 1 < text.length && text[i + 1] === "'") i++;
-        else inSingle = false;
-      }
-      i++;
-      continue;
-    }
-    if (inDouble) {
-      if (c === '"' && (i === 0 || text[i - 1] !== "\\")) inDouble = false;
-      i++;
-      continue;
-    }
-
-    if (c === ";") {
-      if (blockStart < i) parts.push({ start: blockStart, end: i + 1 });
-      blockStart = i + 1;
-      i++;
-      continue;
-    }
-    if (c === "'") {
-      inSingle = true;
-      i++;
-      continue;
-    }
-    if (c === '"') {
-      inDouble = true;
-      i++;
-      continue;
-    }
-
-    if (c === "\n") {
-      let j = i + 1;
-      while (j < text.length && (text[j] === " " || text[j] === "\t" || text[j] === "\r")) j++;
-      const nextIsNewlineOrEnd = j >= text.length || text[j] === "\n";
-      if (nextIsNewlineOrEnd) {
-        if (blockStart < i) parts.push({ start: blockStart, end: i + 1 });
-        while (j < text.length) {
-          if (text[j] === "\n") {
-            j++;
-            while (j < text.length && (text[j] === " " || text[j] === "\t" || text[j] === "\r")) j++;
-          } else break;
-        }
-        blockStart = j;
-        i = j - 1;
-      }
-    }
-    i++;
-  }
-
-  if (blockStart < text.length) parts.push({ start: blockStart, end: text.length });
-
+  const parts = getSqlSegments(text, { blankLineSeparator: true });
   const segment = parts.find((p) => offset >= p.start && offset <= p.end)
     ?? parts[0]
     ?? { start: 0, end: 0 };
-  const textTrimmed = text.slice(segment.start, segment.end).trim();
-  return { text: textTrimmed, start: segment.start, end: segment.end };
+  return {
+    text: text.slice(segment.start, segment.end).trim(),
+    start: segment.start,
+    end: segment.end,
+  };
+}
+
+/** 全文所有块的 [start, end]，与 getSqlBlockAtCursor 一致。 */
+function getAllBlocks(text: string): { start: number; end: number }[] {
+  return getSqlSegments(text, { blankLineSeparator: true });
 }
 
 // Workers 从 ./vs 加载（Monaco 0.55.1 min hashed 文件名）
@@ -159,50 +118,113 @@ export default function SqlEditor(props: SqlEditorProps) {
       } catch (e) {}
     });
 
+    const blockRunZoneIds: string[] = [];
+    const highlightDecorations = editor.createDecorationsCollection();
+
+    const runBlockWithHighlight = (startOffset: number, endOffset: number) => {
+      const model = editor?.getModel();
+      if (!model || startOffset >= endOffset) return;
+      const sql = model.getValue().slice(startOffset, endOffset).trim();
+      if (!sql) return;
+      const startPos = model.getPositionAt(startOffset);
+      const endPos = model.getPositionAt(endOffset);
+      if (!startPos || !endPos) return;
+      highlightDecorations.clear();
+      highlightDecorations.set([
+        {
+          range: { startLineNumber: startPos.lineNumber, startColumn: startPos.column, endLineNumber: endPos.lineNumber, endColumn: endPos.column },
+          options: { className: "monaco-sql-exec-highlight" },
+        },
+      ]);
+      editor?.revealRangeInCenter({ startLineNumber: startPos.lineNumber, startColumn: startPos.column, endLineNumber: endPos.lineNumber, endColumn: endPos.column });
+      props.onRun?.(sql);
+      setTimeout(() => highlightDecorations.clear(), 200);
+    };
+
+    const createToolbarDomNodeForBlocks = (blocks: { start: number; end: number }[]): HTMLElement => {
+      const dom = document.createElement("div");
+      dom.className = "monaco-sql-codelens";
+      dom.style.pointerEvents = "auto";
+      const stop = (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      };
+      dom.addEventListener("mousedown", stop, true);
+      dom.addEventListener("mouseup", stop, true);
+      blocks.forEach((b, i) => {
+        if (i > 0) {
+          const sep = document.createElement("span");
+          sep.className = "sql-codelens-sep";
+          sep.textContent = "|";
+          dom.appendChild(sep);
+        }
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "sql-codelens-link";
+        btn.innerHTML = '<span class="sql-codelens-icon">▶</span> Run';
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          runBlockWithHighlight(b.start, b.end);
+        });
+        dom.appendChild(btn);
+      });
+      return dom;
+    };
+
+    const updateBlockRunZones = () => {
+      const model = editor!.getModel();
+      if (!model) return;
+      editor!.changeViewZones((accessor) => {
+        blockRunZoneIds.forEach((id) => accessor.removeZone(id));
+        blockRunZoneIds.length = 0;
+        const text = model.getValue();
+        const blocks = getAllBlocks(text).filter((b) => text.slice(b.start, b.end).trim());
+        const byLine = new Map<number, { start: number; end: number }[]>();
+        blocks.forEach((b) => {
+          const pos = model.getPositionAt(b.start);
+          if (!pos) return;
+          const line = pos.lineNumber;
+          if (!byLine.has(line)) byLine.set(line, []);
+          byLine.get(line)!.push({ start: b.start, end: b.end });
+        });
+        byLine.forEach((blocksOnLine, lineNumber) => {
+          const afterLine = Math.max(0, lineNumber - 1);
+          const zoneId = accessor.addZone({
+            afterLineNumber: afterLine,
+            heightInPx: 12,
+            minWidthInPx: 200,
+            domNode: createToolbarDomNodeForBlocks(blocksOnLine),
+            suppressMouseDown: true,
+          });
+          blockRunZoneIds.push(zoneId);
+        });
+      });
+    };
+
     editor.onDidChangeModelContent(() => {
       const val = editor!.getValue();
       if (props.onChange && val !== props.value) {
         props.onChange(val);
       }
+      updateBlockRunZones();
     });
 
-    const HIGHLIGHT_DECORATION_KEY = "sql-exec-highlight";
-    let highlightDecorationIds: string[] = [];
+    updateBlockRunZones();
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+      if (!editor) return;
       const model = editor.getModel();
       const selection = editor.getSelection();
       const hasSelection = selection && !selection.isEmpty();
-
-      const clearHighlight = () => {
-        if (highlightDecorationIds.length) {
-          highlightDecorationIds = editor!.deltaDecorations(highlightDecorationIds, []);
-        }
-      };
-
-      const highlightRange = (startOffset: number, endOffset: number) => {
-        if (!model || startOffset >= endOffset) return;
-        const start = model.getPositionAt(startOffset);
-        const end = model.getPositionAt(endOffset);
-        if (!start || !end) return;
-        clearHighlight();
-        highlightDecorationIds = editor!.deltaDecorations([], [
-          {
-            range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
-            options: { className: "monaco-sql-exec-highlight" },
-          },
-        ]);
-        editor!.revealRangeInCenter({ startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column });
-        setTimeout(clearHighlight, 1200);
-      };
 
       if (hasSelection && model) {
         const sqlToRun = model.getValueInRange(selection!).trim();
         if (sqlToRun) {
           const start = model.getOffsetAt(selection!.getStartPosition());
           const end = model.getOffsetAt(selection!.getEndPosition());
-          highlightRange(start, end);
-          props.onRun?.(sqlToRun);
+          runBlockWithHighlight(start, end);
           return;
         }
       }
@@ -212,8 +234,7 @@ export default function SqlEditor(props: SqlEditorProps) {
         const offset = position ? model.getOffsetAt(position) : 0;
         const block = getSqlBlockAtCursor(full, offset);
         if (block.text) {
-          highlightRange(block.start, block.end);
-          props.onRun?.(block.text);
+          runBlockWithHighlight(block.start, block.end);
         } else {
           props.onRun?.();
         }

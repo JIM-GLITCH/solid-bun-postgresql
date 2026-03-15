@@ -3,7 +3,13 @@
  * 供 api-handlers-http 和 api-handlers-vscode 共同调用
  */
 
-import type { PostgresLoginParams, ApiMethod, ApiRequestPayload, ConnectPostgresRequest } from "../shared/src";
+import {
+  getSqlSegments,
+  type PostgresLoginParams,
+  type ApiMethod,
+  type ApiRequestPayload,
+  type ConnectPostgresRequest,
+} from "../shared/src";
 import { connectPostgres, createPostgresPool } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
@@ -30,40 +36,13 @@ export interface SessionConnection {
   };
 }
 
-/**
- * 按不在引号内的 ; 拆成多条语句（Prepared Statement 只能执行单条，需逐条执行）。
- * 忽略单引号内 ''、双引号内 \"。
- */
+/** 按不在引号/注释内的 ; 拆成多条语句（与前端分块规则一致，仅不分空行）。 */
 function getStatements(sql: string): string[] {
   const s = sql.trim();
   if (!s) return [];
-  const list: string[] = [];
-  let start = 0;
-  let inSingle = false;
-  let inDouble = false;
-  let i = 0;
-  while (i < s.length) {
-    const c = s[i];
-    if (!inSingle && !inDouble) {
-      if (c === ";") {
-        const stmt = s.slice(start, i).trim();
-        if (stmt) list.push(stmt);
-        start = i + 1;
-      } else if (c === "'") inSingle = true;
-      else if (c === '"') inDouble = true;
-    } else if (inSingle) {
-      if (c === "'") {
-        if (s[i + 1] === "'") i++;
-        else inSingle = false;
-      }
-    } else if (inDouble) {
-      if (c === '"' && s[i - 1] !== "\\") inDouble = false;
-    }
-    i++;
-  }
-  const last = s.slice(start).trim();
-  if (last) list.push(last);
-  return list;
+  return getSqlSegments(s, { blankLineSeparator: false })
+    .map((seg) => s.slice(seg.start, seg.end).trim())
+    .filter(Boolean);
 }
 
 /** 以 connectionId 为 key 存储多个连接 */
@@ -236,7 +215,12 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     case "postgres/query-stream": {
       const cid = getConnId();
-      const { query, batchSize = 100 } = payload as { connectionId: string; query: string; batchSize?: number };
+      const { query, statements: payloadStatements, batchSize = 100 } = payload as {
+        connectionId: string;
+        query?: string;
+        statements?: string[];
+        batchSize?: number;
+      };
       const session = getS(cid);
       const { userUsedClient: client, backGroundPool: adminPool } = session;
 
@@ -252,7 +236,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         session.runningQueryPid = (client as any).processID;
       }
 
-      const statements = getStatements(query);
+      const statements = payloadStatements?.length ? payloadStatements : getStatements(query ?? "");
       if (statements.length === 0) {
         return { rows: [], columns: [], hasMore: false };
       }

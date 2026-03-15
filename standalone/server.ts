@@ -1,6 +1,6 @@
 /**
  * Standalone 入口：Bun 服务启动，静态资源 + API 路由
- * 后端逻辑在 backend/api-handlers
+ * 后端逻辑在 backend/api-handlers-http（路由）与 api-core（业务）
  * Monaco workers 用 import file 嵌入，编译后随 exe 一起分发
  */
 

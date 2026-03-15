@@ -133,7 +133,6 @@ vscode-extension/
 ┌────────────────────▼────────────────────────────────────┐
 │ 业务逻辑层 (共享 - backend/)                            │
 │ - api-core: PostgreSQL 连接、SQL 执行、数据编辑        │
-│ - api-handlers: 通用 API 处理（HTTP 和 VSCode 共用）   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -145,7 +144,7 @@ vscode-extension/
 |------|--------|
 | **前端** | 同一套 Solid 应用，通过抽象的 `Transport` 接口在 HTTP 和 postMessage 间切换 |
 | **后端业务逻辑** | `backend/api-core` 处理 PostgreSQL 操作，HTTP 和 postMessage 版本共用 |
-| **API 处理** | `backend/api-handlers` 是通用层，`backend/api-handlers-vscode` 是 VSCode 特定实现 |
+| **API 处理** | `backend/api-core` 为共用逻辑，`api-handlers-http` / `api-handlers-vscode` 分别为 HTTP 与 VSCode 适配 |
 
 这样设计保证了 Standalone 和 VSCode 两个版本功能一致，易于维护。
 
