@@ -7,6 +7,7 @@ import RenameTableModal from "./rename-table-modal";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
+import FakeDataModal from "./fake-data-modal";
 import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
 
@@ -142,6 +143,7 @@ export default function Sidebar(props: SidebarProps) {
   const [copyModal, setCopyModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [deleteModal, setDeleteModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [truncateModal, setTruncateModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
+  const [fakeDataModal, setFakeDataModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -605,6 +607,11 @@ export default function Sidebar(props: SidebarProps) {
           setTruncateModal({ connectionId: cid, schema: node.schema, table: node.table });
         }
         break;
+      case "generateFakeData":
+        if (node.type === "table" && node.schema && node.table && cid) {
+          setFakeDataModal({ connectionId: cid, schema: node.schema, table: node.table });
+        }
+        break;
       case "copyTable":
         if (node.type === "table" && node.schema && node.table && cid) {
           setCopyModal({
@@ -1000,6 +1007,22 @@ export default function Sidebar(props: SidebarProps) {
               >
                 <span>📄</span> 查看 DDL
               </div>
+              <div
+                onClick={() => handleMenuAction("generateFakeData")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📊</span> 生成假数据
+              </div>
               <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
               <div
                 onClick={() => handleMenuAction("truncateTable")}
@@ -1272,6 +1295,17 @@ export default function Sidebar(props: SidebarProps) {
             onSuccess={(connectionId, schema) => {
               props.onRequestSchemaRefresh?.(connectionId, schema);
             }}
+          />
+        )}
+      </Show>
+      <Show when={fakeDataModal()}>
+        {(modal) => (
+          <FakeDataModal
+            connectionId={modal().connectionId}
+            schema={modal().schema}
+            table={modal().table}
+            onClose={() => setFakeDataModal(null)}
+            onSuccess={(msg) => props.onRequestSchemaRefresh?.(modal().connectionId, modal().schema)}
           />
         )}
       </Show>
