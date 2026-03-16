@@ -49,6 +49,7 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/save-changes", method: "postgres/save-changes" },
   { path: "/api/postgres/cancel-query", method: "postgres/cancel-query" },
   { path: "/api/postgres/query-readonly", method: "postgres/query-readonly" },
+  { path: "/api/postgres/explain", method: "postgres/explain" },
   { path: "/api/postgres/schemas", method: "postgres/schemas" },
   { path: "/api/postgres/tables", method: "postgres/tables" },
   { path: "/api/postgres/columns", method: "postgres/columns" },

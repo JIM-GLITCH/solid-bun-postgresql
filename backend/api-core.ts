@@ -411,6 +411,25 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { success: true, cancelled, message: cancelled ? "查询取消请求已发送" : "查询可能已完成或无法取消" };
     }
 
+    case "postgres/explain": {
+      const cid = getConnId();
+      const { query } = payload as { connectionId: string; query: string };
+      const session = getS(cid);
+      const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query.trim()}`;
+      try {
+        sendSSEMessage(cid, { type: "QUERY", message: "执行 EXPLAIN ANALYZE...", timestamp: Date.now() });
+        const result = await session.backGroundPool.query(explainSql);
+        const row = result.rows[0];
+        const jsonVal = row ? (row as any)["QUERY PLAN"] ?? (row as any).query_plan ?? (Array.isArray(row) ? row[0] : Object.values(row)[0]) : null;
+        const plan = typeof jsonVal === "string" ? JSON.parse(jsonVal) : jsonVal;
+        sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() });
+        return { plan };
+      } catch (e: any) {
+        sendSSEMessage(cid, { type: "ERROR", message: `EXPLAIN 错误: ${e.message}`, timestamp: Date.now() });
+        throw e;
+      }
+    }
+
     case "postgres/query-readonly": {
       const cid = getConnId();
       const { query, limit = 1000 } = payload as { connectionId: string; query: string; limit?: number };

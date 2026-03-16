@@ -23,6 +23,7 @@ export type ApiMethod =
   | "postgres/save-changes"
   | "postgres/cancel-query"
   | "postgres/query-readonly"
+  | "postgres/explain"
   | "postgres/schemas"
   | "postgres/tables"
   | "postgres/columns"
@@ -58,6 +59,7 @@ export type ApiRequestPayload = {
   "postgres/save-changes": { sql: string; connectionId: string };
   "postgres/cancel-query": { connectionId: string };
   "postgres/query-readonly": { query: string; limit?: number; connectionId: string };
+  "postgres/explain": { query: string; connectionId: string };
   "postgres/schemas": { connectionId: string };
   "postgres/tables": { schema: string; connectionId: string };
   "postgres/columns": { schema: string; table: string; connectionId: string };

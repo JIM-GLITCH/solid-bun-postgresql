@@ -78,6 +78,8 @@ export interface SqlEditorProps {
   onChange?: (value: string) => void;
   /** 执行时传入要运行的 SQL（选区或光标所在块）；不传则由调用方决定（如执行全部） */
   onRun?: (sqlToRun?: string) => void;
+  /** 执行 EXPLAIN 时传入要分析的 SQL */
+  onExplain?: (sqlToRun: string) => void;
   /** 格式化函数：传入当前 SQL 返回格式化后的 SQL，在编辑器内用 executeEdits 应用以便支持 Ctrl+Z */
   onFormat?: (sql: string) => string | void;
   /** 编辑器就绪后回调，可调用 api.format() 触发格式化（供工具栏按钮用） */
@@ -147,7 +149,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       setTimeout(() => highlightDecorations.clear(), 200);
     };
 
-    const createToolbarDomNodeForBlocks = (blocks: { start: number; end: number }[]): HTMLElement => {
+    const createToolbarDomNodeForBlocks = (text: string, blocks: { start: number; end: number }[]): HTMLElement => {
       const dom = document.createElement("div");
       dom.className = "monaco-sql-codelens";
       dom.style.pointerEvents = "auto";
@@ -165,16 +167,33 @@ export default function SqlEditor(props: SqlEditorProps) {
           sep.textContent = "|";
           dom.appendChild(sep);
         }
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "sql-codelens-link";
-        btn.innerHTML = '<span class="sql-codelens-icon">▶</span> Run';
-        btn.addEventListener("click", (e) => {
+        const runBtn = document.createElement("button");
+        runBtn.type = "button";
+        runBtn.className = "sql-codelens-link";
+        runBtn.innerHTML = '<span class="sql-codelens-icon">▶</span> Run';
+        runBtn.addEventListener("click", (e) => {
           e.preventDefault();
           e.stopPropagation();
           runBlockWithHighlight(b.start, b.end);
         });
-        dom.appendChild(btn);
+        dom.appendChild(runBtn);
+        if (props.onExplain) {
+          const explainSep = document.createElement("span");
+          explainSep.className = "sql-codelens-sep";
+          explainSep.textContent = "|";
+          dom.appendChild(explainSep);
+          const explainBtn = document.createElement("button");
+          explainBtn.type = "button";
+          explainBtn.className = "sql-codelens-link";
+          explainBtn.innerHTML = '<span class="sql-codelens-icon">📊</span> Explain';
+          explainBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sql = text.slice(b.start, b.end).trim();
+            if (sql) props.onExplain!(sql);
+          });
+          dom.appendChild(explainBtn);
+        }
       });
       return dom;
     };
@@ -201,7 +220,7 @@ export default function SqlEditor(props: SqlEditorProps) {
             afterLineNumber: afterLine,
             heightInPx: 12,
             minWidthInPx: 200,
-            domNode: createToolbarDomNodeForBlocks(blocksOnLine),
+            domNode: createToolbarDomNodeForBlocks(text, blocksOnLine),
             suppressMouseDown: true,
           });
           blockRunZoneIds.push(zoneId);

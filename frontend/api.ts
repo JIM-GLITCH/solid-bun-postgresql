@@ -65,6 +65,14 @@ export async function queryReadonly(connectionId: string, query: string, limit =
   }>;
 }
 
+/** 执行 EXPLAIN ANALYZE，返回 JSON 格式执行计划 */
+export async function explainQuery(connectionId: string, query: string) {
+  return api().request("postgres/explain", { connectionId, query }) as Promise<{
+    plan: Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }>;
+    error?: string;
+  }>;
+}
+
 /** 获取 schemas */
 export async function getSchemas(connectionId: string) {
   return api().request("postgres/schemas", { connectionId }) as Promise<{ schemas: string[]; error?: string }>;

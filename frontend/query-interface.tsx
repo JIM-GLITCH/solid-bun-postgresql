@@ -6,13 +6,14 @@ import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql } from "../shared/src";
-import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents } from "./api";
+import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents, explainQuery } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
 import { vscode } from "./theme";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
+import ExplainPlanViewer from "./explain-plan-viewer";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
@@ -67,6 +68,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
   const [showExportMenu, setShowExportMenu] = createSignal(false);  // 导出下拉
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
+  const [explainPlan, setExplainPlan] = createSignal<Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }> | null>(null);
+  const [explainLoading, setExplainLoading] = createSignal(false);
 
   let sqlEditorFormatApi: { format: () => void } | null = null;  // 格式化由编辑器内 executeEdits 执行，支持 Ctrl+Z
 
@@ -454,6 +457,30 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
     if (scrollBottom < 200 && hasMore() && !loadingMore()) {
       loadMore();
+    }
+  }
+
+  // 执行 EXPLAIN ANALYZE（可选传入 sql，否则用编辑器内第一个语句）
+  async function runExplain(overrideSql?: string) {
+    const cid = props.activeConnectionId?.();
+    if (!cid) return;
+    const sqlToRun = (overrideSql ?? sql()).trim();
+    if (!sqlToRun) return;
+    const statements = getStatementsFromText(sqlToRun);
+    const firstStmt = statements[0];
+    if (!firstStmt) return;
+    setExplainLoading(true);
+    setExplainPlan(null);
+    try {
+      const res = await explainQuery(cid, firstStmt);
+      if (res.error) throw new Error(res.error);
+      const raw = res.plan;
+      const plan = Array.isArray(raw) ? raw : (raw && typeof raw === "object" && "Plan" in raw ? [raw] : []);
+      setExplainPlan(plan);
+    } catch (e: any) {
+      setError(e.message || "EXPLAIN 失败");
+    } finally {
+      setExplainLoading(false);
     }
   }
 
@@ -1507,6 +1534,26 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>▶</span> 执行
             </button>
+            <button
+              onClick={runExplain}
+              disabled={loading() || explainLoading() || sql().trim().length === 0}
+              title="EXPLAIN ANALYZE 执行计划"
+              style={{
+                padding: "10px 20px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": loading() || explainLoading() ? vscode.buttonSecondary : vscode.buttonSecondary,
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: loading() || explainLoading() ? "not-allowed" : "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+              }}
+            >
+              <span>📊</span> {explainLoading() ? "分析中..." : "执行计划"}
+            </button>
             <Show when={loading()}>
               <button
                 onClick={doCancelQuery}
@@ -1623,6 +1670,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   value={sql()}
                   onChange={setSql}
                   onRun={runUserQuery}
+                  onExplain={runExplain}
                   onFormat={(s) => formatSql(s)}
                   onEditorReady={(api) => { sqlEditorFormatApi = api; }}
                   style={{ height: "100%" }}
@@ -1829,6 +1877,41 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           </div>
         </Show>
 
+        {/* 执行计划弹窗 */}
+        <Show when={explainPlan()}>
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              "background-color": "rgba(0,0,0,0.6)",
+              "z-index": 150,
+              display: "flex",
+              "align-items": "center",
+              "justify-content": "center",
+              padding: "24px",
+            }}
+            onClick={(e) => e.target === e.currentTarget && setExplainPlan(null)}
+          >
+            <div
+              style={{
+                width: "90%",
+                "max-width": "900px",
+                height: "80%",
+                "max-height": "600px",
+                "background-color": vscode.editorBg,
+                border: `1px solid ${vscode.border}`,
+                "border-radius": "8px",
+                "box-shadow": "0 16px 48px rgba(0,0,0,0.4)",
+                overflow: "hidden",
+                display: "flex",
+                "flex-direction": "column",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ExplainPlanViewer plan={explainPlan()!} onClose={() => setExplainPlan(null)} />
+            </div>
+          </div>
+        </Show>
         {/* 导入弹窗 */}
         <Show when={showImportModal()}>
           <ImportModal
