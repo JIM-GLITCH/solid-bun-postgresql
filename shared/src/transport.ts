@@ -32,6 +32,8 @@ export type ApiMethod =
   | "postgres/execute-ddl"
   | "postgres/table-ddl"
   | "postgres/function-ddl"
+  | "postgres/schema-dump"
+  | "postgres/database-dump"
   | "postgres/primary-keys"
   | "postgres/unique-constraints"
   | "postgres/import-rows"
@@ -65,6 +67,8 @@ export type ApiRequestPayload = {
   "postgres/execute-ddl": { connectionId: string; sql: string };
   "postgres/table-ddl": { connectionId: string; schema: string; table: string };
   "postgres/function-ddl": { connectionId: string; schema: string; function: string; oid?: number };
+  "postgres/schema-dump": { connectionId: string; schema: string; includeData?: boolean };
+  "postgres/database-dump": { connectionId: string; includeData?: boolean };
   "postgres/primary-keys": { connectionId: string; schema: string; table: string };
   "postgres/unique-constraints": { connectionId: string; schema: string; table: string };
   "postgres/import-rows": {

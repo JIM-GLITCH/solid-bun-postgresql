@@ -60,6 +60,8 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/execute-ddl", method: "postgres/execute-ddl" },
   { path: "/api/postgres/table-ddl", method: "postgres/table-ddl" },
   { path: "/api/postgres/function-ddl", method: "postgres/function-ddl" },
+  { path: "/api/postgres/schema-dump", method: "postgres/schema-dump" },
+  { path: "/api/postgres/database-dump", method: "postgres/database-dump" },
   { path: "/api/postgres/import-rows", method: "postgres/import-rows" },
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
 ];

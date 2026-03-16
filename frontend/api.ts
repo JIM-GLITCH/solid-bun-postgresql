@@ -132,6 +132,16 @@ export async function getFunctionDdl(connectionId: string, schema: string, funcN
   return api().request("postgres/function-ddl", { connectionId, schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
 }
 
+/** 导出指定 schema 的 SQL dump */
+export async function getSchemaDump(connectionId: string, schema: string, includeData = false) {
+  return api().request("postgres/schema-dump", { connectionId, schema, includeData }) as Promise<{ dump: string; error?: string }>;
+}
+
+/** 导出全库的 SQL dump */
+export async function getDatabaseDump(connectionId: string, includeData = false) {
+  return api().request("postgres/database-dump", { connectionId, includeData }) as Promise<{ dump: string; error?: string }>;
+}
+
 /** 批量导入行到表 */
 export async function importRows(
   connectionId: string,

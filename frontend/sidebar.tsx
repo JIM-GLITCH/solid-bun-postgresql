@@ -8,6 +8,7 @@ import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
 import FakeDataModal from "./fake-data-modal";
+import BackupModal from "./backup-modal";
 import ErDiagramModal from "./er-diagram-modal";
 import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
@@ -147,6 +148,11 @@ export default function Sidebar(props: SidebarProps) {
   const [deleteModal, setDeleteModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [truncateModal, setTruncateModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [fakeDataModal, setFakeDataModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
+  const [backupModal, setBackupModal] = createSignal<
+    | { connectionId: string; schema: string }
+    | { connectionId: string; schema: null }
+    | null
+  >(null);
   const [erDiagramModal, setErDiagramModal] = createSignal<
     | { connectionId: string; schema: string }
     | { connectionId: string; selection: ErDiagramSelection }
@@ -629,6 +635,16 @@ export default function Sidebar(props: SidebarProps) {
       case "viewErDiagramFromConnection":
         if (node.type === "connection" && cid) {
           setErDiagramPickerModal({ connectionId: cid });
+        }
+        break;
+      case "backupDatabase":
+        if (node.type === "connection" && cid) {
+          setBackupModal({ connectionId: cid, schema: null });
+        }
+        break;
+      case "backupSchema":
+        if (node.type === "schema" && node.schema && cid) {
+          setBackupModal({ connectionId: cid, schema: node.schema });
         }
         break;
       case "copyTable":
@@ -1181,6 +1197,22 @@ export default function Sidebar(props: SidebarProps) {
                 <span>🔗</span> 查看 ER 图
               </div>
               <div
+                onClick={() => handleMenuAction("backupDatabase")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📦</span> 备份全库
+              </div>
+              <div
                 onClick={() => handleMenuAction("openQuery")}
                 style={{
                   padding: "8px 16px",
@@ -1281,6 +1313,22 @@ export default function Sidebar(props: SidebarProps) {
                 <span>🔗</span> 查看 ER 图
               </div>
               <div
+                onClick={() => handleMenuAction("backupSchema")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>📦</span> 备份 Schema
+              </div>
+              <div
                 onClick={() => handleMenuAction("refresh")}
                 style={{
                   padding: "8px 16px",
@@ -1367,6 +1415,19 @@ export default function Sidebar(props: SidebarProps) {
               table={m.table}
               onClose={() => setFakeDataModal(null)}
               onSuccess={() => props.onRequestSchemaRefresh?.(m.connectionId, m.schema)}
+            />
+          );
+        })()}
+      </Show>
+      <Show when={backupModal()}>
+        {(() => {
+          const m = backupModal()!;
+          return (
+            <BackupModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              onClose={() => setBackupModal(null)}
+              onSuccess={() => {}}
             />
           );
         })()}

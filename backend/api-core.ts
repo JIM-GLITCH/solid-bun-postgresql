@@ -693,6 +693,123 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { ddl };
     }
 
+    case "postgres/schema-dump": {
+      const cid = getConnId();
+      const { schema, includeData = false } = payload as { connectionId: string; schema: string; includeData?: boolean };
+      const session = getS(cid);
+      const pool = session.backGroundPool;
+      const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+      sendSSEMessage(cid, { type: "QUERY", message: `导出 schema ${schema}${includeData ? "（含数据）" : ""}...`, timestamp: Date.now() });
+
+      const tablesRes = await pool.query(
+        `SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`,
+        [schema]
+      );
+      const viewsRes = await pool.query(
+        `SELECT viewname FROM pg_views WHERE schemaname = $1 ORDER BY viewname`,
+        [schema]
+      );
+      const funcsRes = await pool.query(
+        `SELECT p.oid, p.proname FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = $1 ORDER BY p.proname`,
+        [schema]
+      );
+
+      const fkRes = await pool.query(
+        `SELECT tc.table_schema, tc.table_name, ccu.table_schema AS ref_schema, ccu.table_name AS ref_table
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1`,
+        [schema]
+      );
+      const fkMap = new Map<string, string[]>();
+      for (const r of fkRes.rows as any[]) {
+        if (r.ref_schema !== schema) continue;
+        const key = `${r.table_schema}.${r.table_name}`;
+        if (!fkMap.has(key)) fkMap.set(key, []);
+        fkMap.get(key)!.push(`${r.ref_schema}.${r.ref_table}`);
+      }
+      const sortedTables: string[] = [];
+      const visited = new Set<string>();
+      const visit = (t: string) => {
+        if (visited.has(t)) return;
+        visited.add(t);
+        for (const ref of fkMap.get(t) ?? []) {
+          if (ref.startsWith(schema + ".")) visit(ref);
+        }
+        sortedTables.push(t.split(".")[1]);
+      };
+      for (const r of tablesRes.rows as any[]) {
+        visit(`${schema}.${r.tablename}`);
+      }
+
+      const parts: string[] = [`-- Schema: ${schema}\n`, `CREATE SCHEMA IF NOT EXISTS ${quote(schema)};\n`];
+
+      for (const t of sortedTables) {
+        const { ddl } = await handleApiRequest("postgres/table-ddl", { connectionId: cid, schema, table: t } as any) as { ddl: string };
+        parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
+        if (includeData) {
+          const colsRes = await pool.query(
+            `SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
+            [schema, t]
+          );
+          const cols = (colsRes.rows as any[]).map((r) => r.column_name);
+          if (cols.length) {
+            const colList = cols.map(quote).join(", ");
+            const dataRes = await pool.query({ text: `SELECT * FROM ${quote(schema)}.${quote(t)}`, rowMode: "array" });
+            if (dataRes.rows.length > 0) {
+              const escapeVal = (v: unknown): string => {
+                if (v === null) return "NULL";
+                if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+                if (typeof v === "number" && !Number.isNaN(v)) return String(v);
+                const s = String(v);
+                return "'" + s.replace(/\\/g, "\\\\").replace(/'/g, "''") + "'";
+              };
+              const batchSize = 100;
+              for (let i = 0; i < dataRes.rows.length; i += batchSize) {
+                const batch = dataRes.rows.slice(i, i + batchSize);
+                const values = batch.map((row) => "(" + row.map(escapeVal).join(", ") + ")").join(",\n  ");
+                parts.push(`\nINSERT INTO ${quote(schema)}.${quote(t)} (${colList}) VALUES\n  ${values};\n`);
+              }
+            }
+          }
+        }
+      }
+      for (const r of viewsRes.rows as any[]) {
+        const v = (r as any).viewname;
+        const { ddl } = await handleApiRequest("postgres/table-ddl", { connectionId: cid, schema, table: v } as any) as { ddl: string };
+        parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
+      }
+      for (const r of funcsRes.rows as any[]) {
+        const { ddl } = await handleApiRequest("postgres/function-ddl", { connectionId: cid, schema, function: (r as any).proname, oid: (r as any).oid } as any) as { ddl: string };
+        parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
+      }
+
+      sendSSEMessage(cid, { type: "INFO", message: `Schema ${schema} 导出完成`, timestamp: Date.now() });
+      return { dump: parts.join("") };
+    }
+
+    case "postgres/database-dump": {
+      const cid = getConnId();
+      const { includeData = false } = payload as { connectionId: string; includeData?: boolean };
+      const session = getS(cid);
+      const pool = session.backGroundPool;
+
+      sendSSEMessage(cid, { type: "QUERY", message: `导出全库${includeData ? "（含数据）" : ""}...`, timestamp: Date.now() });
+
+      const schemasRes = await pool.query(
+        `SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname != 'information_schema' ORDER BY nspname`
+      );
+      const parts: string[] = ["-- Database Dump\n"];
+      for (const r of schemasRes.rows as any[]) {
+        const s = r.nspname;
+        const { dump } = await handleApiRequest("postgres/schema-dump", { connectionId: cid, schema: s, includeData } as any) as { dump: string };
+        parts.push(dump);
+      }
+      sendSSEMessage(cid, { type: "INFO", message: "全库导出完成", timestamp: Date.now() });
+      return { dump: parts.join("\n") };
+    }
+
     case "postgres/query": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
