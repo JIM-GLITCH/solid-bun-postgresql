@@ -8,6 +8,9 @@ import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
 import FakeDataModal from "./fake-data-modal";
+import ErDiagramModal from "./er-diagram-modal";
+import ErDiagramPickerModal from "./er-diagram-picker-modal";
+import type { ErDiagramSelection } from "./er-diagram-modal";
 import type { ConnectionInfo } from "./app";
 import { vscode } from "./theme";
 
@@ -144,6 +147,12 @@ export default function Sidebar(props: SidebarProps) {
   const [deleteModal, setDeleteModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [truncateModal, setTruncateModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [fakeDataModal, setFakeDataModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
+  const [erDiagramModal, setErDiagramModal] = createSignal<
+    | { connectionId: string; schema: string }
+    | { connectionId: string; selection: ErDiagramSelection }
+    | null
+  >(null);
+  const [erDiagramPickerModal, setErDiagramPickerModal] = createSignal<{ connectionId: string } | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -610,6 +619,16 @@ export default function Sidebar(props: SidebarProps) {
       case "generateFakeData":
         if (node.type === "table" && node.schema && node.table && cid) {
           setFakeDataModal({ connectionId: cid, schema: node.schema, table: node.table });
+        }
+        break;
+      case "viewErDiagram":
+        if (node.type === "schema" && node.schema && cid) {
+          setErDiagramModal({ connectionId: cid, schema: node.schema });
+        }
+        break;
+      case "viewErDiagramFromConnection":
+        if (node.type === "connection" && cid) {
+          setErDiagramPickerModal({ connectionId: cid });
         }
         break;
       case "copyTable":
@@ -1146,6 +1165,22 @@ export default function Sidebar(props: SidebarProps) {
             </Show>
             <Show when={menu().node.type === "connection"}>
               <div
+                onClick={() => handleMenuAction("viewErDiagramFromConnection")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🔗</span> 查看 ER 图
+              </div>
+              <div
                 onClick={() => handleMenuAction("openQuery")}
                 style={{
                   padding: "8px 16px",
@@ -1230,6 +1265,22 @@ export default function Sidebar(props: SidebarProps) {
             </Show>
             <Show when={menu().node.type === "schema"}>
               <div
+                onClick={() => handleMenuAction("viewErDiagram")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🔗</span> 查看 ER 图
+              </div>
+              <div
                 onClick={() => handleMenuAction("refresh")}
                 style={{
                   padding: "8px 16px",
@@ -1251,63 +1302,103 @@ export default function Sidebar(props: SidebarProps) {
       </Show>
 
       <Show when={deleteModal()}>
-        {(modal) => (
-          <DeleteTableModal
-            connectionId={modal().connectionId}
-            schema={modal().schema}
-            table={modal().table}
-            onClose={() => setDeleteModal(null)}
-            onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
-          />
-        )}
+        {(() => {
+          const m = deleteModal()!;
+          return (
+            <DeleteTableModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              table={m.table}
+              onClose={() => setDeleteModal(null)}
+              onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+            />
+          );
+        })()}
       </Show>
       <Show when={truncateModal()}>
-        {(modal) => (
-          <TruncateTableModal
-            connectionId={modal().connectionId}
-            schema={modal().schema}
-            table={modal().table}
-            onClose={() => setTruncateModal(null)}
-            onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
-          />
-        )}
+        {(() => {
+          const m = truncateModal()!;
+          return (
+            <TruncateTableModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              table={m.table}
+              onClose={() => setTruncateModal(null)}
+              onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+            />
+          );
+        })()}
       </Show>
       <Show when={copyModal()}>
-        {(modal) => (
-          <CopyTableModal
-            connectionId={modal().connectionId}
-            schema={modal().schema}
-            table={modal().table}
-            onClose={() => setCopyModal(null)}
-            onSuccess={(connectionId, schema) => {
-              props.onRequestSchemaRefresh?.(connectionId, schema);
-            }}
-          />
-        )}
+        {(() => {
+          const m = copyModal()!;
+          return (
+            <CopyTableModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              table={m.table}
+              onClose={() => setCopyModal(null)}
+              onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+            />
+          );
+        })()}
       </Show>
       <Show when={renameModal()}>
-        {(modal) => (
-          <RenameTableModal
-            connectionId={modal().connectionId}
-            schema={modal().schema}
-            table={modal().table}
-            onClose={() => setRenameModal(null)}
-            onSuccess={(connectionId, schema) => {
-              props.onRequestSchemaRefresh?.(connectionId, schema);
-            }}
-          />
-        )}
+        {(() => {
+          const m = renameModal()!;
+          return (
+            <RenameTableModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              table={m.table}
+              onClose={() => setRenameModal(null)}
+              onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
+            />
+          );
+        })()}
       </Show>
       <Show when={fakeDataModal()}>
-        {(modal) => (
-          <FakeDataModal
-            connectionId={modal().connectionId}
-            schema={modal().schema}
-            table={modal().table}
-            onClose={() => setFakeDataModal(null)}
-            onSuccess={(msg) => props.onRequestSchemaRefresh?.(modal().connectionId, modal().schema)}
-          />
-        )}
+        {(() => {
+          const m = fakeDataModal()!;
+          return (
+            <FakeDataModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              table={m.table}
+              onClose={() => setFakeDataModal(null)}
+              onSuccess={() => props.onRequestSchemaRefresh?.(m.connectionId, m.schema)}
+            />
+          );
+        })()}
+      </Show>
+      <Show when={erDiagramModal()}>
+        {(() => {
+          const m = erDiagramModal()!;
+          return (
+            <ErDiagramModal
+              connectionId={m.connectionId}
+              schema={"schema" in m ? m.schema : undefined}
+              selection={"selection" in m ? m.selection : undefined}
+              onClose={() => setErDiagramModal(null)}
+            />
+          );
+        })()}
+      </Show>
+      <Show when={erDiagramPickerModal()}>
+        {(() => {
+          const p = erDiagramPickerModal()!;
+          const connectionId = p.connectionId;
+          return (
+            <ErDiagramPickerModal
+              connectionId={connectionId}
+              onClose={() => setErDiagramPickerModal(null)}
+              onConfirm={(selection) => {
+                setErDiagramPickerModal(null);
+                setErDiagramModal({ connectionId, selection });
+              }}
+            />
+          );
+        })()}
       </Show>
 
       {/* 底部状态栏 */}

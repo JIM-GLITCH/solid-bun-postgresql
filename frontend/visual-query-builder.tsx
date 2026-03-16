@@ -545,9 +545,42 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     }));
   }
 
+  // 按主表 BFS 重排表顺序，确保 JOIN 能正确链式生成
+  function reorderTablesByPrimary(primaryId: string) {
+    const { tables, joinConditions } = queryState;
+    if (tables.length === 0) return;
+
+    const adjacency = new Map<string, Set<string>>();
+    for (const t of tables) adjacency.set(t.id, new Set());
+    for (const c of joinConditions) {
+      adjacency.get(c.leftTableId)?.add(c.rightTableId);
+      adjacency.get(c.rightTableId)?.add(c.leftTableId);
+    }
+
+    const visited = new Set<string>();
+    const ordered: CanvasTable[] = [];
+    const queue: string[] = [primaryId];
+
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const t = tables.find(x => x.id === id);
+      if (t) ordered.push(t);
+      for (const nid of adjacency.get(id) || []) {
+        if (!visited.has(nid)) queue.push(nid);
+      }
+    }
+
+    const unconnected = tables.filter(t => !visited.has(t.id));
+    const newTables = [...ordered, ...unconnected];
+    setQueryState('tables', newTables);
+  }
+
   // 设置主表
   function setPrimaryTable(tableId: string) {
     setQueryState('primaryTableId', tableId);
+    reorderTablesByPrimary(tableId);
     setTableContextMenu(null);
   }
 
@@ -934,18 +967,14 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
 
     if (!primaryTable) return '';
 
-    // 使用 BFS 遍历从主表出发可达的所有表
-    // 构建邻接表（双向图）- 基于 joinConditions
+    // 使用 BFS 遍历从主表出发可达的所有表（BFS 顺序保证 JOIN 可正确链式生成）
     const adjacency = new Map<string, Set<string>>();
-    for (const t of tables) {
-      adjacency.set(t.id, new Set());
-    }
+    for (const t of tables) adjacency.set(t.id, new Set());
     for (const cond of joinConditions) {
       adjacency.get(cond.leftTableId)?.add(cond.rightTableId);
       adjacency.get(cond.rightTableId)?.add(cond.leftTableId);
     }
 
-    // BFS 遍历，获取与主表连接的所有表（按添加顺序）
     const visited = new Set<string>();
     const connectedTables: CanvasTable[] = [];
     const queue: string[] = [primaryTable.id];
@@ -954,7 +983,6 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     while (queue.length > 0) {
       const currentId = queue.shift()!;
       const neighbors = adjacency.get(currentId) || new Set();
-
       for (const neighborId of neighbors) {
         if (!visited.has(neighborId)) {
           visited.add(neighborId);
@@ -1000,11 +1028,10 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     // FROM 子句
     let fromClause = `FROM ${primaryTable.schema}.${primaryTable.name} ${primaryTable.alias}`;
 
-    // JOIN 子句（按 tables 数组顺序生成，跳过主表、未连接的表和没有 ON 条件的表）
-    // 记录已经出现过的表（包括主表）
+    // JOIN 子句（按 BFS 顺序生成，确保每个表 join 时其关联表已出现）
     const appearedTables = new Set<string>([primaryTable.id]);
 
-    for (const table of tables) {
+    for (const table of connectedTables) {
       // 跳过主表
       if (table.id === primaryTable.id) continue;
 
