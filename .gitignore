@@ -12,6 +12,7 @@ app.config.timestamp_*.js
 # Environment
 .env
 .env*.local
+scripts/test-ssh-config.json
 
 # Dependencies
 node_modules

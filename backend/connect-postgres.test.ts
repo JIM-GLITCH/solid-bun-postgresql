@@ -1,15 +1,21 @@
 import { test } from "vitest";
-import { connectPostgres } from "./connect-postgres";
+import { connectPostgres, getDbConfig } from "./connect-postgres";
 import { SQL } from "bun";
 
-test("tryPostgres", async () => {
-    const client = await connectPostgres({
-        host: "localhost",
+test("tryPostgres", {timeout: Infinity},async () => {
+    const db = await getDbConfig({
+        host: "postgres",
         port: "5432",
         username: "postgres",
         password: "secret",
         database: "mydb",
+        sshHost:"localhost",
+        sshPort:"5022",
+        sshUsername:"root",
+        sshPassword:"root",
+        sshEnabled:true
     });
+    const client = await connectPostgres(db);
     const res = await client.query({ text: "select 1+1 , 2+2 ", rowMode: "array" });
 
     console.log(res);

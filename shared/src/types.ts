@@ -6,6 +6,17 @@ export interface PostgresLoginParams {
   database: string;
   username: string;
   password: string;
+  /** SSH 隧道：启用后通过跳板机连接数据库 */
+  sshEnabled?: boolean;
+  sshHost?: string;
+  sshPort?: string;
+  sshUsername?: string;
+  /** 密码认证 */
+  sshPassword?: string;
+  /** 私钥认证（PEM 格式），与 sshPassword 二选一 */
+  sshPrivateKey?: string;
+  /** SSH/数据库连接超时（秒），默认 30 */
+  connectionTimeoutSec?: number;
 }
 
 /** 连接请求：包含 connectionId 和连接参数 */

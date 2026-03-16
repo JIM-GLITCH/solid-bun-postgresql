@@ -8,6 +8,7 @@ await Bun.build({
   outdir: join(standaloneDir, "out"),
   plugins: [SolidPlugin()],
   target: "bun",
+  external: ["cpu-features"], // ssh2 的可选依赖，原生模块无法打包
   compile: {
     target: "bun-linux-x64",
     outfile: "server-linux"

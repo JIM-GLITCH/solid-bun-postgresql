@@ -10,7 +10,7 @@ import {
   type ApiRequestPayload,
   type ConnectPostgresRequest,
 } from "../shared/src";
-import { connectPostgres, createPostgresPool } from "./connect-postgres";
+import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
@@ -29,6 +29,7 @@ export interface SessionConnection {
   backGroundPool: Pool;
   runningQueryPid?: number;
   eventPushers: Set<(msg: SSEMessage) => void>;
+  closeTunnel?: () => Promise<void>;
   cursor?: {
     instance: Cursor;
     columns?: any[];
@@ -103,13 +104,25 @@ export async function handleApiRequest<M extends ApiMethod>(
       if (!id || !params.host || !params.database || !params.username) {
         throw new Error("缺少必填字段");
       }
-      saveConnection(id, {
+      const toSave: PostgresLoginParams = {
         host: params.host,
         port: params.port || "5432",
         database: params.database,
         username: params.username,
         password: params.password || "",
-      });
+      };
+      if (params.sshEnabled) {
+        toSave.sshEnabled = true;
+        toSave.sshHost = params.sshHost;
+        toSave.sshPort = params.sshPort || "22";
+        toSave.sshUsername = params.sshUsername;
+        toSave.sshPassword = params.sshPassword;
+        toSave.sshPrivateKey = params.sshPrivateKey;
+        if (params.connectionTimeoutSec != null && params.connectionTimeoutSec > 0) {
+          toSave.connectionTimeoutSec = params.connectionTimeoutSec;
+        }
+      }
+      saveConnection(id, toSave);
       return { success: true };
     }
 
@@ -163,13 +176,15 @@ export async function handleApiRequest<M extends ApiMethod>(
       // 若已存在同 ID 连接，先断开
       const existing = connectionMap.get(cid);
       if (existing) {
+        await existing.closeTunnel?.().catch(() => {});
         await existing.userUsedClient.end().catch(() => {});
         await existing.backGroundPool.end().catch(() => {});
         connectionMap.delete(cid);
       }
 
-      const client = await connectPostgres(loginParams);
-      const adminPool = createPostgresPool(loginParams);
+      const db = await getDbConfig(loginParams);
+      const client = await connectPostgres(db);
+      const adminPool = createPostgresPool(db);
 
       client.on("error", (err) => {
         sendSSEMessage(cid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
@@ -198,6 +213,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         userUsedClient: client,
         backGroundPool: adminPool,
         eventPushers: new Set(),
+        closeTunnel: db.closeTunnel,
       });
       return { sucess: true, connectionId: cid };
     }
@@ -206,6 +222,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { connectionId: cid } = payload as { connectionId: string };
       const conn = connectionMap.get(cid);
       if (conn) {
+        await conn.closeTunnel?.().catch(() => {});
         await conn.userUsedClient.end().catch(() => {});
         await conn.backGroundPool.end().catch(() => {});
         connectionMap.delete(cid);

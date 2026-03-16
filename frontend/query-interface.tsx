@@ -1537,7 +1537,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             <button
               onClick={runExplain}
               disabled={loading() || explainLoading() || sql().trim().length === 0}
-              title="EXPLAIN ANALYZE 执行计划"
+              title="解释分析（EXPLAIN ANALYZE）"
               style={{
                 padding: "10px 20px",
                 "font-size": "14px",
@@ -1552,7 +1552,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 gap: "6px",
               }}
             >
-              <span>📊</span> {explainLoading() ? "分析中..." : "执行计划"}
+              <span>📊</span> {explainLoading() ? "分析中..." : "解释分析"}
             </button>
             <Show when={loading()}>
               <button
@@ -1877,7 +1877,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           </div>
         </Show>
 
-        {/* 执行计划弹窗 */}
+        {/* 解释分析弹窗 */}
         <Show when={explainPlan()}>
           <div
             style={{

@@ -174,7 +174,7 @@ export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
         }}
       >
         <span style={{ "font-size": "16px", "font-weight": "600", color: vscode.foreground }}>
-          📊 执行计划
+          📊 解释分析
         </span>
         <span style={{ color: vscode.foregroundDim, "font-size": "13px" }}>
           规划: {formatTime(planningTime())} · 执行: {formatTime(executionTime())}
@@ -198,7 +198,7 @@ export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
         </Show>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
-        <Show when={planNode()} fallback={<div style={{ padding: "16px", color: vscode.foregroundDim }}>无执行计划</div>}>
+        <Show when={planNode()} fallback={<div style={{ padding: "16px", color: vscode.foregroundDim }}>无解释分析结果</div>}>
           {(p) => <PlanNodeRow node={p()} depth={0} totalTime={totalTime()} />}
         </Show>
       </div>
