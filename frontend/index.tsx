@@ -2,9 +2,19 @@ import { render } from 'solid-js/web';
 import App from './app';
 import { loadDefaultTheme } from './theme-sync';
 
-const root = document.getElementById('root');
-if (root) {
-  // initialize theme for standalone usage
+function mount() {
+  const root = document.getElementById('root');
+  if (!root) {
+    console.error('[frontend] #root not found');
+    return;
+  }
   loadDefaultTheme();
   render(() => <App />, root);
+}
+
+// 确保 DOM 就绪后再挂载（script 可能在 head 中，此时 body 尚未解析）
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', mount);
+} else {
+  mount();
 }

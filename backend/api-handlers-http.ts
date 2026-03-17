@@ -1,6 +1,6 @@
 /**
  * 后端 API 处理器 - Web 实现：HTTP + SSE
- * 用于 standalone (Bun) 构建
+ * 用于 standalone (Node + Hono) 构建
  */
 
 import type { ApiMethod, ApiRequestPayload } from "../shared/src";
@@ -67,7 +67,7 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
 ];
 
-/** 创建 HTTP 格式的 API 路由（Bun.serve routes） */
+/** 创建 HTTP 格式的 API 路由（供 Hono 使用） */
 export function createApiRoutes(): Record<
   string,
   { GET?: (req: unknown) => Response | Promise<Response>; POST?: RouteHandler }

@@ -1,105 +1,84 @@
 /**
- * Standalone 入口：Node + Hono，SSH 可正常工作
- * 开发时内嵌 Vite 提供前端（HMR），单进程单端口
- * 用 tsx standalone/server-node.ts 或 node 运行
+ * Standalone 开发入口：Node + Hono，仅 API + Monaco
+ * 开发时与 Vite 双服务器，前端由 Vite 提供（proxy /api /vs 到此）
+ * 用 tsx standalone/server-node.ts 运行
+ * SEA 模式：静态资源从 sea.getAsset() 读取
  */
 
-import http from "node:http";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import connect from "connect";
-import { createServer as createViteServer } from "vite";
-import { getRequestListener } from "@hono/node-server";
 import { Hono } from "hono";
-import { readFileSync, existsSync } from "node:fs";
 import { createApiRoutes } from "../backend/api-handlers-http";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const rootDir = join(__dirname, "..");
-const monacoVs = join(rootDir, "node_modules", "monaco-editor", "min", "vs");
-
-const MONACO_WORKERS: Record<string, string> = {
-  "/vs/assets/editor.worker-Be8ye1pW.js": "monaco-editor/min/vs/assets/editor.worker-Be8ye1pW.js",
-  "/vs/assets/json.worker-DKiEKt88.js": "monaco-editor/min/vs/assets/json.worker-DKiEKt88.js",
-  "/vs/assets/css.worker-HnVq6Ewq.js": "monaco-editor/min/vs/assets/css.worker-HnVq6Ewq.js",
-  "/vs/assets/html.worker-B51mlPHg.js": "monaco-editor/min/vs/assets/html.worker-B51mlPHg.js",
-  "/vs/assets/ts.worker-CMbG-7ft.js": "monaco-editor/min/vs/assets/ts.worker-CMbG-7ft.js",
-};
-
-const honoApp = new Hono();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const app = new Hono();
 const apiRoutes = createApiRoutes();
 
 // API 路由
 for (const [path, handlers] of Object.entries(apiRoutes)) {
   if (handlers.GET) {
-    honoApp.get(path, (c) => handlers.GET!(c.req.raw));
+    app.get(path, (c) => handlers.GET!(c.req.raw));
   }
   if (handlers.POST) {
-    honoApp.post(path, (c) => handlers.POST!(c.req.raw));
+    app.post(path, (c) => handlers.POST!(c.req.raw));
   }
 }
 
-// Monaco workers
-for (const [path, relPath] of Object.entries(MONACO_WORKERS)) {
-  const fullPath = join(rootDir, "node_modules", relPath);
-  if (existsSync(fullPath)) {
-    honoApp.get(path, async (c) => {
-      const buf = readFileSync(fullPath);
-      return new Response(buf, {
-        headers: { "Content-Type": "application/javascript" },
-      });
-    });
-  }
+function frontendBaseUri() {
+  // .js：打包后，server 与 index.html 同目录
+  // .ts：开发时，server 在 standalone/，前端在 standalone/out/
+  const bundled = __filename.endsWith(".js");
+  return bundled ? __dirname : join(__dirname, "out");
 }
 
-// Monaco 其他资源
-honoApp.get("/vs/*", async (c) => {
-  const pathname = c.req.path.slice(4);
-  const filePath = join(monacoVs, pathname);
-  if (existsSync(filePath)) {
-    const buf = readFileSync(filePath);
-    const ext = pathname.split(".").pop()?.toLowerCase();
-    const mime: Record<string, string> = {
-      js: "application/javascript",
-      css: "text/css",
-      json: "application/json",
+// SEA 单可执行模式：从 sea.getAsset 提供静态资源
+async function setupStatic() {
+  const sea = await import("node:sea").catch(() => null);
+  const isSea = sea?.isSea?.() ?? false;
+
+  if (isSea && sea) {
+    const { getAsset, getAssetKeys } = sea;
+    const MIME: Record<string, string> = {
+      ".html": "text/html",
+      ".js": "application/javascript",
+      ".css": "text/css",
+      ".ttf": "font/ttf",
+      ".woff": "font/woff",
+      ".woff2": "font/woff2",
     };
-    return new Response(buf, {
-      headers: ext && mime[ext] ? { "Content-Type": mime[ext] } : {},
+    app.use("/*", async (c, next) => {
+      if (c.req.method !== "GET" && c.req.method !== "HEAD") return next();
+      let path = new URL(c.req.url).pathname.replace(/^\/+/, "") || "index.html";
+      if (path === "" || path.endsWith("/")) path += "index.html";
+      const keys = getAssetKeys();
+      const key = keys.find((k) => k === path || k === path.replace(/^\//, ""));
+      if (!key) return next();
+      try {
+        const buf = getAsset(key);
+        const ext = key.slice(key.lastIndexOf("."));
+        const mime = MIME[ext] ?? "application/octet-stream";
+        return c.newResponse(new Uint8Array(buf), 200, {
+          "Content-Type": mime,
+        });
+      } catch {
+        return next();
+      }
     });
-  }
-  return c.notFound();
-});
-
-const honoListener = getRequestListener(honoApp.fetch.bind(honoApp));
-
-// Hono 优先处理 /api 和 /vs
-function honoMiddleware(req: http.IncomingMessage, res: http.ServerResponse, next: () => void) {
-  const url = req.url || "/";
-  if (url.startsWith("/api") || url.startsWith("/vs")) {
-    honoListener(req, res);
   } else {
-    next();
+    app.use(
+      "/*",
+      serveStatic({
+        root: frontendBaseUri(),
+        index: "index.html",
+      })
+    );
   }
+
+  const PORT = Number(process.env.PORT) || 3000;
+  serve({ fetch: app.fetch, port: PORT });
+  console.log(`API server at http://localhost:${PORT} (Node)`);
 }
-
-const port = Number(process.env.PORT) || 9000;
-const connectApp = connect();
-connectApp.use(honoMiddleware);
-
-const server = http.createServer(connectApp);
-
-async function start() {
-  const vite = await createViteServer({
-    configFile: join(rootDir, "vite.config.standalone.ts"),
-    server: {
-      middlewareMode: { server },
-    },
-  });
-  connectApp.use(vite.middlewares);
-
-  server.listen(port, () => {
-    console.log(`Server running at http://localhost:${port} (Node + Vite)`);
-  });
-}
-start();
+setupStatic();

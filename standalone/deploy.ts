@@ -5,11 +5,16 @@ const ECS_KEY = process.env.ECS_KEY || "~/.ssh/id_rsa";
 async function main() {
   console.log("🚀 开始部署流程...\n");
 
-  // Step 1: 编译
-  console.log("📦 [1/5] 编译 Linux 可执行程序...");
-  await Bun.$`bun standalone/build-linux.ts`.catch((e: Error) => {
-    console.error(e);
+  // Step 1: 编译 Linux 可执行程序 (pkg 支持跨平台编译)
+  console.log("📦 [1/5] 编译 Linux 可执行程序 (pkg)...");
+  const buildProc = Bun.spawn(["bun", "standalone/build-pkg.ts"], {
+    cwd: import.meta.dir + "/..",
+    env: { ...process.env, BUILD_TARGET: "linux" },
+    stdout: "inherit",
+    stderr: "inherit",
   });
+  const ok = await buildProc.exited;
+  if (ok !== 0) throw new Error(`Build failed with exit code ${ok}`);
   console.log("✅ 编译完成\n");
 
   // Step 2: Kill 3000 端口的程序

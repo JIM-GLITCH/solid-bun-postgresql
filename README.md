@@ -10,17 +10,17 @@
 - 📊 **智能列识别** - 自动检测可编辑列和主键/唯一键约束
 - 🔄 **变更管理** - 预览待保存的 SQL 修改，支持撤销单条修改
 - 📏 **列宽调整** - 拖拽调整列宽和表格总宽度
-- 🌐 **双运行模式** - 支持 **Standalone（Bun HTTP）** 与 **VSCode 扩展**，同一套前端通过传输层切换
-- ⚡ **热更新开发** - 基于 Bun 的热更新开发体验
+- 🌐 **双运行模式** - 支持 **Standalone（Node + Hono）** 与 **VSCode 扩展**，同一套前端通过传输层切换
+- ⚡ **热更新开发** - 基于 Vite 的前端 HMR 开发体验
 
 ## 🛠️ 技术栈
 
 | 类别     | 技术                                                                 |
 | -------- | -------------------------------------------------------------------- |
 | 前端     | [SolidJS](https://www.solidjs.com/) + TypeScript                     |
-| 后端     | [Bun](https://bun.sh/) 原生 HTTP 服务器                               |
+| 后端     | [Hono](https://hono.dev/) + Node.js（Standalone 单可执行用 Node SEA） |
 | 数据库   | [PostgreSQL](https://www.postgresql.org/) (via `pg` 库)              |
-| 构建工具 | [Vite](https://vitejs.dev/) + vite-plugin-solid                      |
+| 构建工具 | [Vite](https://vitejs.dev/) + vite-plugin-solid，Bun 用于打包          |
 | 路由     | [@solidjs/router](https://github.com/solidjs/solid-router)           |
 | 容器化   | Docker Compose                                                       |
 
@@ -46,8 +46,9 @@ solid-project/
 │   ├── types.ts                # PostgresLoginParams、ConnectPostgresRequest 等
 │   └── transport.ts            # ApiMethod、ApiRequestPayload、IApiTransport
 ├── standalone/                  # Standalone 构建与开发
-│   ├── dev.ts                  # 开发服务器入口
-│   ├── server.ts               # Bun.serve 路由
+│   ├── server-node.ts          # Node + Hono 服务（支持 SEA）
+│   ├── build-sea-win.ts        # 前端 Bun 构建 + Node SEA 打包
+│   ├── ARCHITECTURE.md         # 架构说明与 Bun→Node 变更记录
 │   └── ...
 ├── vscode-extension/            # VSCode 扩展
 │   └── src/extension.ts        # 扩展入口、Webview、消息日志（DB Player 输出）
@@ -150,8 +151,10 @@ bun test
 
 ### 构建
 
-- **Standalone 生产**：`bun run standalone:build:win` / `standalone:build:linux`
+- **Standalone 生产**：`bun run build:sea`（Node SEA 单可执行，需 Node 20+，25.5+ 推荐）
 - **VSCode 扩展**：`bun run build-extension`
+
+> Standalone 架构说明（Bun→Node 变更背景）见 [standalone/ARCHITECTURE.md](standalone/ARCHITECTURE.md)
 
 ## 📄 License
 

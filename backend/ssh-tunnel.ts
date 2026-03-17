@@ -33,7 +33,8 @@ export function createSshTunnel(params: PostgresLoginParams): Promise<SshTunnelR
       ? params.connectionTimeoutSec * 1000
       : 30000,
   };
-  if (process.env.NODE_ENV !== "production") {
+  // 开发或 PKG_DEBUG=1 时输出 SSH 调试信息，便于排查 pkg 打包后连接异常
+  if (process.env.NODE_ENV !== "production" || process.env.PKG_DEBUG === "1") {
     sshConfig.debug = (s: string) => console.log("[SSH]", s);
   }
   if (sshPrivateKey) {

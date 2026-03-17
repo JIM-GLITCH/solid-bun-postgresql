@@ -3,16 +3,13 @@
   "version": "0.0.0",
   "description": "",
   "scripts": {
-    "dev": "bun standalone/dev.ts",
     "deploy": "bun standalone/deploy.ts",
-    "build-win": "bun standalone/build-win.ts",
-    "build-linux": "bun standalone/build-linux.ts",
-    "standalone:dev": "bun run standalone/dev.ts",
-    "standalone:node": "tsx standalone/server-node.ts",
-    "dev:node": "tsx standalone/server-node.ts",
-    "standalone:build:linux": "bun run standalone/build-linux.ts",
-    "standalone:build:win": "bun run standalone/build-win.ts",
-    "standalone:deploy": "bun run standalone/deploy.ts",
+    "dev": "concurrently -n api,vite \"tsx standalone/server-node.ts\" \"vite --config standalone/vite.config.standalone.ts\"",
+    "dev:standalone": "vp dev -c standalone/vite.config.standalone.ts",
+    "build:linux": "bun run standalone/build-linux.ts",
+    "build:win": "bun run standalone/build-win.ts",
+    "build:pkg": "bun standalone/build-pkg.ts",
+    "build:sea": "bun standalone/build-sea-win.ts",
     "build-extension": "bun run vscode-extension/build.ts",
     "publish-extension": "bun run build-extensionc; cd vscode-extension; vsce publish",
     "electrobun:start": "bun run build:electrobun ; bunx electrobun dev",
@@ -26,6 +23,11 @@
     "subscription:dev:watch": "cd subscription/backend && bun run dev:all"
   },
   "license": "MIT",
+  "pkg": {
+    "assets": [
+      "standalone/out/**"
+    ]
+  },
   "devDependencies": {
     "@babel/core": "^7.28.5",
     "@babel/preset-typescript": "^7.28.5",
@@ -48,8 +50,10 @@
     "electrobun": "^1.15.1",
     "eslint": "^9.25.1",
     "jsdom": "^25.0.1",
+    "pkg": "^5.8.1",
     "solid-devtools": "^0.34.3",
     "typescript": "^5.7.2",
+    "vite": "^6.4.1",
     "vite-plugin-solid": "2.11.9",
     "vitest": "^4.0.15"
   },
@@ -61,7 +65,6 @@
     "@types/pg": "^8.16.0",
     "@types/ssh2": "^1.15.5",
     "bun-plugin-solid": "^1.0.0",
-    "connect": "^3.7.0",
     "hono": "^4.6.14",
     "monaco-editor": "^0.55.1",
     "node-forge": "^1.3.3",
@@ -72,6 +75,8 @@
     "sql-formatter": "^15.7.2",
     "ssh2": "^1.17.0",
     "tsx": "^4.21.0",
+    "vite-plus": "^0.1.12",
     "xlsx": "^0.18.5"
-  }
+  },
+  "packageManager": "pnpm@10.32.1"
 }
