@@ -34,6 +34,8 @@ function ensureExecHighlightStyle() {
 }
 import { getTheme, subscribe } from "./theme-sync";
 import { getSqlSegments } from "../shared/src";
+import { registerSqlEditor } from "./monaco-paste-registry";
+import { readClipboardText, writeClipboardText } from "./clipboard";
 
 /** 光标所在块的文本及起止偏移（与后端 getStatements 同一套分块规则，前端多「空行」边界）。 */
 function getSqlBlockAtCursor(
@@ -284,9 +286,95 @@ export default function SqlEditor(props: SqlEditorProps) {
 
     editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, doFormat);
 
+    // Webview 中 clipboard 受限：统一用 vscode.env.clipboard 桥接，保持单一剪贴板状态
+    const doPaste = () => {
+      const model = editor?.getModel();
+      const sel = editor?.getSelection();
+      if (!model || !sel) return;
+      readClipboardText().then((text) => {
+        if (!text) return;
+        if (sel.isEmpty()) {
+          // 无选区：与 VSCode 一致，粘贴到下一行并自动加换行
+          const lineNumber = sel.startLineNumber;
+          const endCol = model.getLineMaxColumn(lineNumber);
+          const range = {
+            startLineNumber: lineNumber,
+            startColumn: endCol,
+            endLineNumber: lineNumber,
+            endColumn: endCol,
+          };
+          editor!.executeEdits("paste", [{ range, text: "\n" + text }]);
+          editor!.setPosition({ lineNumber: lineNumber + 1, column: 1 });
+          editor!.revealLineInCenter(lineNumber + 1);
+        } else {
+          // 有选区：在光标处替换选区
+          const range = {
+            startLineNumber: sel.startLineNumber,
+            startColumn: sel.startColumn,
+            endLineNumber: sel.endLineNumber,
+            endColumn: sel.endColumn,
+          };
+          editor!.executeEdits("paste", [{ range, text }]);
+        }
+      });
+    };
+    // copy/cut：仅同步到 vscode 剪贴板（副作用），不阻止 Monaco 默认行为
+    const syncCopyToVscode = () => {
+      const model = editor?.getModel();
+      const sel = editor?.getSelection();
+      if (!model || !sel) return;
+      const text = sel.isEmpty()
+        ? model.getLineContent(sel.startLineNumber)
+        : model.getValueInRange(sel);
+      writeClipboardText(text);
+    };
+    let keyDownDispose: monaco.IDisposable | undefined;
+    let pasteDom: HTMLElement | null = null;
+    const onPaste = (ev: ClipboardEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      doPaste();
+    };
+    const onCopy = (ev: ClipboardEvent) => {
+      syncCopyToVscode();
+      // 不 preventDefault，让 Monaco 保持默认复制行为
+    };
+    const onCut = (ev: ClipboardEvent) => {
+      syncCopyToVscode();
+      // 不 preventDefault，让 Monaco 保持默认剪切行为（删除选区）
+    };
+    if (typeof (window as any).acquireVsCodeApi === "function") {
+      keyDownDispose = editor.onKeyDown((e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "v" || e.keyCode === monaco.KeyCode.KeyV)) {
+          e.preventDefault();
+          e.stopPropagation();
+          doPaste();
+        }
+        // C/X 不拦截，让 Monaco 处理 copy/cut
+      });
+      const dom = editor.getDomNode();
+      if (dom) {
+        pasteDom = dom;
+        dom.addEventListener("paste", onPaste, true);
+        dom.addEventListener("copy", onCopy, true);
+        dom.addEventListener("cut", onCut, true);
+      }
+    }
+
+    registerSqlEditor(container, editor);
+
     props.onEditorReady?.({ format: doFormat });
 
-    onCleanup(() => unsub());
+    onCleanup(() => {
+      if (pasteDom) {
+        pasteDom.removeEventListener("paste", onPaste, true);
+        pasteDom.removeEventListener("copy", onCopy, true);
+        pasteDom.removeEventListener("cut", onCut, true);
+      }
+      keyDownDispose?.dispose();
+      registerSqlEditor(container, null);
+      unsub();
+    });
   });
 
   createEffect(() => {

@@ -1,5 +1,6 @@
 import { createSignal, For, Show, onMount, onCleanup, createEffect, createMemo } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import { writeClipboardText } from "./clipboard";
 import { parseSqlToVisualDescriptor } from "./sql-to-visual";
 import { getSchemas, getTables, getColumns, getForeignKeys } from "./api";
 
@@ -2091,7 +2092,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
             }}>
               📝 生成的 SQL
               <button
-                onClick={() => navigator.clipboard.writeText(generatedSql())}
+                onClick={() => writeClipboardText(generatedSql())}
                 disabled={!generatedSql()}
                 style={{
                   "margin-left": 'auto',

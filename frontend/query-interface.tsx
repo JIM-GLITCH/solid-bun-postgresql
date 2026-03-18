@@ -11,6 +11,7 @@ import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
 import { vscode } from "./theme";
+import { writeClipboardText } from "./clipboard";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
 import ExplainPlanViewer from "./explain-plan-viewer";
@@ -164,12 +165,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     onCleanup(() => window.removeEventListener("resize", onResize));
   });
 
-  // 复制：当有选区且无文本选区时，将选中的单元格内容复制为制表符分隔格式（便于粘贴到 Excel）
-  const handleCopy = (e: ClipboardEvent) => {
+  // 将表格选区转为制表符分隔的文本（便于粘贴到 Excel）
+  function getSelectionAsTabSeparated(): string | null {
     const sel = selection();
-    if (!sel || sel.size === 0) return;
-    const textSel = window.getSelection()?.toString() ?? "";
-    if (textSel) return; // 用户选中了文本（如在编辑框内），不覆盖默认复制
+    if (!sel || sel.size === 0) return null;
     let minR = Infinity, minC = Infinity, maxR = -1, maxC = -1;
     for (const k of sel) {
       const [r, c] = k.split(",").map(Number);
@@ -187,13 +186,28 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       }
       rows.push(cells.join("\t"));
     }
-    e.clipboardData?.setData("text/plain", rows.join("\n"));
+    return rows.join("\n");
+  }
+
+  // 复制：当有选区时，将选中的单元格内容复制为制表符分隔格式（便于粘贴到 Excel）
+  const handleCopy = (e: ClipboardEvent) => {
+    if (document.activeElement?.closest("[data-sql-editor]")) return;
+    const text = getSelectionAsTabSeparated();
+    if (!text) return;
     e.preventDefault();
+    writeClipboardText(text);
   };
-  createEffect(() => {
-    document.addEventListener("copy", handleCopy, true);
-    onCleanup(() => document.removeEventListener("copy", handleCopy, true));
-  });
+
+  // Ctrl+C：webview 中 copy 事件可能不可靠，用 keydown 兜底
+  const handleCopyKeyDown = (e: KeyboardEvent) => {
+    if (!((e.ctrlKey || e.metaKey) && e.key === "c")) return;
+    if (document.activeElement?.closest("[data-sql-editor]")) return;
+    const text = getSelectionAsTabSeparated();
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    writeClipboardText(text);
+  };
 
   // Ctrl+S 保存结果：按上下文保存，不要求焦点；仅排除 SQL 编辑器（避免与 Monaco 冲突），多 Tab 时只保存当前 Tab
   const handleKeyDown = (e: KeyboardEvent) => {
@@ -204,6 +218,14 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     saveAllChanges();
   };
   createEffect(() => {
+    document.addEventListener("copy", handleCopy, true);
+    document.addEventListener("keydown", handleCopyKeyDown, true);
+    onCleanup(() => {
+      document.removeEventListener("copy", handleCopy, true);
+      document.removeEventListener("keydown", handleCopyKeyDown, true);
+    });
+  });
+  createEffect(() => {
     document.addEventListener("keydown", handleKeyDown, true);
     onCleanup(() => document.removeEventListener("keydown", handleKeyDown, true));
   });
@@ -213,6 +235,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (e.button !== 0) return;
     const r = rowIndex;
     const c = colIndex;
+
+    // Webview 中需显式转移焦点，否则 Ctrl+C 时 document.activeElement 可能仍在 Monaco；setTimeout 延后执行避免被默认行为覆盖
+    setTimeout(() => tableContainerRef()?.focus(), 0);
 
     if (e.shiftKey) {
       // Shift+点击：从 selectionOrigin 扩展到当前单元格，将矩形范围内的单元格加入选区
@@ -1067,10 +1092,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           </div>
         </Show>
 
-        {/* 虚拟滚动表格容器 */}
+        {/* 虚拟滚动表格容器：tabIndex 使单击单元格后能获得焦点，webview 中 Ctrl+C 才能正确识别为表格复制 */}
         <div
           ref={(el) => setTableContainerRef(el)}
           id="table-container"
+          tabIndex={0}
           onScroll={handleScroll}
           onContextMenu={(e) => {
             if ((e.target as Element).closest("td")) return;
@@ -1082,7 +1108,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             overflow: "auto",
             position: "relative",
             border: `1px solid ${vscode.border}`,
-            "background-color": vscode.editorBg
+            "background-color": vscode.editorBg,
+            outline: "none"
           }}
         >
           {/* 撑开滚动条的占位层 */}

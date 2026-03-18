@@ -42,7 +42,9 @@ export type ApiMethod =
   | "postgres/unique-constraints"
   | "postgres/import-rows"
   | "vscode/save-file"
-  | "vscode/read-file";
+  | "vscode/read-file"
+  | "vscode/clipboard-write"
+  | "vscode/clipboard-read";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -96,6 +98,10 @@ export type ApiRequestPayload = {
   "vscode/save-file": { content: string; filename: string; isBase64?: boolean };
   /** VSCode 插件内：打开文件选择器并返回文件内容（Extension Host 弹窗 + 读盘） */
   "vscode/read-file": { accept?: string[] };
+  /** VSCode 插件内：写入剪贴板（webview 中 navigator.clipboard 受限） */
+  "vscode/clipboard-write": { text: string };
+  /** VSCode 插件内：读取剪贴板 */
+  "vscode/clipboard-read": Record<string, never>;
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

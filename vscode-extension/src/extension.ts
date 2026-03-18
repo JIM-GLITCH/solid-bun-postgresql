@@ -149,6 +149,25 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
       }
       return;
     }
+    if (typeof msg.id === "number" && msg.method === "vscode/clipboard-write" && msg.payload != null) {
+      try {
+        const text = (msg.payload as { text?: string }).text ?? "";
+        await vscode.env.clipboard.writeText(text);
+        webview.postMessage({ id: msg.id, data: { success: true } });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
+    if (typeof msg.id === "number" && msg.method === "vscode/clipboard-read") {
+      try {
+        const text = await vscode.env.clipboard.readText();
+        webview.postMessage({ id: msg.id, data: { text: text ?? "" } });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
     baseHandler(message as any);
   });
 
