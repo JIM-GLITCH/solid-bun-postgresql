@@ -13,7 +13,7 @@ import ErDiagramModal from "./er-diagram-modal";
 import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
 import type { ConnectionInfo } from "./app";
-import { findStoredConnection, hasStoredConnection, createGroup, updateStoredConnectionMeta, type ConnectionList, type StoredConnection, type StoredConnectionItem } from "./connection-storage";
+import { findStoredConnection, hasStoredConnection, createGroup, updateStoredConnectionMeta, type ConnectionList, type StoredConnection, type StoredConnectionItem, type StoredConnectionGroup } from "./connection-storage";
 import { vscode } from "./theme";
 
 // 数据库对象类型
@@ -98,6 +98,23 @@ export default function Sidebar(props: SidebarProps) {
     return o != null && Array.isArray(o.connections) && typeof o.group === "string";
   }
 
+  /** 连接是否来自某已保存配置（含多实例：id 或 id-xxx） */
+  function isConnFromStored(connId: string, storedId: string): boolean {
+    return connId === storedId || connId.startsWith(storedId + "-");
+  }
+  /** 连接是否已挂在某个 saved 节点下 */
+  function isConnShownUnderSaved(connId: string, saved: ConnectionList): boolean {
+    for (const node of saved) {
+      const ids = isGroupNode(node)
+        ? (node as StoredConnectionGroup).connections.map((c: StoredConnectionItem) => c.id)
+        : [(node as StoredConnectionItem).id];
+      for (const id of ids) {
+        if (isConnFromStored(connId, id)) return true;
+      }
+    }
+    return false;
+  }
+
   // 构建统一树根：直接解析嵌套结构 ConnectionList
   function buildRootNodes(): TreeNode[] {
     const conns = props.connections ?? [];
@@ -108,27 +125,33 @@ export default function Sidebar(props: SidebarProps) {
       if (isGroupNode(node)) {
         const groupChildren: TreeNode[] = [];
         for (const s of node.connections) {
-          const c = conns.find((x) => x.id === s.id);
-          const displayName = getConnectionDisplayName(s, c?.info);
-          const tn: TreeNode = c
-            ? { id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] }
-            : { id: `saved:${s.id}`, name: displayName, type: "savedConnection", storedId: s.id, children: [] };
-          groupChildren.push(tn);
+          const matchingConns = conns.filter((c) => isConnFromStored(c.id, s.id));
+          if (matchingConns.length > 0) {
+            for (const c of matchingConns) {
+              const displayName = getConnectionDisplayName(s, c.info);
+              groupChildren.push({ id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] });
+            }
+          } else {
+            groupChildren.push({ id: `saved:${s.id}`, name: getConnectionDisplayName(s, undefined), type: "savedConnection", storedId: s.id, children: [] });
+          }
         }
         roots.push({ id: `group:${node.group}`, name: node.group, type: "connectionGroup", children: groupChildren });
       } else {
-        const s = node;
-        const c = conns.find((x) => x.id === s.id);
-        const displayName = getConnectionDisplayName(s, c?.info);
-        const tn: TreeNode = c
-          ? { id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] }
-          : { id: `saved:${s.id}`, name: displayName, type: "savedConnection", storedId: s.id, children: [] };
-        roots.push(tn);
+        const s = node as StoredConnectionItem;
+        const matchingConns = conns.filter((c) => isConnFromStored(c.id, s.id));
+        if (matchingConns.length > 0) {
+          for (const c of matchingConns) {
+            const displayName = getConnectionDisplayName(s, c.info);
+            roots.push({ id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] });
+          }
+        } else {
+          roots.push({ id: `saved:${s.id}`, name: getConnectionDisplayName(s, undefined), type: "savedConnection", storedId: s.id, children: [] });
+        }
       }
     }
 
     for (const c of conns) {
-      if (!hasStoredConnection(saved, c.id)) {
+      if (!isConnShownUnderSaved(c.id, saved)) {
         roots.push({
           id: `connection:${c.id}`,
           name: c.info,

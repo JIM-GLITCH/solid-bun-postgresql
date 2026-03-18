@@ -49,6 +49,17 @@ function getStatements(sql: string): string[] {
 /** 以 connectionId 为 key 存储多个连接 */
 const connectionMap = new Map<string, SessionConnection>();
 
+/** 断开并释放连接资源（供 SSE 关闭时调用，释放标签页关闭后的泄漏） */
+export async function disconnectConnection(connectionId: string): Promise<void> {
+  const conn = connectionMap.get(connectionId);
+  if (conn) {
+    connectionMap.delete(connectionId);
+    await conn.userUsedClient.end().catch(() => {});
+    await conn.backGroundPool.end().catch(() => {});
+    await conn.closeTunnel?.().catch(() => {});
+  }
+}
+
 export function sendSSEMessage(connectionId: string, message: SSEMessage) {
   const conn = connectionMap.get(connectionId);
   if (!conn) return;
@@ -141,11 +152,13 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "connections/connect": {
-      const { id } = payload as { id: string };
+      const { id, sessionId } = payload as { id: string; sessionId?: string };
       const params = getConnectionParams(id);
       if (!params) return { sucess: false, error: "未找到已保存的连接" };
-      const { id: cid, ...loginParams } = params;
-      return handleApiRequest("connect-postgres", { connectionId: cid, ...loginParams } as any);
+      const { id: storedId, ...loginParams } = params;
+      // 使用 sessionId 区分不同浏览器标签页，关闭标签页时可通过 SSE 断开释放资源
+      const connectionId = sessionId ? `${storedId}-${sessionId}` : storedId;
+      return handleApiRequest("connect-postgres", { connectionId, ...loginParams } as any);
     }
 
     case "connections/add-group": {
@@ -196,13 +209,13 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { connectionId: cid, ...connectParams } = params;
       const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
 
-      // 若已存在同 ID 连接，先断开
+      // 若已存在同 ID 连接，先断开（必须先关闭 pg 连接再关隧道，否则 server.close 会死锁）
       const existing = connectionMap.get(cid);
       if (existing) {
-        await existing.closeTunnel?.().catch(() => {});
+        connectionMap.delete(cid);
         await existing.userUsedClient.end().catch(() => {});
         await existing.backGroundPool.end().catch(() => {});
-        connectionMap.delete(cid);
+        await existing.closeTunnel?.().catch(() => {});
       }
 
       const db = await getDbConfig(loginParams);
@@ -243,13 +256,7 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     case "disconnect-postgres": {
       const { connectionId: cid } = payload as { connectionId: string };
-      const conn = connectionMap.get(cid);
-      if (conn) {
-        await conn.closeTunnel?.().catch(() => {});
-        await conn.userUsedClient.end().catch(() => {});
-        await conn.backGroundPool.end().catch(() => {});
-        connectionMap.delete(cid);
-      }
+      await disconnectConnection(cid);
       return { success: true };
     }
 

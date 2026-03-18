@@ -8,6 +8,7 @@ import {
   handleApiRequest,
   getSession,
   subscribeSessionEvents,
+  disconnectConnection,
   type SSEMessage,
 } from "./api-core";
 
@@ -118,6 +119,8 @@ export function createApiRoutes(): Record<
           },
           cancel() {
             cleanup?.();
+            // 标签页关闭时 SSE 断开，释放 connectionMap 中的资源（pg 连接、SSH 隧道等）
+            disconnectConnection(connectionId).catch(() => {});
           },
         });
 

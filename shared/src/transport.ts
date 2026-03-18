@@ -52,7 +52,7 @@ export type ApiRequestPayload = {
   "connections/update-meta": { id: string; name?: string; group?: string };
   "connections/add-group": { group: string };
   "connections/get-params": { id: string };
-  "connections/connect": { id: string };
+  "connections/connect": { id: string; sessionId?: string };
   "query-history/add": { sql: string; connectionId?: string };
   "query-history/search": { keyword?: string; since?: number; until?: number };
   "query-history/delete": { id: string };

@@ -6,7 +6,7 @@ import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
 import Sidebar from './sidebar';
-import { disconnectPostgres } from './api';
+import { disconnectPostgres, subscribeEvents } from './api';
 import {
   loadStoredConnections,
   connectFromSaved,
@@ -81,6 +81,7 @@ export default function App() {
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [refreshSidebarRequest, setRefreshSidebarRequest] = createSignal<{ connectionId: string; schema: string } | null>(null);
   const [connectionSwitcherOpen, setConnectionSwitcherOpen] = createSignal(false);
+  const [sessionId] = createSignal(crypto.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
   createEffect(() => {
     if (!connectionSwitcherOpen()) return;
@@ -94,6 +95,13 @@ export default function App() {
 
   onMount(() => {
     loadStoredConnections().then(setSavedConnections);
+  });
+
+  // 为每个连接维持 SSE，关闭标签页时服务端可检测断开并释放 connectionMap 资源
+  createEffect(() => {
+    const conns = connections;
+    const unsubs = conns.map((c) => subscribeEvents(c.id, () => {}));
+    return () => unsubs.forEach((u) => u());
   });
 
   const handleConnected = (connectionId: string, info: string) => {
@@ -111,14 +119,14 @@ export default function App() {
   };
 
   const handleConnectFromSaved = async (stored: StoredConnection): Promise<{ success: boolean; connectionId?: string }> => {
-    const already = connections.some((c) => c.id === stored.id);
-    if (already) {
-      addOrFocusQueryTab(stored.id, stored.label);
-      return { success: true, connectionId: stored.id };
+    const existing = connections.find((c) => c.id === stored.id || c.id.startsWith(stored.id + "-"));
+    if (existing) {
+      addOrFocusQueryTab(existing.id, stored.label);
+      return { success: true, connectionId: existing.id };
     }
     setConnectingSavedId(stored.id);
     try {
-      const { success, connectionId, error } = await connectFromSaved(stored.id);
+      const { success, connectionId, error } = await connectFromSaved(stored.id, sessionId());
       if (success && connectionId) {
         setConnections(connections.length, { id: connectionId, info: stored.label });
         setShowConnectionForm(false);
@@ -582,7 +590,21 @@ export default function App() {
                         ) : tab.type === 'connection-edit' ? (
                           <div style={{ padding: '24px', 'background-color': vscode.editorBg }}>
                               <div style={{ margin: '0 auto', maxWidth: '560px' }}>
-                                <ConnectionForm editStored={tab.stored} onSaved={handleSavedRefresh} />
+                                <ConnectionForm
+                                  editStored={tab.stored}
+                                  onConnected={(connectionId, info) => {
+                                    handleConnected(connectionId, info);
+                                    const remaining = tabs().filter((t) => t.id !== tab.id);
+                                    setTabs(remaining);
+                                    if (activeTabId() === tab.id) setActiveTabId(remaining[0]?.id ?? null);
+                                  }}
+                                  onSaved={() => {
+                                    handleSavedRefresh();
+                                    const remaining = tabs().filter((t) => t.id !== tab.id);
+                                    setTabs(remaining);
+                                    if (activeTabId() === tab.id) setActiveTabId(remaining[0]?.id ?? null);
+                                  }}
+                                />
                               </div>
                           </div>
                         ) : tab.type === 'query' ? (
