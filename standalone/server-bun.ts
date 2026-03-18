@@ -6,7 +6,7 @@
 
 import { serve } from "bun";
 import { join } from "path";
-import index from "./index.html";
+import index from "../index.html";
 import { createApiRoutes } from "../backend/api-handlers-http";
 
 // Monaco workers - 用 import file 嵌入，bun build --compile 时打包进 exe（worker 为 .js 无 d.ts）

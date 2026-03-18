@@ -15,7 +15,7 @@ const outDir = join(import.meta.dir, "out");
 
 console.log("📦 [1/2] Building frontend (bun build)...");
 await Bun.build({
-  entrypoints: [join(import.meta.dir, "index.html")],
+  entrypoints: [join(import.meta.dir, "../index.html")],
   outdir: outDir,
   target: "browser",
   plugins: [SolidPlugin()],

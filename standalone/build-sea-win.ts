@@ -15,12 +15,14 @@ const outDir = join(import.meta.dir, "out");
 
 console.log("📦 [1/4] Building frontend (bun build)...");
 await Bun.build({
-  entrypoints: [join(import.meta.dir, "index.html")],
+  entrypoints: [join(import.meta.dir, "../index.html")],
   outdir: outDir,
   target: "browser",
+  minify: true,
   plugins: [SolidPlugin()],
 });
-await cp(join(root, "node_modules", "monaco-editor", "min", "vs"), join(outDir, "vs"), {
+// 只复制 monaco-editor/min/vs/assets 目录下的文件
+await cp(join(root, "node_modules", "monaco-editor", "min", "vs", "assets"), join(outDir, "vs", "assets"), {
   recursive: true,
 });
 console.log("✅ Frontend built\n");
@@ -32,6 +34,7 @@ await Bun.build({
   plugins: [SolidPlugin()],
   target: "node",
   format: "cjs",
+  minify: true,
   external: ["cpu-features"],
 });
 console.log("✅ Backend built\n");
@@ -76,7 +79,6 @@ const seaConfig = {
 await writeFile(join(outDir, "sea-config.json"), JSON.stringify(seaConfig, null, 2));
 console.log(`✅ SEA config: ${Object.keys(assets).length} assets\n`);
 
-// 优先用 nvm 的 Node，避免 vite-plus 的 node.cmd（24.14）劫持 PATH
 const nodeVersion = (await $`${nodeCmd} -p "process.version"`.cwd(outDir).quiet().text()).trim();
 const match = nodeVersion.match(/^v(\d+)\.(\d+)/);
 const nodeMajor = match ? parseInt(match[1], 10) : 0;
