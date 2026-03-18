@@ -5,6 +5,7 @@ import { render } from "solid-js/web";
 import { setTransport } from "./transport";
 import { VsCodeTransport } from "./transport/vscode-transport";
 import App from "./app";
+import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 
 setTransport(new VsCodeTransport());
@@ -14,5 +15,9 @@ initWebviewThemeListener();
 
 const root = document.getElementById("root");
 if (root) {
-  render(() => <App />, root);
+  render(() => (
+    <DialogProvider>
+      <App />
+    </DialogProvider>
+  ), root);
 }

@@ -5,6 +5,7 @@ import {
   clearHistory,
   type QueryHistoryEntry,
 } from "./query-history";
+import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
 
 interface QueryHistoryPanelProps {
@@ -48,6 +49,7 @@ function truncateSql(sql: string, maxLen: number): string {
 }
 
 export default function QueryHistoryPanel(props: QueryHistoryPanelProps) {
+  const { showConfirm } = useDialog();
   const [keyword, setKeyword] = createSignal("");
   const [timeFilter, setTimeFilter] = createSignal<"all" | "today" | "week">("all");
   const [entries, setEntries] = createSignal<QueryHistoryEntry[]>([]);
@@ -113,7 +115,7 @@ export default function QueryHistoryPanel(props: QueryHistoryPanelProps) {
   };
 
   const handleClearAll = async () => {
-    if (!confirm("确定清空全部查询历史？")) return;
+    if (!(await showConfirm("确定清空全部查询历史？", "清空查询历史"))) return;
     try {
       await clearHistory();
       setRefreshKey((k) => k + 1);

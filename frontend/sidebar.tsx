@@ -14,6 +14,7 @@ import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
 import type { ConnectionInfo } from "./app";
 import { findStoredConnection, hasStoredConnection, createGroup, updateStoredConnectionMeta, type ConnectionList, type StoredConnection, type StoredConnectionItem, type StoredConnectionGroup } from "./connection-storage";
+import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
 
 // 数据库对象类型
@@ -85,6 +86,7 @@ function NodeIcon(props: { type: NodeType }) {
 }
 
 export default function Sidebar(props: SidebarProps) {
+  const { showPrompt } = useDialog();
   const panel = Resizable.usePanelContext();
   const onCollapse = () => panel.collapse();
   const collapsed = () => panel.collapsed();
@@ -662,12 +664,14 @@ export default function Sidebar(props: SidebarProps) {
         break;
       case "createNewGroup": {
         closeContextMenu();
-        const name = prompt("请输入分组名称");
-        if (name?.trim()) {
-          createGroup(name.trim())
-            .then(() => props.onRefreshSavedConnections?.())
-            .catch((e) => console.warn("创建分组失败:", e));
-        }
+        (async () => {
+          const name = await showPrompt("请输入分组名称", "新建分组");
+          if (name?.trim()) {
+            createGroup(name.trim())
+              .then(() => props.onRefreshSavedConnections?.())
+              .catch((e) => console.warn("创建分组失败:", e));
+          }
+        })();
         return;
       }
       case "newTable":
@@ -771,13 +775,15 @@ export default function Sidebar(props: SidebarProps) {
           closeContextMenu();
           const storedId = node.storedId ?? (node.type === "connection" ? node.connectionId : null);
           if (storedId) {
-            const name = prompt("请输入新分组名称");
-            if (name?.trim()) {
-              createGroup(name.trim())
-                .then(() => updateStoredConnectionMeta(storedId, { group: name.trim() }))
-                .then(() => props.onRefreshSavedConnections?.())
-                .catch((e) => console.warn("操作失败:", e));
-            }
+            (async () => {
+              const name = await showPrompt("请输入新分组名称", "新建分组");
+              if (name?.trim()) {
+                createGroup(name.trim())
+                  .then(() => updateStoredConnectionMeta(storedId, { group: name.trim() }))
+                  .then(() => props.onRefreshSavedConnections?.())
+                  .catch((e) => console.warn("操作失败:", e));
+              }
+            })();
           }
           return;
         }

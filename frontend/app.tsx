@@ -14,6 +14,7 @@ import {
   type StoredConnection,
   type ConnectionList,
 } from './connection-storage';
+import { useDialog } from './dialog-context';
 import { vscode } from './theme';
 
 export interface ConnectionInfo {
@@ -72,6 +73,7 @@ export interface ConnectionEditTab {
 export type Tab = QueryTab | DesignTableTab | DdlViewTab | FunctionDdlTab | ConnectionFormTab | ConnectionEditTab;
 
 export default function App() {
+  const { showAlert } = useDialog();
   const [connections, setConnections] = createStore<ConnectionInfo[]>([]);
   const [savedConnections, setSavedConnections] = createSignal<ConnectionList>([]);
   const [externalQuery, setExternalQuery] = createSignal<{ connectionId: string; sql: string } | null>(null);
@@ -132,11 +134,11 @@ export default function App() {
         setShowConnectionForm(false);
         return { success: true, connectionId };
       } else {
-        alert(`连接失败: ${error ?? '未知错误'}`);
+        showAlert(`连接失败: ${error ?? '未知错误'}`, '连接失败');
         return { success: false };
       }
     } catch (e) {
-      alert(`连接失败: ${e instanceof Error ? e.message : String(e)}`);
+      showAlert(`连接失败: ${e instanceof Error ? e.message : String(e)}`, '连接失败');
       return { success: false };
     } finally {
       setConnectingSavedId(null);

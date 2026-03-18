@@ -7,6 +7,7 @@ import { setTransport } from "./transport";
 import { ElectrobunTransport, handleBackendEvent } from "./transport/electrobun-transport";
 import { render } from "solid-js/web";
 import App from "./app";
+import { DialogProvider } from "./dialog-context";
 
 const rpc = Electroview.defineRPC<AppRPCType>({
   handlers: {
@@ -24,5 +25,9 @@ setTransport(new ElectrobunTransport());
 
 const root = document.getElementById("root");
 if (root) {
-  render(() => <App />, root);
+  render(() => (
+    <DialogProvider>
+      <App />
+    </DialogProvider>
+  ), root);
 }
