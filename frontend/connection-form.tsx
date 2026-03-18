@@ -1,8 +1,9 @@
-import { For, createSignal, Show } from 'solid-js';
+import { For, createSignal, Show, createEffect, createResource } from 'solid-js';
 import { connectPostgres } from './api';
-import { saveConnection } from './connection-storage';
+import { saveConnection, getStoredConnectionParams } from './connection-storage';
 import { vscode } from './theme';
 import type { PostgresLoginParams } from '../shared/src';
+import type { StoredConnection } from './connection-storage';
 
 function generateConnectionId(): string {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -29,6 +30,24 @@ const initForm = (): PostgresLoginParams =>
     return acc;
   }, {} as PostgresLoginParams);
 
+/** 将后端返回的参数规范化为表单所需格式（确保字符串类型等） */
+function normalizeParamsForForm(p: PostgresLoginParams): PostgresLoginParams {
+  return {
+    host: String(p.host ?? ''),
+    port: String(p.port ?? '5432'),
+    database: String(p.database ?? ''),
+    username: String(p.username ?? ''),
+    password: String(p.password ?? ''),
+    sshEnabled: p.sshEnabled,
+    sshHost: p.sshHost != null ? String(p.sshHost) : undefined,
+    sshPort: p.sshPort != null ? String(p.sshPort) : '22',
+    sshUsername: p.sshUsername != null ? String(p.sshUsername) : undefined,
+    sshPassword: p.sshPassword != null ? String(p.sshPassword) : undefined,
+    sshPrivateKey: p.sshPrivateKey != null ? String(p.sshPrivateKey) : undefined,
+    connectionTimeoutSec: typeof p.connectionTimeoutSec === 'number' ? p.connectionTimeoutSec : 30,
+  };
+}
+
 const sshFields: Array<{ key: keyof PostgresLoginParams; label: string; desc: string; example: string; type?: 'password' | 'textarea' }> = [
   { key: 'sshHost', label: 'SSH 主机', desc: '跳板机地址', example: 'jump.example.com' },
   { key: 'sshPort', label: 'SSH 端口', desc: '跳板机 SSH 端口', example: '22' },
@@ -45,13 +64,18 @@ interface ConnectionFormProps {
   connectionInfo?: string;
   connectionId?: string;
   onDisconnect?: (connectionId: string) => void;
+  /** 编辑模式：与新建相同的完整表单，可编辑所有字段 */
+  editStored?: StoredConnection;
 }
 
 export default function ConnectionForm(props: ConnectionFormProps) {
   const [form, setForm] = createSignal<PostgresLoginParams>(initForm());
   const [connecting, setConnecting] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [rememberPassword, setRememberPassword] = createSignal(false);
+  const [connectionName, setConnectionName] = createSignal(props.editStored?.name ?? props.editStored?.label ?? '');
+  const [connectionGroup, setConnectionGroup] = createSignal(props.editStored?.group ?? '');
 
   const onChange = (key: keyof PostgresLoginParams, value: string) => {
     setError(null);
@@ -70,24 +94,32 @@ export default function ConnectionForm(props: ConnectionFormProps) {
 
   const buildPayload = (): PostgresLoginParams => form();
 
+  const getDisplayLabel = () => {
+    const p = form();
+    return connectionName().trim() || `${p.username}@${p.host}:${p.port}/${p.database}`;
+  };
+
   const connect = async () => {
     setConnecting(true);
     setError(null);
     try {
-      const connectionId = props.connectionId ?? generateConnectionId();
+      const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
       const payload = buildPayload();
       const { sucess, error: err } = await connectPostgres(connectionId, payload);
       if (sucess) {
         const p = buildPayload();
         if (rememberPassword()) {
           try {
-            await saveConnection(connectionId, p);
+            await saveConnection(connectionId, p, {
+              name: connectionName().trim() || undefined,
+              group: connectionGroup().trim() || undefined,
+            });
             props.onSaved?.();
           } catch (e) {
             console.warn('保存连接失败:', e);
           }
         }
-        props.onConnected(connectionId, `${p.username}@${form().host}:${form().port}/${p.database}`);
+        props.onConnected(connectionId, getDisplayLabel());
       } else {
         setError(String(err ?? '连接失败'));
       }
@@ -98,7 +130,55 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     }
   };
 
-  if (props.compact && props.connectionId) {
+  const saveOnly = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
+      const payload = buildPayload();
+      await saveConnection(connectionId, payload, {
+        name: connectionName().trim() || undefined,
+        group: connectionGroup().trim() || undefined,
+      });
+      props.onSaved?.();
+    } catch (e: any) {
+      setError(e?.message ?? '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!props.editStored) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = buildPayload();
+      await saveConnection(props.editStored.id, payload, {
+        name: connectionName().trim() || undefined,
+        group: connectionGroup().trim() || undefined,
+      });
+      props.onSaved?.();
+    } catch (e: any) {
+      setError(e?.message ?? '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const [paramsResource] = createResource(
+    () => props.editStored?.id ?? null,
+    (id) => (id ? getStoredConnectionParams(id) : Promise.resolve(null))
+  );
+
+  createEffect(() => {
+    const p = paramsResource();
+    if (p) {
+      setForm(normalizeParamsForForm(p));
+    }
+  });
+
+  if (props.compact && props.connectionId && !props.editStored) {
     return (
       <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
         <span style={{ color: vscode.foreground, 'font-size': '13px' }}>
@@ -132,13 +212,19 @@ export default function ConnectionForm(props: ConnectionFormProps) {
       'border': `1px solid ${vscode.border}`,
     }}>
       <h2 style={{ 'margin': '0 0 16px 0', 'font-size': '16px', color: vscode.foreground }}>
-        PostgreSQL 连接
+        {props.editStored ? '编辑连接配置' : 'PostgreSQL 连接'}
       </h2>
-      <Show when={error()}>
-        <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>
-          {error()}
-        </div>
+      <Show when={props.editStored && paramsResource.loading}>
+        <div style={{ color: vscode.foregroundDim, 'margin-bottom': '12px', 'font-size': '13px' }}>加载连接配置中...</div>
       </Show>
+      <Show when={props.editStored && paramsResource.error}>
+        <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>加载失败，请重试</div>
+      </Show>
+        <Show when={error()}>
+          <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>
+            {error()}
+          </div>
+        </Show>
       <table style={{ 'border-collapse': 'collapse', width: '100%', 'max-width': '600px' }}>
         <thead>
           <tr>
@@ -170,7 +256,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                     }}
                   />
                 </td>
-        </tr>
+              </tr>
             )}
           </For>
         </tbody>
@@ -242,31 +328,111 @@ export default function ConnectionForm(props: ConnectionFormProps) {
         </div>
       </Show>
 
-      <label style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-top': '12px', cursor: 'pointer', 'font-size': '13px', color: vscode.foregroundDim }}>
-        <input
-          type="checkbox"
-          checked={rememberPassword()}
-          onInput={(e) => setRememberPassword(e.currentTarget.checked)}
-        />
-        记住密码（加密存储）
-      </label>
-      <button
-        onClick={connect}
-        disabled={connecting()}
-        style={{
-          'margin-top': '12px',
-          padding: '8px 20px',
-          'font-size': '13px',
-          'background-color': connecting() ? vscode.buttonSecondary : vscode.buttonBg,
-          color: '#fff',
-          border: 'none',
-          cursor: connecting() ? 'not-allowed' : 'pointer',
-        }}
-        onMouseEnter={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
-        onMouseLeave={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
-      >
-        {connecting() ? '连接中...' : '连接'}
-      </button>
+      <div style={{ 'margin-top': '16px', padding: '12px', 'background-color': vscode.inputBg, border: `1px solid ${vscode.border}`, 'border-radius': '4px' }}>
+        <div style={{ 'margin-bottom': '8px', 'font-size': '13px', color: vscode.foreground }}>连接配置（保存时生效）</div>
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+          <div>
+            <label style={{ display: 'block', 'font-size': '12px', color: vscode.foregroundDim, 'margin-bottom': '4px' }}>显示名称（可选）</label>
+            <input
+              type="text"
+              value={connectionName()}
+              onInput={(e) => setConnectionName(e.currentTarget.value)}
+              placeholder={props.editStored?.label ?? '如：生产库、测试库'}
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                border: `1px solid ${vscode.border}`,
+                'background-color': vscode.sidebarBg,
+                color: vscode.inputFg,
+                'font-size': '13px',
+                'box-sizing': 'border-box',
+              }}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', 'font-size': '12px', color: vscode.foregroundDim, 'margin-bottom': '4px' }}>分组（可选）</label>
+            <input
+              type="text"
+              value={connectionGroup()}
+              onInput={(e) => setConnectionGroup(e.currentTarget.value)}
+              placeholder="如：生产环境、开发环境"
+              style={{
+                width: '100%',
+                padding: '8px 12px',
+                border: `1px solid ${vscode.border}`,
+                'background-color': vscode.sidebarBg,
+                color: vscode.inputFg,
+                'font-size': '13px',
+                'box-sizing': 'border-box',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+      <Show when={!props.editStored}>
+        <label style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-top': '12px', cursor: 'pointer', 'font-size': '13px', color: vscode.foregroundDim }}>
+          <input
+            type="checkbox"
+            checked={rememberPassword()}
+            onInput={(e) => setRememberPassword(e.currentTarget.checked)}
+          />
+          记住密码（加密存储）
+        </label>
+      </Show>
+      <div style={{ display: 'flex', gap: '8px', 'margin-top': '12px' }}>
+        <button
+          onClick={props.editStored ? saveEdit : connect}
+          disabled={props.editStored ? saving() : connecting()}
+          style={{
+            padding: '8px 20px',
+            'font-size': '13px',
+            'background-color': (props.editStored ? saving() : connecting()) ? vscode.buttonSecondary : vscode.buttonBg,
+            color: '#fff',
+            border: 'none',
+            cursor: (props.editStored ? saving() : connecting()) ? 'not-allowed' : 'pointer',
+          }}
+          onMouseEnter={(e) => !(props.editStored ? saving() : connecting()) && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
+        >
+          {props.editStored ? (saving() ? '保存中...' : '保存') : (connecting() ? '连接中...' : '连接')}
+        </button>
+        <Show when={props.editStored}>
+          <button
+            onClick={connect}
+            disabled={connecting()}
+            style={{
+              padding: '8px 20px',
+              'font-size': '13px',
+              'background-color': vscode.buttonSecondary,
+              color: vscode.foreground,
+              border: 'none',
+              cursor: connecting() ? 'not-allowed' : 'pointer',
+            }}
+            onMouseEnter={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
+          >
+            {connecting() ? '连接中...' : '连接'}
+          </button>
+        </Show>
+        <Show when={!props.editStored}>
+          <button
+            onClick={saveOnly}
+            disabled={saving()}
+            style={{
+              padding: '8px 20px',
+              'font-size': '13px',
+              'background-color': vscode.buttonSecondary,
+              color: vscode.foreground,
+              border: 'none',
+              cursor: saving() ? 'not-allowed' : 'pointer',
+            }}
+            onMouseEnter={(e) => !saving() && (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
+          >
+            {saving() ? '保存中...' : '仅保存配置'}
+          </button>
+        </Show>
+      </div>
     </div>
   );
 }

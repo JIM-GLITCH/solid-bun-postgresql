@@ -12,7 +12,7 @@ import {
 } from "../shared/src";
 import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
-import { listConnections, saveConnection, removeConnection, getConnectionParams } from "./connections-store";
+import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, addEmptyGroup } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { Client, Pool, type PoolClient } from "pg";
 import Cursor from "pg-cursor";
@@ -100,7 +100,7 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "connections/save": {
-      const { id, ...params } = payload as { id: string } & PostgresLoginParams;
+      const { id, name, group, ...params } = payload as { id: string; name?: string; group?: string } & PostgresLoginParams;
       if (!id || !params.host || !params.database || !params.username) {
         throw new Error("缺少必填字段");
       }
@@ -122,7 +122,7 @@ export async function handleApiRequest<M extends ApiMethod>(
           toSave.connectionTimeoutSec = params.connectionTimeoutSec;
         }
       }
-      saveConnection(id, toSave);
+      saveConnection(id, toSave, { name, group });
       return { success: true };
     }
 
@@ -133,12 +133,35 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { success: true };
     }
 
+    case "connections/update-meta": {
+      const { id, name, group } = payload as { id: string; name?: string; group?: string };
+      if (!id) throw new Error("缺少 id");
+      updateConnectionMeta(id, { name, group });
+      return { success: true };
+    }
+
     case "connections/connect": {
       const { id } = payload as { id: string };
       const params = getConnectionParams(id);
       if (!params) return { sucess: false, error: "未找到已保存的连接" };
       const { id: cid, ...loginParams } = params;
       return handleApiRequest("connect-postgres", { connectionId: cid, ...loginParams } as any);
+    }
+
+    case "connections/add-group": {
+      const { group } = payload as { group: string };
+      if (!group?.trim()) throw new Error("缺少分组名称");
+      addEmptyGroup(group.trim());
+      return { success: true };
+    }
+
+    case "connections/get-params": {
+      const { id } = payload as { id: string };
+      if (!id) throw new Error("缺少 id");
+      const params = getConnectionParams(id);
+      if (!params) return null;
+      const { id: _id, ...rest } = params;
+      return rest as PostgresLoginParams;
     }
 
     case "query-history/add": {
