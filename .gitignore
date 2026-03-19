@@ -1,6 +1,7 @@
 # Build
 out
 dist
+standalone/node-binaries
 *.ts.buildinfo
 .wrangler
 .output
@@ -12,6 +13,8 @@ app.config.timestamp_*.js
 # Environment
 .env
 .env*.local
+terraform.tfvars
+*.auto.tfvars
 scripts/test-ssh-config.json
 
 # Dependencies

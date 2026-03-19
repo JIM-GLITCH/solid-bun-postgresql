@@ -189,20 +189,23 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     return rows.join("\n");
   }
 
-  // 复制：当有选区时，将选中的单元格内容复制为制表符分隔格式（便于粘贴到 Excel）
-  const handleCopy = (e: ClipboardEvent) => {
-    if (document.activeElement?.closest("[data-sql-editor]")) return;
-    const text = getSelectionAsTabSeparated();
-    if (!text) return;
-    e.preventDefault();
-    writeClipboardText(text);
+  // 复制：仅当焦点在结果表格内且有选区时拦截
+  const getTableCopyText = (): string | null => {
+    if (document.activeElement?.closest("[data-sql-editor]")) return null;
+    if (!tableContainerRef()?.contains(document.activeElement)) return null;
+    return getSelectionAsTabSeparated();
   };
 
-  // Ctrl+C：webview 中 copy 事件可能不可靠，用 keydown 兜底
+  const handleCopy = (e: ClipboardEvent) => {
+    const text = getTableCopyText();
+    if (!text) return;
+    e.preventDefault();
+    e.clipboardData?.setData("text/plain", text);
+  };
+
   const handleCopyKeyDown = (e: KeyboardEvent) => {
     if (!((e.ctrlKey || e.metaKey) && e.key === "c")) return;
-    if (document.activeElement?.closest("[data-sql-editor]")) return;
-    const text = getSelectionAsTabSeparated();
+    const text = getTableCopyText();
     if (!text) return;
     e.preventDefault();
     e.stopPropagation();

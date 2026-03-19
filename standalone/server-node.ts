@@ -79,7 +79,8 @@ async function setupStatic() {
     );
   }
 
-  const isDev = __filename.endsWith(".ts");
+  // SEA 或打包后必为生产模式；仅 ts 源码直接跑时为开发
+  const isDev = !isSea && __filename.endsWith(".ts");
   const PORT = Number(process.env.PORT) || (isDev ? 3001 : 3000);
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);

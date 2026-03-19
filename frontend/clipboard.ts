@@ -1,44 +1,42 @@
 /**
- * 剪贴板工具：在 VSCode webview 中 navigator.clipboard 受限，通过扩展的 vscode.env.clipboard 桥接
+ * 剪贴板
+ * - VSCode webview：走扩展桥接
+ * - 非 webview（HTTP/HTTPS）：直接用 execCommand，通用且简单
  */
 
 import { getTransport } from "./transport";
 
-function isVscodeWebview(): boolean {
-  return typeof (window as any).acquireVsCodeApi === "function";
-}
+const isWebview = () => typeof (window as any).acquireVsCodeApi === "function";
 
-/** 写入剪贴板 */
-export async function writeClipboardText(text: string): Promise<void> {
-  if (isVscodeWebview()) {
-    const transport = getTransport();
-    await transport.request("vscode/clipboard-write", { text });
-    return;
-  }
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  // 降级：execCommand（已废弃但部分环境仍可用）
+function execCommandCopy(text: string): void {
   const ta = document.createElement("textarea");
   ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
+  ta.style.cssText = "position:fixed;opacity:0";
   document.body.appendChild(ta);
   ta.select();
   document.execCommand("copy");
-  document.body.removeChild(ta);
+  ta.remove();
 }
 
-/** 读取剪贴板 */
+export async function writeClipboardText(text: string): Promise<void> {
+  if (isWebview()) {
+    await getTransport().request("vscode/clipboard-write", { text });
+    return;
+  }
+  execCommandCopy(text);
+}
+
 export async function readClipboardText(): Promise<string> {
-  if (isVscodeWebview()) {
-    const transport = getTransport();
-    const res = (await transport.request("vscode/clipboard-read", {})) as { text?: string };
+  if (isWebview()) {
+    const res = (await getTransport().request("vscode/clipboard-read", {})) as { text?: string };
     return res?.text ?? "";
   }
-  if (navigator.clipboard?.readText) {
-    return await navigator.clipboard.readText();
+  try {
+    if (navigator.clipboard?.readText) {
+      return await navigator.clipboard.readText();
+    }
+  } catch {
+    /* 非安全上下文 */
   }
   return "";
 }
