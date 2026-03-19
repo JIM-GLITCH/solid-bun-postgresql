@@ -350,7 +350,28 @@ export default function SqlEditor(props: SqlEditorProps) {
           e.stopPropagation();
           doPaste();
         }
-        // C/X 不拦截，让 Monaco 处理 copy/cut
+        if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "x" || e.keyCode === monaco.KeyCode.KeyX)) {
+          e.preventDefault();
+          e.stopPropagation();
+          const model = editor?.getModel();
+          const sel = editor?.getSelection();
+          if (!model || !sel) return;
+          const text = sel.isEmpty()
+            ? model.getLineContent(sel.startLineNumber)
+            : model.getValueInRange(sel);
+          writeClipboardText(text);
+          if (sel.isEmpty()) {
+            // cut whole line: delete line including newline
+            const lineNumber = sel.startLineNumber;
+            const lineCount = model.getLineCount();
+            const range = lineNumber < lineCount
+              ? { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber + 1, endColumn: 1 }
+              : { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber, endColumn: model.getLineMaxColumn(lineNumber) };
+            editor!.executeEdits("cut", [{ range, text: "" }]);
+          } else {
+            editor!.executeEdits("cut", [{ range: sel, text: "" }]);
+          }
+        }
       });
       const dom = editor.getDomNode();
       if (dom) {

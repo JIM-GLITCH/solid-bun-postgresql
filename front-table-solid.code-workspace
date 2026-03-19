@@ -8,5 +8,7 @@
       "name": "vscode-extension",
       "path": "vscode-extension"
     }
-  ]
+  ],
+  "settings": {
+  }
 }
