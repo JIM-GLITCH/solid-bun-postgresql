@@ -41,7 +41,7 @@ const extensionBuild = await Bun.build({
     target: "node",
     format: "cjs",
     sourcemap: "external",
-    external: ["vscode"],
+    external: ["cpu-features","vscode"],
 });
 
 if (!extensionBuild.success) {

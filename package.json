@@ -1,3 +1,4 @@
+
 {
   "name": "solid-project",
   "version": "0.0.0",
@@ -13,7 +14,7 @@
     "build-extension": "bun run vscode-extension/build.ts",
     "publish-extension": "bun run build-extensionc; cd vscode-extension; vsce publish",
     "electrobun:start": "bun run build:electrobun ; bunx electrobun dev",
-    "build:electrobun": "bun run build:electrobun:frontend && bun install && bunx electrobun build",
+    "build:electrobun": "bun run build:electrobun:frontend  && bunx electrobun build",
     "build:electrobun:frontend": "bun run electrobun-app/build.ts",
     "electrobun:package:canary": "bun run build:electrobun:frontend && bunx electrobun build --env=canary",
     "electrobun:package:stable": "bun run build:electrobun:frontend && bunx electrobun build --env=stable",
