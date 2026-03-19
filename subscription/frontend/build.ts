@@ -6,11 +6,10 @@ import { join } from "path";
 const outDir = join(import.meta.dir, "dist");
 
 await Bun.build({
-  entrypoints: [join(import.meta.dir, "src", "app.ts")],
+  entrypoints: [join(import.meta.dir, "src", "index.html")],
   outdir: outDir,
-  naming: "app.js",
-  target: "browser",
   minify: process.env.NODE_ENV === "production",
+  target: "browser",
 });
 
-console.log("[subscription/frontend] built → dist/app.js");
+console.log("[subscription/frontend] built → dist/index.html");

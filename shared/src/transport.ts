@@ -41,6 +41,8 @@ export type ApiMethod =
   | "postgres/primary-keys"
   | "postgres/unique-constraints"
   | "postgres/import-rows"
+  | "postgres/table-comment"
+  | "postgres/check-constraints"
   | "vscode/save-file"
   | "vscode/read-file"
   | "vscode/clipboard-write"
@@ -102,6 +104,8 @@ export type ApiRequestPayload = {
   "vscode/clipboard-write": { text: string };
   /** VSCode 插件内：读取剪贴板 */
   "vscode/clipboard-read": Record<string, never>;
+  "postgres/table-comment": { connectionId: string; schema: string; table: string };
+  "postgres/check-constraints": { connectionId: string; schema: string; table: string };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

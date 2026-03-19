@@ -48,7 +48,6 @@
     "babel-preset-solid": "^1.9.10",
     "baseline-browser-mapping": "^2.9.14",
     "concurrently": "^9.2.1",
-    "electrobun": "^1.15.1",
     "eslint": "^9.25.1",
     "jsdom": "^25.0.1",
     "pkg": "^5.8.1",

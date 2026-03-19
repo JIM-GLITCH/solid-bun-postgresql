@@ -175,9 +175,18 @@ export async function importRows(
   }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
+/** 获取表注释 */
+export async function getTableComment(connectionId: string, schema: string, table: string): Promise<{ comment: string | null }> {
+  return api().request("postgres/table-comment", { connectionId, schema, table }) as Promise<{ comment: string | null }>;
+}
+
+/** 获取检查约束列表 */
+export async function getCheckConstraints(connectionId: string, schema: string, table: string): Promise<{ constraints: Array<{ name: string; expression: string }> }> {
+  return api().request("postgres/check-constraints", { connectionId, schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
+}
+
 /** 订阅服务端推送事件 */
-export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-  return api().subscribeEvents(connectionId, callback);
+export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {  return api().subscribeEvents(connectionId, callback);
 }
 
 /** VSCode 插件内：保存文件到用户选择路径。返回 true 表示已保存，false 表示用户取消，抛错时可回退到浏览器下载。 */

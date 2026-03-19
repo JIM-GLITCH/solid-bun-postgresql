@@ -548,7 +548,21 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
       const session = getS(cid);
       const result = await session.backGroundPool.query(
-        `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2 ORDER BY indexname`,
+        `SELECT
+           i.relname AS index_name,
+           am.amname AS index_type,
+           ix.indisunique AS is_unique,
+           ix.indisprimary AS is_primary,
+           array_agg(a.attname ORDER BY array_position(ix.indkey, a.attnum)) AS columns
+         FROM pg_index ix
+         JOIN pg_class c ON c.oid = ix.indrelid
+         JOIN pg_class i ON i.oid = ix.indexrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         JOIN pg_am am ON am.oid = i.relam
+         JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ANY(ix.indkey)
+         WHERE n.nspname = $1 AND c.relname = $2
+         GROUP BY i.relname, am.amname, ix.indisunique, ix.indisprimary
+         ORDER BY i.relname`,
         [schema, table]
       );
       return { indexes: result.rows };
@@ -632,11 +646,14 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
       const session = getS(cid);
       const outgoingResult = await session.backGroundPool.query(
-        `SELECT tc.constraint_name, tc.table_schema AS source_schema, tc.table_name AS source_table,
-         kcu.column_name AS source_column, ccu.table_schema AS target_schema, ccu.table_name AS target_table, ccu.column_name AS target_column
+        `SELECT tc.constraint_name,
+         kcu.column_name AS source_column,
+         ccu.table_schema AS target_schema, ccu.table_name AS target_table, ccu.column_name AS target_column,
+         rc.delete_rule, rc.update_rule
          FROM information_schema.table_constraints tc
          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
          JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         JOIN information_schema.referential_constraints rc ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
          WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2`,
         [schema, table]
       );
@@ -900,6 +917,38 @@ export async function handleApiRequest<M extends ApiMethod>(
         sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
         throw e;
       }
+    }
+
+    case "postgres/table-comment": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const result = await session.backGroundPool.query(
+        `SELECT obj_description(c.oid, 'pg_class') AS comment
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1 AND c.relname = $2`,
+        [schema, table]
+      );
+      return { comment: result.rows[0]?.comment ?? null };
+    }
+
+    case "postgres/check-constraints": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const result = await session.backGroundPool.query(
+        `SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS expression
+         FROM pg_constraint con
+         JOIN pg_class c ON c.oid = con.conrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE con.contype = 'c'
+           AND n.nspname = $1
+           AND c.relname = $2
+           AND con.conname NOT LIKE '%_not_null'`,
+        [schema, table]
+      );
+      return { constraints: result.rows };
     }
 
     default:

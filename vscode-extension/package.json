@@ -2,7 +2,7 @@
   "name": "db-player",
   "displayName": "DB Player",
   "description": "Database client (Postgres) in webview",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "publisher": "lilr",
   "keywords": [
     "dbplayer",
@@ -17,7 +17,7 @@
     "type": "git",
     "url": "https://github.com/JIM-GLITCH/solid-bun-postgresql"
   },
-  "engines": { "vscode": "^1.109.0" },
+  "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
   "activationEvents": ["*"],
   "main": "./out/extension.js",

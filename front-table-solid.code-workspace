@@ -5,8 +5,8 @@
       "path": "."
     },
     {
-      "name": "electrobun-app",
-      "path": "electrobun-app"
+      "name": "vscode-extension",
+      "path": "vscode-extension"
     }
   ]
 }

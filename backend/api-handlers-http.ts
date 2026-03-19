@@ -69,6 +69,8 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/database-dump", method: "postgres/database-dump" },
   { path: "/api/postgres/import-rows", method: "postgres/import-rows" },
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
+  { path: "/api/postgres/table-comment", method: "postgres/table-comment" },
+  { path: "/api/postgres/check-constraints", method: "postgres/check-constraints" },
 ];
 
 /** 创建 HTTP 格式的 API 路由（供 Hono 使用） */
