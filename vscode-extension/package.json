@@ -2,7 +2,7 @@
   "name": "db-player",
   "displayName": "DB Player",
   "description": "Database client (Postgres) in webview",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "lilr",
   "keywords": [
     "dbplayer",
