@@ -11,7 +11,7 @@ export type ApiMethod =
   | "connections/save"
   | "connections/delete"
   | "connections/update-meta"
-  | "connections/add-group"
+  | "connections/reorder"
   | "connections/get-params"
   | "connections/connect"
   | "query-history/add"
@@ -51,10 +51,10 @@ export type ApiMethod =
 /** 请求载荷 */
 export type ApiRequestPayload = {
   "connections/list": {};
-  "connections/save": { id: string; name?: string; group?: string } & PostgresLoginParams;
+  "connections/save": { id: string; name?: string } & PostgresLoginParams;
   "connections/delete": { id: string };
-  "connections/update-meta": { id: string; name?: string; group?: string };
-  "connections/add-group": { group: string };
+  "connections/update-meta": { id: string; name?: string };
+  "connections/reorder": { list: unknown[] };
   "connections/get-params": { id: string };
   "connections/connect": { id: string; sessionId?: string };
   "query-history/add": { sql: string; connectionId?: string };

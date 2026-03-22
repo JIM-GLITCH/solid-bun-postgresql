@@ -6,8 +6,18 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { pool, query, queryOne } from "./db";
+import { pool, queryOne } from "./db";
 import { signJwt, verifyJwt } from "./auth";
+import { handle } from 'hono-alibaba-cloud-fc3-adapter';
+import {
+  PLANS,
+  genOrderNo,
+  createAlipayOrder,
+  createWxpayOrder,
+  verifyAlipayNotify,
+  verifyWxpayNotify,
+  activateSubscription,
+} from "./payment";
 
 const app = new Hono();
 
@@ -32,7 +42,10 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 // ========== GitHub 登录 - 跳转授权 ==========
 app.get("/api/auth/github", (c) => {
   const redirectUri = `${API_BASE_URL.replace(/\/$/, "")}/api/auth/github/callback`;
-  const state = crypto.randomUUID();
+  const source = c.req.query("source");
+  const statePayload: { nonce: string; source?: string } = { nonce: crypto.randomUUID() };
+  if (source !== undefined) statePayload.source = source;
+  const state = btoa(JSON.stringify(statePayload));
   const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email&state=${state}`;
   return c.redirect(url);
 });
@@ -42,6 +55,13 @@ app.get("/api/auth/github", (c) => {
 app.get("/api/auth/github/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
+  let source: string | undefined;
+  try {
+    const parsed = JSON.parse(atob(state ?? ""));
+    source = parsed.source;
+  } catch {
+    source = undefined;
+  }
   if (!code) {
     return c.json({ success: false, error: "缺少 code" }, 400);
   }
@@ -79,6 +99,17 @@ app.get("/api/auth/github/callback", async (c) => {
       return c.json({ success: false, error: "获取用户信息失败" }, 400);
     }
 
+    // 如果没有公开邮箱，调 /user/emails 拿主邮箱
+    let email = ghUser.email ?? null;
+    if (!email) {
+      const emailsRes = await fetch("https://api.github.com/user/emails", {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      const emails = (await emailsRes.json()) as Array<{ email: string; primary: boolean; verified: boolean }>;
+      const primaryEmail = emails.find((e) => e.primary && e.verified);
+      email = primaryEmail?.email ?? null;
+    }
+
     const provider = "github";
     const providerUserId = String(ghUser.id);
 
@@ -96,7 +127,7 @@ app.get("/api/auth/github/callback", async (c) => {
       // 新建用户
       const insertUser = await pool.query(
         "INSERT INTO users (email, name, avatar_url) VALUES ($1, $2, $3) RETURNING id",
-        [ghUser.email ?? null, ghUser.name ?? ghUser.login, ghUser.avatar_url ?? null]
+        [email, ghUser.name ?? ghUser.login, ghUser.avatar_url ?? null]
       );
       userId = insertUser.rows[0].id;
       await pool.query(
@@ -107,16 +138,17 @@ app.get("/api/auth/github/callback", async (c) => {
 
     const token = await signJwt({
       userId,
-      email: (await queryOne<{ email: string }>("SELECT email FROM users WHERE id = $1", [userId]))
-        ?.email ?? "",
+      email: email ?? (await queryOne<{ email: string }>("SELECT email FROM users WHERE id = $1", [userId]))?.email ?? null,
     });
 
-    // 重定向到前端，带上 token
-    const redirect = `${FRONTEND_URL}${FRONTEND_URL.endsWith("/") ? "" : "/"}?token=${token}`;
-    return c.redirect(redirect);
+    // callback 用 HTML meta refresh 跳转，避免 FC 拦截外部 302
+    const baseRedirect = `${FRONTEND_URL}${FRONTEND_URL.endsWith("/") ? "" : "/"}?token=${token}`;
+    const redirectUrl = source ? `${baseRedirect}&source=${encodeURIComponent(source)}` : baseRedirect;
+    return c.html(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head><body>登录成功，跳转中...</body></html>`);
   } catch (e) {
     console.error("[github callback]", e);
-    return c.json({ success: false, error: "登录失败" }, 500);
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ success: false, error: "登录失败", detail: msg }, 500);
   }
 });
 
@@ -151,12 +183,113 @@ app.get("/api/subscription", async (c) => {
   });
 });
 
-const port = parseInt(process.env.PORT ?? "9000", 10);
-console.log(`[subscription-api] listening on port ${port}`);
+// ========== 创建支付订单 ==========
+app.post("/api/payment/create", async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) return c.json({ success: false, error: "未登录" }, 401);
 
-export default {
-  port,
-  fetch: app.fetch,
-};
+  const body = await c.req.json<{ plan: string; method: "alipay" | "wxpay" }>();
+  const { plan, method } = body;
+  if (!PLANS[plan]) return c.json({ success: false, error: "无效套餐" }, 400);
+  if (method !== "alipay" && method !== "wxpay") return c.json({ success: false, error: "无效支付方式" }, 400);
 
-export { app };
+  const orderNo = genOrderNo();
+  const p = PLANS[plan];
+
+  // 写入订单记录
+  await pool.query(
+    `INSERT INTO payment_orders (order_no, user_id, plan, amount, status) VALUES ($1,$2,$3,$4,'pending')`,
+    [orderNo, user.userId, plan, p.amount]
+  );
+
+  const notifyBase = (process.env.API_BASE_URL ?? "").replace(/\/$/, "");
+
+  try {
+    if (method === "alipay") {
+      const returnUrl = `${process.env.FRONTEND_URL ?? ""}/`;
+      const payUrl = await createAlipayOrder(orderNo, plan, `${notifyBase}/api/payment/alipay/notify`, returnUrl);
+      return c.json({ success: true, method: "alipay", payUrl });
+    } else {
+      const codeUrl = await createWxpayOrder(orderNo, plan, `${notifyBase}/api/payment/wxpay/notify`);
+      return c.json({ success: true, method: "wxpay", codeUrl, orderNo });
+    }
+  } catch (e: any) {
+    console.error("[payment/create]", e);
+    return c.json({ success: false, error: "创建订单失败" }, 500);
+  }
+});
+
+// ========== 支付宝异步回调 ==========
+app.post("/api/payment/alipay/notify", async (c) => {
+  const body = await c.req.parseBody() as Record<string, string>;
+  if (!verifyAlipayNotify(body)) {
+    return c.text("fail");
+  }
+  if (body.trade_status === "TRADE_SUCCESS" || body.trade_status === "TRADE_FINISHED") {
+    try {
+      await activateSubscription(body.out_trade_no, body.trade_no, "alipay");
+    } catch (e) {
+      console.error("[alipay/notify]", e);
+      return c.text("fail");
+    }
+  }
+  return c.text("success");
+});
+
+// ========== 微信支付异步回调 ==========
+app.post("/api/payment/wxpay/notify", async (c) => {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(c.req.header())) {
+    if (v) headers[k.toLowerCase()] = v;
+  }
+  const rawBody = await c.req.text();
+  const result = await verifyWxpayNotify(headers, rawBody);
+  if (!result) {
+    return c.json({ code: "FAIL", message: "验签失败" }, 400);
+  }
+  try {
+    await activateSubscription(result.orderNo, result.tradeNo, "wxpay");
+  } catch (e) {
+    console.error("[wxpay/notify]", e);
+    return c.json({ code: "FAIL", message: "处理失败" }, 500);
+  }
+  return c.json({ code: "SUCCESS" });
+});
+
+// ========== 查询订单状态（前端轮询用） ==========
+app.get("/api/payment/order/:orderNo", async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) return c.json({ success: false, error: "未登录" }, 401);
+
+  const orderNo = c.req.param("orderNo");
+  const row = await queryOne<{ status: string; plan: string }>(
+    `SELECT status, plan FROM payment_orders WHERE order_no=$1 AND user_id=$2`,
+    [orderNo, user.userId]
+  );
+  if (!row) return c.json({ success: false, error: "订单不存在" }, 404);
+  return c.json({ success: true, status: row.status, plan: row.plan });
+});
+
+// ========== VSCode 订阅校验（轻量，无需完整订阅信息） ==========
+app.get("/api/verify-license", async (c) => {
+  const user = await getAuthUser(c);
+  if (!user) return c.json({ valid: false }, 401);
+
+  const sub = await queryOne<{ expires_at: Date | null }>(
+    `SELECT expires_at FROM subscriptions WHERE user_id=$1 AND status='active' ORDER BY expires_at DESC NULLS LAST LIMIT 1`,
+    [user.userId]
+  );
+
+  if (!sub) return c.json({ valid: false });
+  const expiresAt = sub.expires_at ? Math.floor(sub.expires_at.getTime() / 1000) : null;
+  const valid = !expiresAt || expiresAt > Math.floor(Date.now() / 1000);
+  return c.json({ valid, expiresAt });
+});
+
+
+
+app.post("/", async  (c)=>{
+  return c.json("fuck you")
+})
+
+export const handler = handle(app)

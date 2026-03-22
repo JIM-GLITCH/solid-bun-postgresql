@@ -6,12 +6,15 @@
     "dev": "bun run --watch src/index.ts",
     "dev:all": "bun run --watch dev-with-portal.ts",
     "start": "bun run src/index.ts",
+    "build": "bun run build.ts",
     "deploy": "bun run deploy.ts"
   },
   "dependencies": {
+    "alipay-sdk": "^4.14.0",
     "hono": "^4.6.0",
     "jose": "^5.9.6",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "wechatpay-node-v3": "^2.2.1"
   },
   "devDependencies": {
     "@types/pg": "^8.11.0"

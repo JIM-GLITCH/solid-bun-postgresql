@@ -39,7 +39,7 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/connections/save", method: "connections/save" },
   { path: "/api/connections/delete", method: "connections/delete" },
   { path: "/api/connections/update-meta", method: "connections/update-meta" },
-  { path: "/api/connections/add-group", method: "connections/add-group" },
+  { path: "/api/connections/reorder", method: "connections/reorder" },
   { path: "/api/connections/get-params", method: "connections/get-params" },
   { path: "/api/connections/connect", method: "connections/connect", useSucess: true, status200: true },
   { path: "/api/query-history/add", method: "query-history/add" },

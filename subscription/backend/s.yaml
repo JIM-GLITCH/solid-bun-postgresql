@@ -1,0 +1,43 @@
+edition: 3.0.0
+name: db-player-subscription
+access: 'default'
+
+vars:
+  region: cn-hangzhou
+
+resources:
+  subscription-api:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: subscription-server
+      description: DB Player 订阅 API
+      runtime: nodejs20
+      handler: index.handler
+      timeout: 30
+      memorySize: 512
+      cpu: 0.5
+      diskSize: 512
+      code: ./out
+      environmentVariables:
+        DATABASE_URL: __DATABASE_URL__
+        JWT_SECRET: __JWT_SECRET__
+        GITHUB_CLIENT_ID: __GITHUB_CLIENT_ID__
+        GITHUB_CLIENT_SECRET: __GITHUB_CLIENT_SECRET__
+        FRONTEND_URL: __FRONTEND_URL__
+        API_BASE_URL: __API_BASE_URL__
+        ALIPAY_APP_ID: __ALIPAY_APP_ID__
+        ALIPAY_PRIVATE_KEY: __ALIPAY_PRIVATE_KEY__
+        ALIPAY_PUBLIC_KEY: __ALIPAY_PUBLIC_KEY__
+        ALIPAY_SANDBOX: __ALIPAY_SANDBOX__
+        WECHAT_APP_ID: __WECHAT_APP_ID__
+        WECHAT_MCH_ID: __WECHAT_MCH_ID__
+        WECHAT_PUBLIC_KEY: __WECHAT_PUBLIC_KEY__
+        WECHAT_PRIVATE_KEY: __WECHAT_PRIVATE_KEY__
+        WECHAT_SERIAL_NO: __WECHAT_SERIAL_NO__
+      # 若 RDS 在 VPC 内，取消注释并填写以下配置
+      # vpcConfig:
+      #   vpcId: vpc-xxx
+      #   vSwitchIds:
+      #     - vsw-xxx
+      #   securityGroupId: sg-xxx

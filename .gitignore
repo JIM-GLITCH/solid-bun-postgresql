@@ -45,3 +45,7 @@ Thumbs.db
 /build-test/
 /build-view/
 electrobun-app/dist-electrobun/
+
+# 订阅模块环境变量
+subscription/backend/.env
+subscription/backend/s.deploy.yaml

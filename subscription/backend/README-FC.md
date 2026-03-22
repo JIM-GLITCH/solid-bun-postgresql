@@ -41,7 +41,16 @@ ACR_NAMESPACE=your-namespace bun run deploy
 | GITHUB_CLIENT_ID | GitHub OAuth App Client ID |
 | GITHUB_CLIENT_SECRET | GitHub OAuth App Secret |
 | FRONTEND_URL | 前端地址，登录成功后重定向 |
-| API_BASE_URL | API 自身地址（FC 的 HTTP 触发器 URL），用于 GitHub 回调 |
+| API_BASE_URL | API 自身地址（FC 的 HTTP 触发器 URL），用于 GitHub 回调和支付回调 |
+| ALIPAY_APP_ID | 支付宝应用 ID |
+| ALIPAY_PRIVATE_KEY | 支付宝应用私钥（换行用 \n） |
+| ALIPAY_PUBLIC_KEY | 支付宝公钥（换行用 \n） |
+| ALIPAY_SANDBOX | 沙箱模式：true / false |
+| WECHAT_APP_ID | 微信支付 AppID |
+| WECHAT_MCH_ID | 微信支付商户号 |
+| WECHAT_PUBLIC_KEY | 微信支付平台证书公钥（换行用 \n） |
+| WECHAT_PRIVATE_KEY | 微信支付商户私钥（换行用 \n） |
+| WECHAT_SERIAL_NO | 微信支付平台证书序列号 |
 
 ## 5. 配置 VPC（访问 RDS）
 
@@ -80,3 +89,8 @@ bun run dev
 | /api/auth/github | GET | 跳转 GitHub 授权 |
 | /api/auth/github/callback | GET | GitHub 回调（自动） |
 | /api/subscription | GET | 订阅状态（需 Bearer token） |
+| /api/payment/create | POST | 创建支付订单（需 Bearer token），body: `{plan, method}` |
+| /api/payment/alipay/notify | POST | 支付宝异步回调（支付宝服务器调用） |
+| /api/payment/wxpay/notify | POST | 微信支付异步回调（微信服务器调用） |
+| /api/payment/order/:orderNo | GET | 查询订单状态（需 Bearer token，前端轮询用） |
+| /api/verify-license | GET | VSCode 插件订阅校验（需 Bearer token） |

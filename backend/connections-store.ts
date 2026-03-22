@@ -2,9 +2,7 @@
  * 服务端数据库连接持久化存储，使用 AES-GCM 加密
  * 存储路径：进程数据目录/connections.json
  *
- * 数据结构：ConnectionList = (Connection | Group)[]
- * - Connection: 未分组的连接，顶层
- * - Group: { group: string; connections: Connection[] } 分组
+ * 数据结构：Connection[] 扁平列表
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
@@ -21,10 +19,8 @@ export interface StoredConnectionMeta {
   label: string;
   enc: string;
   name?: string;
-  group?: string;
 }
 
-/** 单条连接（存储用，不含 group，group 由父级 Group 表示） */
 interface StoredConnectionItem {
   id: string;
   label: string;
@@ -32,14 +28,7 @@ interface StoredConnectionItem {
   name?: string;
 }
 
-/** 分组：group 名称 + 连接列表 */
-export interface StoredConnectionGroup {
-  group: string;
-  connections: StoredConnectionItem[];
-}
-
-/** 存储结构：顶层连接 + 分组 */
-export type ConnectionList = (StoredConnectionItem | StoredConnectionGroup)[];
+export type ConnectionList = StoredConnectionItem[];
 
 function getStorePath(): string {
   const base =
@@ -90,23 +79,19 @@ function makeLabel(params: PostgresLoginParams): string {
   return `${params.username}@${params.host}:${params.port}/${params.database}`;
 }
 
-function normalizeItem(raw: unknown): StoredConnectionItem {
+function normalizeItem(raw: unknown): StoredConnectionItem | null {
   const o = raw as Record<string, unknown>;
+  if (!o?.id || !o?.label || !o?.enc) return null;
   const item: StoredConnectionItem = {
-    id: String(o?.id ?? ""),
-    label: String(o?.label ?? ""),
-    enc: String(o?.enc ?? ""),
+    id: String(o.id),
+    label: String(o.label),
+    enc: String(o.enc),
   };
-  if (o?.name != null && o.name !== "") item.name = String(o.name);
+  if (o.name != null && o.name !== "") item.name = String(o.name);
   return item;
 }
 
-function isGroupNode(node: unknown): node is StoredConnectionGroup {
-  const o = node as Record<string, unknown>;
-  return o != null && Array.isArray(o.connections) && typeof o.group === "string";
-}
-
-/** 加载并迁移：旧格式(扁平+group) -> 新格式 ConnectionList */
+/** 加载并迁移旧格式（含分组）到扁平列表 */
 function loadRaw(): ConnectionList {
   const path = getStorePath();
   if (!existsSync(path)) return [];
@@ -115,41 +100,19 @@ function loadRaw(): ConnectionList {
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
 
-    const isNewFormat = arr.some((x: unknown) => isGroupNode(x));
-    if (isNewFormat) {
-      return arr
-        .map((node: unknown) => {
-          if (isGroupNode(node)) {
-            return {
-              group: node.group,
-              connections: (node.connections || [])
-                .map(normalizeItem)
-                .filter((c) => c.id && c.label && c.enc),
-            } as StoredConnectionGroup;
-          }
-          const c = normalizeItem(node);
-          return c.id && c.label && c.enc ? c : null;
-        })
-        .filter((x): x is StoredConnectionItem | StoredConnectionGroup => x != null);
-    }
-
-    const groupMap = new Map<string, StoredConnectionItem[]>();
-    const ungrouped: StoredConnectionItem[] = [];
-    for (const raw of arr) {
-      const o = raw as Record<string, unknown>;
-      const item = normalizeItem(raw);
-      if (!item.id || !item.label || !item.enc) continue;
-      const g = o?.group != null && o.group !== "" ? String(o.group) : "";
-      if (g) {
-        if (!groupMap.has(g)) groupMap.set(g, []);
-        groupMap.get(g)!.push(item);
+    const result: StoredConnectionItem[] = [];
+    for (const node of arr) {
+      const o = node as Record<string, unknown>;
+      // 旧格式分组节点：展开其中的连接
+      if (Array.isArray(o?.connections) && typeof o?.group === "string") {
+        for (const c of o.connections as unknown[]) {
+          const item = normalizeItem(c);
+          if (item) result.push(item);
+        }
       } else {
-        ungrouped.push(item);
+        const item = normalizeItem(node);
+        if (item) result.push(item);
       }
-    }
-    const result: ConnectionList = [...ungrouped];
-    for (const [group, connections] of groupMap.entries()) {
-      if (connections.length > 0) result.push({ group, connections });
     }
     return result;
   } catch {
@@ -163,19 +126,7 @@ function saveRaw(list: ConnectionList): void {
   writeFileSync(path, JSON.stringify(list, null, 2), { mode: 0o600 });
 }
 
-function findInList(list: ConnectionList, id: string): { item: StoredConnectionItem; group?: string } | null {
-  for (const node of list) {
-    if (isGroupNode(node)) {
-      const item = node.connections.find((c) => c.id === id);
-      if (item) return { item, group: node.group };
-    } else {
-      if (node.id === id) return { item: node };
-    }
-  }
-  return null;
-}
-
-/** 获取已保存连接列表（嵌套结构，供前端直接解析） */
+/** 获取已保存连接列表 */
 export function listConnections(): ConnectionList {
   return loadRaw();
 }
@@ -184,95 +135,65 @@ export function listConnections(): ConnectionList {
 export function saveConnection(
   id: string,
   params: PostgresLoginParams,
-  meta?: { name?: string; group?: string }
+  meta?: { name?: string }
 ): void {
   const enc = encrypt(JSON.stringify(params));
   const label = meta?.name?.trim() || makeLabel(params);
   const list = loadRaw();
+  const idx = list.findIndex((c) => c.id === id);
   const item: StoredConnectionItem = {
     id,
     label,
     enc,
     ...(meta?.name?.trim() && { name: meta.name.trim() }),
   };
-  const groupKey = meta?.group?.trim() || "";
-
-  const found = findInList(list, id);
-  if (found) {
-    removeFromList(list, id);
+  if (idx !== -1) {
+    list[idx] = item;
+  } else {
+    list.push(item);
   }
-  addToList(list, item, groupKey);
   saveRaw(list);
 }
 
-function addToList(list: ConnectionList, item: StoredConnectionItem, groupKey: string): void {
-  if (!groupKey) {
-    list.push(item);
-    return;
-  }
-  let g = list.find((n) => isGroupNode(n) && n.group === groupKey) as StoredConnectionGroup | undefined;
-  if (!g) {
-    g = { group: groupKey, connections: [] };
-    list.push(g);
-  }
-  g.connections.push(item);
-}
-
-function removeFromList(list: ConnectionList, id: string): void {
-  for (let i = 0; i < list.length; i++) {
-    const node = list[i];
-    if (isGroupNode(node)) {
-      node.connections = node.connections.filter((c: StoredConnectionItem) => c.id !== id);
-      return;
-    }
-    if ((node as StoredConnectionItem).id === id) {
-      list.splice(i, 1);
-      return;
-    }
-  }
-}
-
-/** 仅更新连接的显示名称和分组（不触及加密数据） */
-export function updateConnectionMeta(id: string, meta: { name?: string; group?: string }): void {
+/** 仅更新连接的显示名称 */
+export function updateConnectionMeta(id: string, meta: { name?: string }): void {
   const list = loadRaw();
-  const found = findInList(list, id);
-  if (!found) return;
-  removeFromList(list, id);
-  const { item } = found;
+  const idx = list.findIndex((c) => c.id === id);
+  if (idx === -1) return;
+  const item = list[idx];
   if (meta.name !== undefined) {
     item.label = meta.name.trim() || makeLabel(JSON.parse(decrypt(item.enc)) as PostgresLoginParams);
     item.name = meta.name.trim() || undefined;
   }
-  const newGroup = meta.group !== undefined ? meta.group.trim() || "" : found.group || "";
-  addToList(list, item, newGroup);
   saveRaw(list);
 }
 
 /** 删除已保存连接 */
 export function removeConnection(id: string): void {
   const list = loadRaw();
-  removeFromList(list, id);
-  saveRaw(list);
+  const idx = list.findIndex((c) => c.id === id);
+  if (idx !== -1) {
+    list.splice(idx, 1);
+    saveRaw(list);
+  }
 }
 
-/** 新建空分组 */
-export function addEmptyGroup(groupName: string): void {
-  const name = groupName?.trim();
-  if (!name) return;
-  const list = loadRaw();
-  const exists = list.some((n) => isGroupNode(n) && n.group === name);
-  if (exists) return;
-  list.push({ group: name, connections: [] });
+/** 原子性替换整个连接列表（用于拖拽排序） */
+export function reorderConnections(rawList: unknown[]): void {
+  const list: ConnectionList = (rawList as unknown[])
+    .map(normalizeItem)
+    .filter((x): x is StoredConnectionItem => x !== null);
   saveRaw(list);
 }
 
 /** 解密并返回连接参数（供服务端连接使用，不暴露给前端） */
 export function getConnectionParams(id: string): (PostgresLoginParams & { id: string }) | null {
-  const found = findInList(loadRaw(), id);
-  if (!found) return null;
+  const list = loadRaw();
+  const item = list.find((c) => c.id === id);
+  if (!item) return null;
   try {
-    const params = JSON.parse(decrypt(found.item.enc)) as PostgresLoginParams;
-    return { ...params, id: found.item.id };
+    const params = JSON.parse(decrypt(item.enc)) as PostgresLoginParams;
+    return { ...params, id: item.id };
   } catch {
     return null;
   }

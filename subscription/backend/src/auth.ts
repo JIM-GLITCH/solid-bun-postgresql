@@ -8,7 +8,7 @@ const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
 const JWT_ISSUER = "db-player";
 const JWT_AUDIENCE = "db-player-api";
 
-export async function signJwt(payload: { userId: number; email: string }): Promise<string> {
+export async function signJwt(payload: { userId: number; email: string | null }): Promise<string> {
   const secret = new TextEncoder().encode(JWT_SECRET);
   return new jose.SignJWT(payload)
     .setProtectedHeader({ alg: "HS256" })
@@ -19,7 +19,7 @@ export async function signJwt(payload: { userId: number; email: string }): Promi
     .sign(secret);
 }
 
-export async function verifyJwt(token: string): Promise<{ userId: number; email: string } | null> {
+export async function verifyJwt(token: string): Promise<{ userId: number; email: string | null } | null> {
   try {
     const secret = new TextEncoder().encode(JWT_SECRET);
     const { payload } = await jose.jwtVerify(token, secret, {
@@ -27,8 +27,8 @@ export async function verifyJwt(token: string): Promise<{ userId: number; email:
       audience: JWT_AUDIENCE,
     });
     const userId = payload.userId as number;
-    const email = payload.email as string;
-    if (typeof userId !== "number" || typeof email !== "string") return null;
+    const email = (payload.email as string | null) ?? null;
+    if (typeof userId !== "number") return null;
     return { userId, email };
   } catch {
     return null;

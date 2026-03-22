@@ -12,7 +12,7 @@ import {
 } from "../shared/src";
 import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
-import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, addEmptyGroup } from "./connections-store";
+import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { Client, Pool, type PoolClient } from "pg";
 import Cursor from "pg-cursor";
@@ -111,7 +111,7 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "connections/save": {
-      const { id, name, group, ...params } = payload as { id: string; name?: string; group?: string } & PostgresLoginParams;
+      const { id, name, ...params } = payload as { id: string; name?: string } & PostgresLoginParams;
       if (!id || !params.host || !params.database || !params.username) {
         throw new Error("缺少必填字段");
       }
@@ -133,7 +133,7 @@ export async function handleApiRequest<M extends ApiMethod>(
           toSave.connectionTimeoutSec = params.connectionTimeoutSec;
         }
       }
-      saveConnection(id, toSave, { name, group });
+      saveConnection(id, toSave, { name });
       return { success: true };
     }
 
@@ -145,9 +145,9 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "connections/update-meta": {
-      const { id, name, group } = payload as { id: string; name?: string; group?: string };
+      const { id, name } = payload as { id: string; name?: string };
       if (!id) throw new Error("缺少 id");
-      updateConnectionMeta(id, { name, group });
+      updateConnectionMeta(id, { name });
       return { success: true };
     }
 
@@ -161,10 +161,10 @@ export async function handleApiRequest<M extends ApiMethod>(
       return handleApiRequest("connect-postgres", { connectionId, ...loginParams } as any);
     }
 
-    case "connections/add-group": {
-      const { group } = payload as { group: string };
-      if (!group?.trim()) throw new Error("缺少分组名称");
-      addEmptyGroup(group.trim());
+    case "connections/reorder": {
+      const { list } = payload as { list: unknown[] };
+      if (!Array.isArray(list)) throw new Error("list 必须是数组");
+      reorderConnections(list);
       return { success: true };
     }
 

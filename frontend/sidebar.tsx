@@ -13,12 +13,12 @@ import ErDiagramModal from "./er-diagram-modal";
 import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
 import type { ConnectionInfo } from "./app";
-import { findStoredConnection, hasStoredConnection, createGroup, updateStoredConnectionMeta, type ConnectionList, type StoredConnection, type StoredConnectionItem, type StoredConnectionGroup } from "./connection-storage";
+import { findStoredConnection, hasStoredConnection, updateStoredConnectionMeta, reorderConnectionList, type ConnectionList, type StoredConnection } from "./connection-storage";
 import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
 
 // 数据库对象类型
-type NodeType = "connectionGroup" | "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
+type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
 
 interface TreeNode {
   id: string;
@@ -68,7 +68,6 @@ interface SidebarProps {
 // 图标组件
 function NodeIcon(props: { type: NodeType }) {
   const icons: Record<NodeType, string> = {
-    connectionGroup: "📁",
     savedConnection: "🔌",
     connection: "🔌",
     schema: "📁",
@@ -86,7 +85,7 @@ function NodeIcon(props: { type: NodeType }) {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { showPrompt } = useDialog();
+  const { showPrompt, showConfirm } = useDialog();
   const panel = Resizable.usePanelContext();
   const onCollapse = () => panel.collapse();
   const collapsed = () => panel.collapsed();
@@ -95,72 +94,38 @@ export default function Sidebar(props: SidebarProps) {
   const getConnectionDisplayName = (s: StoredConnection, connInfo?: string) =>
     connInfo ?? (s.name?.trim() || s.label);
 
-  function isGroupNode(node: unknown): node is { group: string; connections: StoredConnectionItem[] } {
-    const o = node as Record<string, unknown>;
-    return o != null && Array.isArray(o.connections) && typeof o.group === "string";
-  }
-
   /** 连接是否来自某已保存配置（含多实例：id 或 id-xxx） */
   function isConnFromStored(connId: string, storedId: string): boolean {
     return connId === storedId || connId.startsWith(storedId + "-");
   }
   /** 连接是否已挂在某个 saved 节点下 */
   function isConnShownUnderSaved(connId: string, saved: ConnectionList): boolean {
-    for (const node of saved) {
-      const ids = isGroupNode(node)
-        ? (node as StoredConnectionGroup).connections.map((c: StoredConnectionItem) => c.id)
-        : [(node as StoredConnectionItem).id];
-      for (const id of ids) {
-        if (isConnFromStored(connId, id)) return true;
-      }
+    for (const s of saved) {
+      if (isConnFromStored(connId, s.id)) return true;
     }
     return false;
   }
 
-  // 构建统一树根：直接解析嵌套结构 ConnectionList
+  // 构建树根节点（扁平列表）
   function buildRootNodes(): TreeNode[] {
     const conns = props.connections ?? [];
     const saved = props.savedConnections?.() ?? [];
     const roots: TreeNode[] = [];
 
-    for (const node of saved) {
-      if (isGroupNode(node)) {
-        const groupChildren: TreeNode[] = [];
-        for (const s of node.connections) {
-          const matchingConns = conns.filter((c) => isConnFromStored(c.id, s.id));
-          if (matchingConns.length > 0) {
-            for (const c of matchingConns) {
-              const displayName = getConnectionDisplayName(s, c.info);
-              groupChildren.push({ id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] });
-            }
-          } else {
-            groupChildren.push({ id: `saved:${s.id}`, name: getConnectionDisplayName(s, undefined), type: "savedConnection", storedId: s.id, children: [] });
-          }
+    for (const s of saved) {
+      const matchingConns = conns.filter((c) => isConnFromStored(c.id, s.id));
+      if (matchingConns.length > 0) {
+        for (const c of matchingConns) {
+          roots.push({ id: `connection:${c.id}`, name: getConnectionDisplayName(s, c.info), type: "connection", connectionId: c.id, storedId: s.id, children: [] });
         }
-        roots.push({ id: `group:${node.group}`, name: node.group, type: "connectionGroup", children: groupChildren });
       } else {
-        const s = node as StoredConnectionItem;
-        const matchingConns = conns.filter((c) => isConnFromStored(c.id, s.id));
-        if (matchingConns.length > 0) {
-          for (const c of matchingConns) {
-            const displayName = getConnectionDisplayName(s, c.info);
-            roots.push({ id: `connection:${c.id}`, name: displayName, type: "connection", connectionId: c.id, storedId: s.id, children: [] });
-          }
-        } else {
-          roots.push({ id: `saved:${s.id}`, name: getConnectionDisplayName(s, undefined), type: "savedConnection", storedId: s.id, children: [] });
-        }
+        roots.push({ id: `saved:${s.id}`, name: getConnectionDisplayName(s, undefined), type: "savedConnection", storedId: s.id, children: [] });
       }
     }
 
     for (const c of conns) {
       if (!isConnShownUnderSaved(c.id, saved)) {
-        roots.push({
-          id: `connection:${c.id}`,
-          name: c.info,
-          type: "connection",
-          connectionId: c.id,
-          children: [],
-        });
+        roots.push({ id: `connection:${c.id}`, name: c.info, type: "connection", connectionId: c.id, children: [] });
       }
     }
     return roots;
@@ -192,8 +157,7 @@ export default function Sidebar(props: SidebarProps) {
     | null
   >(null);
   const [erDiagramPickerModal, setErDiagramPickerModal] = createSignal<{ connectionId: string } | null>(null);
-  const [dragOverGroupId, setDragOverGroupId] = createSignal<string | null>(null);
-  const [dragOverUngroup, setDragOverUngroup] = createSignal(false);
+  const [dragOverZone, setDragOverZone] = createSignal<string | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -207,38 +171,14 @@ export default function Sidebar(props: SidebarProps) {
     });
   });
 
-  // 递归收集所有 connection 节点
-  function* allConnectionNodes(nodes: TreeNode[]): Generator<TreeNode> {
-    for (const n of nodes) {
-      if (n.type === "connection") yield n;
-      for (const c of n.children) yield* allConnectionNodes([c]);
-    }
-  }
-
   // 刷新所有连接
   function refreshAll() {
-    [...allConnectionNodes(state.nodes)].forEach((n) => {
-      const cid = n.connectionId ?? n.id.replace("connection:", "");
-      if (cid) {
-        setState("loadedIds", (prev) => {
-          const s = new Set(prev);
-          s.delete(n.id);
-          return s;
-        });
-        loadSchemas(cid, n.id);
+    for (const n of state.nodes) {
+      if (n.type === "connection" && n.connectionId) {
+        setState("loadedIds", (prev) => { const s = new Set(prev); s.delete(n.id); return s; });
+        loadSchemas(n.connectionId, n.id);
       }
-    });
-  }
-
-  // 响应外部刷新触发
-
-  // 递归收集节点及其所有子节点的 ID
-  function collectNodeIds(node: TreeNode): string[] {
-    const ids = [node.id];
-    for (const child of node.children) {
-      ids.push(...collectNodeIds(child));
     }
-    return ids;
   }
 
   // connections / savedConnections 变化时重建顶层节点
@@ -252,36 +192,14 @@ export default function Sidebar(props: SidebarProps) {
         if (parts.length < 2) return true;
         return connIds.has(parts[1]);
       }));
-      
-      // 递归收集所有要删除的连接节点的 ID（包括子节点）
-      const nodeIdsToRemove = new Set<string>();
-      for (const node of allConnectionNodes(s.nodes)) {
-        if (node.connectionId && !connIds.has(node.connectionId)) {
-          collectNodeIds(node).forEach((id) => nodeIdsToRemove.add(id));
-        }
-      }
-      
-      // 清除这些节点的 loadedIds
-      s.loadedIds = new Set([...s.loadedIds].filter((id) => !nodeIdsToRemove.has(id)));
-      
+      s.loadedIds = new Set([...s.loadedIds].filter((id) => {
+        const parts = id.split(":");
+        if (parts.length < 2) return true;
+        return connIds.has(parts[1]);
+      }));
       s.nodes = newRoots.map((r) => {
-        if (r.type === "connectionGroup") {
-          return {
-            ...r,
-            children: r.children.map((conn) => {
-              if (conn.type !== "connection" || !conn.connectionId) return conn;
-              const existing = [...allConnectionNodes(s.nodes)].find(
-                (n) => n.id === conn.id || (n.connectionId === conn.connectionId && n.type === "connection")
-              );
-              if (existing?.children?.length) return { ...conn, children: existing.children };
-              return conn;
-            }),
-          };
-        }
         if (r.type === "connection" && r.connectionId) {
-          const existing = [...allConnectionNodes(s.nodes)].find(
-            (n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection")
-          );
+          const existing = s.nodes.find((n) => n.id === r.id || (n.connectionId === r.connectionId && n.type === "connection"));
           if (existing?.children?.length) return { ...r, children: existing.children };
         }
         return r;
@@ -547,7 +465,7 @@ export default function Sidebar(props: SidebarProps) {
       return;
     }
 
-    const canExpand = node.type === "connectionGroup" || node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
+    const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
       node.type === "tables" || node.type === "views" || node.type === "functions" || node.type === "indexes";
     if (canExpand) toggleNode(node);
 
@@ -662,18 +580,9 @@ export default function Sidebar(props: SidebarProps) {
           props.onRemoveSaved?.(node.storedId);
         }
         break;
-      case "createNewGroup": {
-        closeContextMenu();
-        (async () => {
-          const name = await showPrompt("请输入分组名称", "新建分组");
-          if (name?.trim()) {
-            createGroup(name.trim())
-              .then(() => props.onRefreshSavedConnections?.())
-              .catch((e) => console.warn("创建分组失败:", e));
-          }
-        })();
-        return;
-      }
+      case "createNewGroup":
+      case "deleteGroup":
+        break;
       case "newTable":
         if ((node.type === "schema" || node.type === "tables" || node.type === "table") && node.schema && cid) {
           const conn = props.connections.find((c) => c.id === cid);
@@ -763,30 +672,6 @@ export default function Sidebar(props: SidebarProps) {
         }
         break;
       default:
-        if (action.startsWith("moveToGroup:")) {
-          const targetGroup = action.slice("moveToGroup:".length);
-          const storedId = node.storedId ?? (node.type === "connection" ? node.connectionId : null);
-          if (storedId && targetGroup) {
-            updateStoredConnectionMeta(storedId, { group: targetGroup })
-              .then(() => props.onRefreshSavedConnections?.())
-              .catch((e) => console.warn("移动失败:", e));
-          }
-        } else if (action === "moveToGroupNew") {
-          closeContextMenu();
-          const storedId = node.storedId ?? (node.type === "connection" ? node.connectionId : null);
-          if (storedId) {
-            (async () => {
-              const name = await showPrompt("请输入新分组名称", "新建分组");
-              if (name?.trim()) {
-                createGroup(name.trim())
-                  .then(() => updateStoredConnectionMeta(storedId, { group: name.trim() }))
-                  .then(() => props.onRefreshSavedConnections?.())
-                  .catch((e) => console.warn("操作失败:", e));
-              }
-            })();
-          }
-          return;
-        }
         break;
     }
     closeContextMenu();
@@ -811,52 +696,70 @@ export default function Sidebar(props: SidebarProps) {
       .filter((n): n is TreeNode => n !== null);
   }
 
-  // 拖拽：连接 -> 分组
+  // 拖拽排序（仅顶层 savedConnection / connection）
   function handleDragStart(e: DragEvent, node: TreeNode) {
-    const storedId = node.storedId ?? (node.type === "connection" ? node.connectionId : null);
-    if (storedId) {
-      e.dataTransfer?.setData("text/plain", storedId);
+    const id = node.storedId ?? node.connectionId;
+    if (id) {
+      e.dataTransfer!.setData("text/plain", id);
       e.dataTransfer!.effectAllowed = "move";
     }
   }
-  function handleDragOver(e: DragEvent, node: TreeNode) {
-    if (node.type === "connectionGroup" && e.dataTransfer?.types.includes("text/plain")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setDragOverGroupId(node.id);
-    }
-  }
-  function handleDragLeave() {
-    setDragOverGroupId(null);
-    setDragOverUngroup(false);
-  }
-  function handleDrop(e: DragEvent, node: TreeNode) {
-    setDragOverGroupId(null);
-    setDragOverUngroup(false);
-    if (node.type !== "connectionGroup") return;
+  function handleDropZoneDragOver(e: DragEvent, zoneId: string) {
+    if (!e.dataTransfer?.types.includes("text/plain")) return;
     e.preventDefault();
-    const storedId = e.dataTransfer?.getData("text/plain");
-    if (!storedId) return;
-    const groupName = node.name;
-    updateStoredConnectionMeta(storedId, { group: groupName })
-      .then(() => props.onRefreshSavedConnections?.())
-      .catch((err) => console.warn("移动失败:", err));
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverZone(zoneId);
   }
-  function handleUngroupDragOver(e: DragEvent) {
-    if (e.dataTransfer?.types.includes("text/plain")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setDragOverUngroup(true);
-    }
+  function handleDropZoneDragLeave(e: DragEvent) {
+    const related = e.relatedTarget as Node | null;
+    if (related && (e.currentTarget as Node).contains(related)) return;
+    setDragOverZone(null);
   }
-  function handleUngroupDrop(e: DragEvent) {
-    setDragOverUngroup(false);
+  // zoneId: "top" | "after:{storedId}"
+  function handleDropZoneDrop(e: DragEvent, insertBeforeStoredId: string | null) {
+    setDragOverZone(null);
     e.preventDefault();
-    const storedId = e.dataTransfer?.getData("text/plain");
-    if (!storedId) return;
-    updateStoredConnectionMeta(storedId, { group: "" })
+    e.stopPropagation();
+    const draggedId = e.dataTransfer?.getData("text/plain");
+    if (!draggedId) return;
+    const saved = props.savedConnections?.() ?? [];
+    // 找到被拖拽项
+    const draggedItem = saved.find((c) => c.id === draggedId);
+    if (!draggedItem) return;
+    // 构建新列表
+    const without = saved.filter((c) => c.id !== draggedId);
+    let newList: ConnectionList;
+    if (insertBeforeStoredId === null) {
+      // 追加到末尾
+      newList = [...without, draggedItem];
+    } else {
+      const idx = without.findIndex((c) => c.id === insertBeforeStoredId);
+      if (idx === -1) return;
+      newList = [...without.slice(0, idx), draggedItem, ...without.slice(idx)];
+    }
+    reorderConnectionList(newList)
       .then(() => props.onRefreshSavedConnections?.())
-      .catch((err) => console.warn("移出分组失败:", err));
+      .catch((err) => console.warn("排序失败:", err));
+  }
+
+  // 渲染 drop zone 分隔线
+  function renderDropZone(zoneId: string, insertBeforeStoredId: string | null) {
+    const isActive = () => dragOverZone() === zoneId;
+    return (
+      <div
+        style={{
+          height: "4px",
+          margin: "0 12px",
+          "border-radius": "2px",
+          "background-color": isActive() ? vscode.accent : "transparent",
+          transition: "background-color 0.1s ease",
+        }}
+        onDragOver={(e) => handleDropZoneDragOver(e, zoneId)}
+        onDragLeave={handleDropZoneDragLeave}
+        onDrop={(e) => handleDropZoneDrop(e, insertBeforeStoredId)}
+      />
+    );
   }
 
   // 渲染单个节点
@@ -865,19 +768,15 @@ export default function Sidebar(props: SidebarProps) {
     const isLoading = () => state.loadingIds.has(node.id) || (node.type === "savedConnection" && node.storedId === props.connectingSavedId);
     const isSelected = () => state.selectedId === node.id;
     const hasChildren = () => node.children.length > 0;
-    const canExpand = node.type === "connectionGroup" || node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
+    const canExpand = node.type === "connection" || node.type === "savedConnection" || node.type === "schema" || node.type === "table" || node.type === "view" ||
       node.type === "tables" || node.type === "views" || node.type === "functions" || node.type === "indexes";
-    const isDraggable = (node.type === "savedConnection" || node.type === "connection") && !!node.storedId;
-    const isDropTarget = node.type === "connectionGroup" && dragOverGroupId() === node.id;
+    const isDraggable = depth === 0 && (node.type === "savedConnection" || node.type === "connection");
 
     return (
       <div>
         <div
           draggable={isDraggable}
           onDragStart={(e) => isDraggable && handleDragStart(e, node)}
-          onDragOver={(e) => handleDragOver(e, node)}
-          onDragLeave={handleDragLeave}
-          onDrop={(e) => handleDrop(e, node)}
           onClick={(e) => handleNodeClick(node, e)}
           onContextMenu={(e) => handleContextMenu(node, e)}
           style={{
@@ -886,7 +785,7 @@ export default function Sidebar(props: SidebarProps) {
             padding: "4px 8px",
             "padding-left": `${depth * 16 + 8}px`,
             cursor: isDraggable ? "grab" : "pointer",
-            "background-color": isDropTarget ? vscode.listHover : isSelected() ? vscode.listSelect : "transparent",
+            "background-color": isSelected() ? vscode.listSelect : "transparent",
             "border-left": node.type === "connection" && node.connectionId === props.activeConnectionId
               ? `3px solid ${vscode.accent}`
               : "3px solid transparent",
@@ -1090,28 +989,25 @@ export default function Sidebar(props: SidebarProps) {
             {searchTerm() ? "未找到匹配项" : "暂无数据，请先连接数据库"}
           </div>
         }>
-          <Show when={filteredTree().some((n) => n.type === "connectionGroup")}>
-            <div
-              onDragOver={handleUngroupDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleUngroupDrop}
-              style={{
-                padding: "6px 8px",
-                "border-radius": "4px",
-                margin: "1px 4px",
-                "font-size": "12px",
-                color: vscode.foregroundDim,
-                "background-color": dragOverUngroup() ? vscode.listHover : "transparent",
-                border: `1px dashed ${dragOverUngroup() ? vscode.accent : vscode.border}`,
-                transition: "all 0.15s ease",
-              }}
-            >
-              📤 拖放到此处移出分组
-            </div>
-          </Show>
-          <For each={filteredTree()}>
-            {(node) => renderNode(node, 0)}
-          </For>
+          {(() => {
+            const nodes = filteredTree();
+            const items: any[] = [];
+            for (let i = 0; i < nodes.length; i++) {
+              const n = nodes[i];
+              const isDraggableNode = n.type === "savedConnection" || n.type === "connection";
+              // drop zone before first draggable node
+              if (i === 0 && isDraggableNode) {
+                items.push(renderDropZone("zone-top", n.storedId ?? n.connectionId ?? null));
+              }
+              items.push(renderNode(n, 0));
+              if (isDraggableNode) {
+                // drop zone after this node (= before next node, or at bottom)
+                const nextStoredId = nodes[i + 1]?.storedId ?? nodes[i + 1]?.connectionId ?? null;
+                items.push(renderDropZone(`zone-after-${n.storedId ?? n.connectionId}`, nextStoredId));
+              }
+            }
+            return <>{items}</>;
+          })()}
         </Show>
       </div>
 
@@ -1133,94 +1029,6 @@ export default function Sidebar(props: SidebarProps) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <Show when={menu().node.type === "connectionGroup" || menu().node.type === "savedConnection" || menu().node.type === "connection"}>
-              <div
-                onClick={() => handleMenuAction("createNewGroup")}
-                style={{
-                  padding: "8px 16px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>📁</span> 新建分组
-              </div>
-            </Show>
-            <Show when={(menu().node.type === "savedConnection" || menu().node.type === "connection") && menu().node.storedId}>
-              <div style={{ "font-size": "12px", color: vscode.foregroundDim, padding: "4px 16px" }}>移动到分组</div>
-              <For each={(() => {
-                const list = props.savedConnections?.() ?? [];
-                const groups: string[] = [];
-                for (const n of list) {
-                  if (isGroupNode(n)) groups.push(n.group);
-                }
-                return groups;
-              })()}>
-                {(g) => (
-                  <div
-                    onClick={() => handleMenuAction(`moveToGroup:${g}`)}
-                    style={{
-                      padding: "6px 16px 6px 24px",
-                      color: vscode.foreground,
-                      cursor: "pointer",
-                      "font-size": "13px",
-                      display: "flex",
-                      "align-items": "center",
-                      gap: "8px",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                  >
-                    <span>📁</span> {g}
-                  </div>
-                )}
-              </For>
-              <div
-                onClick={() => handleMenuAction("moveToGroupNew")}
-                style={{
-                  padding: "6px 16px 6px 24px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>➕</span> 新建分组并移动
-              </div>
-              <Show when={(() => {
-                const sid = menu().node.storedId;
-                if (!sid) return false;
-                const stored = findStoredConnection(props.savedConnections?.() ?? [], sid);
-                return !!stored?.group;
-              })()}>
-                <div
-                  onClick={() => handleMenuAction("moveToGroup:")}
-                  style={{
-                    padding: "6px 16px 6px 24px",
-                    color: vscode.foreground,
-                    cursor: "pointer",
-                    "font-size": "13px",
-                    display: "flex",
-                    "align-items": "center",
-                    gap: "8px",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                >
-                  <span>📤</span> 移出分组
-                </div>
-              </Show>
-              <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
-            </Show>
             <Show when={menu().node.type === "schema" || menu().node.type === "tables" || menu().node.type === "table"}>
               <div
                 onClick={() => handleMenuAction("newTable")}

@@ -29,6 +29,7 @@
         "title": "Open DB Player",
         "category": "DB Player"
       }
-    ]
+    ],
+    "uriHandler": {}
   }
 }

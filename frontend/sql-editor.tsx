@@ -179,6 +179,41 @@ export default function SqlEditor(props: SqlEditorProps) {
           runBlockWithHighlight(b.start, b.end);
         });
         dom.appendChild(runBtn);
+        
+        // Add Format button for each block
+        if (props.onFormat) {
+          const formatSep = document.createElement("span");
+          formatSep.className = "sql-codelens-sep";
+          formatSep.textContent = "|";
+          dom.appendChild(formatSep);
+          const formatBtn = document.createElement("button");
+          formatBtn.type = "button";
+          formatBtn.className = "sql-codelens-link";
+          formatBtn.innerHTML = '<span class="sql-codelens-icon">✨</span> Format';
+          formatBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const model = editor?.getModel();
+            if (!model) return;
+            // Get current text from model
+            const currentText = model.getValue();
+            const blockText = currentText.slice(b.start, b.end).trim();
+            if (!blockText) return;
+            const formatted = props.onFormat!(blockText);
+            if (typeof formatted === "string" && formatted !== blockText) {
+              editor!.executeEdits("format-block", [
+                { range: { 
+                  startLineNumber: model.getPositionAt(b.start).lineNumber, 
+                  startColumn: model.getPositionAt(b.start).column,
+                  endLineNumber: model.getPositionAt(b.end).lineNumber,
+                  endColumn: model.getPositionAt(b.end).column
+                }, text: formatted }
+              ]);
+            }
+          });
+          dom.appendChild(formatBtn);
+        }
+        
         if (props.onExplain) {
           const explainSep = document.createElement("span");
           explainSep.className = "sql-codelens-sep";
