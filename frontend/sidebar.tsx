@@ -337,7 +337,29 @@ export default function Sidebar(props: SidebarProps) {
   createEffect(() => {
     const req = props.refreshSchemaRequest?.();
     if (!req) return;
-    loadTables(req.connectionId, req.schema).finally(() => props.onRefreshHandled?.());
+    loadTables(req.connectionId, req.schema).then(() => {
+      const tablePrefix = `table:${req.connectionId}:${req.schema}.`;
+      const viewPrefix = `view:${req.connectionId}:${req.schema}.`;
+      // For any table/view nodes that are currently expanded, reload their columns immediately
+      const expandedTableIds = [...state.expandedIds].filter(
+        (id) => id.startsWith(tablePrefix) || id.startsWith(viewPrefix)
+      );
+      for (const tableId of expandedTableIds) {
+        const node = findNode(state.nodes, tableId);
+        if (node && node.table && node.schema && node.connectionId) {
+          loadColumns(node.connectionId, node.schema, node.table);
+          if (node.type === "table") loadIndexes(node.connectionId, node.schema, node.table);
+        }
+      }
+      // Clear loadedIds so unexpanded tables will reload on next expand
+      setState("loadedIds", (prev) => {
+        const s = new Set(prev);
+        for (const id of s) {
+          if (id.startsWith(tablePrefix) || id.startsWith(viewPrefix)) s.delete(id);
+        }
+        return s;
+      });
+    }).finally(() => props.onRefreshHandled?.());
   });
 
   // 加载列信息

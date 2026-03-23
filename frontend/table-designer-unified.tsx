@@ -8,8 +8,8 @@ import { createStore, produce, reconcile } from "solid-js/store";
 
 // ── IndexColumnPicker ─────────────────────────────────────────────────────────
 function IndexColumnPicker(pickerProps: {
-  selected: string[];
-  allColumns: string[];
+  selected: () => string[];
+  allColumns: () => string[];
   onChange: (cols: string[]) => void;
 }) {
   const [open, setOpen] = createSignal(false);
@@ -17,13 +17,14 @@ function IndexColumnPicker(pickerProps: {
 
   const filtered = () => {
     const q = search().toLowerCase();
-    return pickerProps.allColumns.filter((c) => c.toLowerCase().includes(q));
+    return pickerProps.allColumns().filter((c) => c.toLowerCase().includes(q));
   };
 
   const toggle = (col: string) => {
-    const next = pickerProps.selected.includes(col)
-      ? pickerProps.selected.filter((c) => c !== col)
-      : [...pickerProps.selected, col];
+    const sel = pickerProps.selected();
+    const next = sel.includes(col)
+      ? sel.filter((c) => c !== col)
+      : [...sel, col];
     pickerProps.onChange(next);
   };
 
@@ -38,10 +39,10 @@ function IndexColumnPicker(pickerProps: {
           "border-radius": "3px", "font-size": "12px",
         }}
       >
-        <Show when={pickerProps.selected.length === 0}>
+        <Show when={pickerProps.selected().length === 0}>
           <span style={{ color: vscode.foregroundDim }}>选择列...</span>
         </Show>
-        <For each={pickerProps.selected}>
+        <For each={pickerProps.selected()}>
           {(col) => (
             <span style={{
               "background-color": vscode.buttonBg, color: "#fff",
@@ -89,11 +90,11 @@ function IndexColumnPicker(pickerProps: {
                   style={{
                     padding: "5px 10px", "font-size": "12px", cursor: "pointer",
                     color: vscode.foreground,
-                    "background-color": pickerProps.selected.includes(col) ? vscode.buttonBg + "33" : "transparent",
+                    "background-color": pickerProps.selected().includes(col) ? vscode.buttonBg + "33" : "transparent",
                     display: "flex", "align-items": "center", gap: "6px",
                   }}
                 >
-                  <input type="checkbox" checked={pickerProps.selected.includes(col)} onChange={() => {}} style={{ "pointer-events": "none" }} />
+                  <input type="checkbox" checked={pickerProps.selected().includes(col)} onChange={() => {}} style={{ "pointer-events": "none" }} />
                   {col}
                 </div>
               )}
@@ -119,6 +120,8 @@ function IndexColumnPicker(pickerProps: {
   getUniqueConstraints,
   getCheckConstraints,
   getTableComment,
+  getSchemas,
+  getTables,
   executeDdl,
 } from "./api";
 import {
@@ -160,57 +163,7 @@ function emptyOriginalState(): OriginalState {
 }
 
 // ── FK helper pickers ─────────────────────────────────────────────────────────
-function FkSchemaPicker(p: { connectionId: string; value: string; onChange: (v: string) => void; style: any }) {
-  const [schemas, setSchemas] = createSignal<string[]>([]);
-  createEffect(() => {
-    if (!p.connectionId) return;
-    import("./api").then(({ getSchemas }) =>
-      getSchemas(p.connectionId).then((r) => setSchemas(r.schemas ?? []))
-    );
-  });
-  return (
-    <select value={p.value} onChange={(e) => p.onChange(e.currentTarget.value)} style={p.style}>
-      <option value="">— schema —</option>
-      <For each={schemas()}>{(s) => <option value={s}>{s}</option>}</For>
-    </select>
-  );
-}
-
-function FkTablePicker(p: { connectionId: string; schema: string; value: string; onChange: (v: string) => void; style: any }) {
-  const [tables, setTables] = createSignal<string[]>([]);
-  createEffect(() => {
-    if (!p.connectionId || !p.schema) { setTables([]); return; }
-    import("./api").then(({ getTables }) =>
-      getTables(p.connectionId, p.schema).then((r) =>
-        setTables([...(r.tables ?? []), ...(r.views ?? [])])
-      )
-    );
-  });
-  return (
-    <select value={p.value} onChange={(e) => p.onChange(e.currentTarget.value)} style={p.style}>
-      <option value="">— 表 —</option>
-      <For each={tables()}>{(t) => <option value={t}>{t}</option>}</For>
-    </select>
-  );
-}
-
-function FkColumnPicker(p: { connectionId: string; schema: string; table: string; value: string; onChange: (v: string) => void; style: any }) {
-  const [cols, setCols] = createSignal<string[]>([]);
-  createEffect(() => {
-    if (!p.connectionId || !p.schema || !p.table) { setCols([]); return; }
-    import("./api").then(({ getColumns }) =>
-      getColumns(p.connectionId, p.schema, p.table).then((r) =>
-        setCols((r.columns ?? []).map((c: any) => c.column_name))
-      )
-    );
-  });
-  return (
-    <select value={p.value} onChange={(e) => p.onChange(e.currentTarget.value)} style={p.style}>
-      <option value="">— 列 —</option>
-      <For each={cols()}>{(c) => <option value={c}>{c}</option>}</For>
-    </select>
-  );
-}
+// (Removed - data is managed inline in TableDesignerUnified via fkRefSchemas/fkRefTables/fkRefColumns signals)
 
 export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   // ── Store state ────────────────────────────────────────────────────────────
@@ -228,6 +181,34 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   const [showSqlPreview, setShowSqlPreview] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
   const [errors, setErrors] = createSignal<string[]>([]);
+
+  // ── FK ref data (schemas / tables per schema / columns per schema.table) ──
+  const [fkSchemas, setFkSchemas] = createSignal<string[]>([]);
+  const [fkTables, setFkTables] = createStore<Record<string, string[]>>({});
+  const [fkColumns, setFkColumns] = createStore<Record<string, string[]>>({});
+
+  // Load schemas once on mount
+  createEffect(() => {
+    if (!props.connectionId) return;
+    getSchemas(props.connectionId).then((r) => setFkSchemas(r.schemas ?? []));
+  });
+
+  // Load tables when a FK's refSchema is set
+  const ensureFkTables = (schema: string) => {
+    if (!schema || fkTables[schema]) return;
+    getTables(props.connectionId, schema).then((r) =>
+      setFkTables(schema, [...(r.tables ?? []), ...(r.views ?? [])])
+    );
+  };
+
+  // Load columns when a FK's refTable is set
+  const ensureFkColumns = (schema: string, table: string) => {
+    const key = `${schema}.${table}`;
+    if (!schema || !table || fkColumns[key]) return;
+    getColumns(props.connectionId, schema, table).then((r) =>
+      setFkColumns(key, (r.columns ?? []).map((c: any) => c.column_name))
+    );
+  };
 
   // ── isChanged (derived) ────────────────────────────────────────────────────
   const isChanged = createMemo(() => {
@@ -249,7 +230,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       ? { cid: props.connectionId, schema: props.schema, table: props.table }
       : null;
 
-  const [editData] = createResource(editSource, async ({ cid, schema, table }) => {
+  const [editData, { refetch: refetchEditData }] = createResource(editSource, async ({ cid, schema, table }) => {
     const [colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes] = await Promise.all([
       getColumns(cid, schema, table),
       getIndexes(cid, schema, table),
@@ -290,6 +271,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         .filter((idx: any) => !idx.is_primary)
         .map((idx: any) => ({
           name: idx.index_name ?? "",
+          originalName: idx.index_name ?? "",
           indexType: ((idx.index_type ?? "btree").toUpperCase() === "HASH" ? "HASH" : "BTREE") as "BTREE" | "HASH",
           columns: Array.isArray(idx.columns) ? idx.columns : [],
           unique: idx.is_unique ?? false,
@@ -300,6 +282,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
       const loadedForeignKeys: ForeignKeyDef[] = (data.fkRes.outgoing ?? []).map((fk: any) => ({
         constraintName: fk.constraint_name ?? "",
+        originalConstraintName: fk.constraint_name ?? "",
         column: fk.source_column ?? "",
         refSchema: fk.target_schema ?? props.schema,
         refTable: fk.target_table ?? "",
@@ -315,19 +298,27 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         .filter((c: any) => c.type !== "PRIMARY KEY")
         .map((uq: any) => ({
           constraintName: uq.name ?? "",
+          originalConstraintName: uq.name ?? "",
           columns: Array.isArray(uq.columns) ? uq.columns.join(", ") : (uq.columns ?? ""),
           isNew: false,
           isExisting: true,
           toDelete: false,
         }));
 
-      const loadedCheckConstraints: CheckConstraintDef[] = (data.chkRes.constraints ?? []).map((chk: any) => ({
-        constraintName: chk.name ?? "",
-        expression: chk.expression ?? chk.check_clause ?? "",
-        isNew: false,
-        isExisting: true,
-        toDelete: false,
-      }));
+      const loadedCheckConstraints: CheckConstraintDef[] = (data.chkRes.constraints ?? []).map((chk: any) => {
+        let expr: string = chk.expression ?? chk.check_clause ?? "";
+        // Strip leading CHECK (...) wrapper that PostgreSQL includes in check_clause
+        const m = expr.match(/^CHECK\s*\(([\s\S]*)\)$/i);
+        if (m) expr = m[1].trim();
+        return {
+          constraintName: chk.name ?? "",
+          originalConstraintName: chk.name ?? "",
+          expression: expr,
+          isNew: false,
+          isExisting: true,
+          toDelete: false,
+        };
+      });
 
       const loadedComment = data.commentRes.comment ?? "";
 
@@ -337,6 +328,21 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       setUniqueConstraints(reconcile(loadedUniqueConstraints));
       setCheckConstraints(reconcile(loadedCheckConstraints));
       setTableComment(loadedComment);
+
+      // Preload FK ref tables and columns for existing foreign keys
+      for (const fk of loadedForeignKeys) {
+        if (fk.refSchema) {
+          getTables(props.connectionId, fk.refSchema).then((r) =>
+            setFkTables(fk.refSchema, [...(r.tables ?? []), ...(r.views ?? [])])
+          );
+          if (fk.refTable) {
+            const key = `${fk.refSchema}.${fk.refTable}`;
+            getColumns(props.connectionId, fk.refSchema, fk.refTable).then((r) =>
+              setFkColumns(key, (r.columns ?? []).map((c: any) => c.column_name))
+            );
+          }
+        }
+      }
 
       const snapshot: OriginalState = {
         tableName: props.table ?? "",
@@ -461,6 +467,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                   };
                   setOriginalState(newSnapshot);
                   props.onSuccess?.(props.connectionId, props.schema);
+                  // Reload data from DB to reflect actual saved state
+                  if (props.mode === "edit") refetchEditData();
                 } catch (e: any) {
                   setErrors([e?.message ?? String(e)]);
                 } finally {
@@ -917,7 +925,13 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                               <input
                                 type="text"
                                 value={idx.name}
-                                onInput={(e) => setIndexes(i(), "name", e.currentTarget.value)}
+                                onInput={(e) => {
+                                  const newName = e.currentTarget.value;
+                                  if (!idx.isNew && !idx.originalName) {
+                                    setIndexes(i(), "originalName", idx.name);
+                                  }
+                                  setIndexes(i(), "name", newName);
+                                }}
                                 onBlur={(e) => {
                                   if (!e.currentTarget.value.trim()) {
                                     setIndexes(i(), "name", autoIndexName(tableName() || props.table || "", idx.columns));
@@ -941,8 +955,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                             {/* 列 */}
                             <td style={cellStyle}>
                               <IndexColumnPicker
-                                selected={idx.columns}
-                                allColumns={columns.map((c) => c.name).filter(Boolean)}
+                                selected={() => [...idx.columns]}
+                                allColumns={() => columns.map((c) => c.name).filter(Boolean)}
                                 onChange={(next) => setIndexes(i(), "columns", next)}
                               />
                             </td>
@@ -1087,31 +1101,36 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                               </select>
                             </td>
                             <td style={cellStyle}>
-                              <FkSchemaPicker
-                                connectionId={props.connectionId}
+                              <select
                                 value={fk.refSchema}
-                                onChange={(v) => { setForeignKeys(i(), "refSchema", v); setForeignKeys(i(), "refTable", ""); setForeignKeys(i(), "refColumn", ""); }}
-                                style={inputStyle}
-                              />
+                                onChange={(e) => { setForeignKeys(i(), "refSchema", e.currentTarget.value); setForeignKeys(i(), "refTable", ""); setForeignKeys(i(), "refColumn", ""); }}
+                                style={{ ...inputStyle, "min-width": "100px" }}
+                              >
+                                <option value="">— schema —</option>
+                                <For each={fkSchemas()}>{(s) => <option value={s}>{s}</option>}</For>
+                              </select>
                             </td>
                             <td style={cellStyle}>
-                              <FkTablePicker
-                                connectionId={props.connectionId}
-                                schema={fk.refSchema}
+                              {(() => { ensureFkTables(fk.refSchema); return null; })()}
+                              <select
                                 value={fk.refTable}
-                                onChange={(v) => { setForeignKeys(i(), "refTable", v); setForeignKeys(i(), "refColumn", ""); }}
-                                style={inputStyle}
-                              />
+                                onChange={(e) => { setForeignKeys(i(), "refTable", e.currentTarget.value); setForeignKeys(i(), "refColumn", ""); }}
+                                style={{ ...inputStyle, "min-width": "100px" }}
+                              >
+                                <option value="">— 表 —</option>
+                                <For each={fkTables[fk.refSchema] ?? []}>{(t) => <option value={t}>{t}</option>}</For>
+                              </select>
                             </td>
                             <td style={cellStyle}>
-                              <FkColumnPicker
-                                connectionId={props.connectionId}
-                                schema={fk.refSchema}
-                                table={fk.refTable}
+                              {(() => { ensureFkColumns(fk.refSchema, fk.refTable); return null; })()}
+                              <select
                                 value={fk.refColumn}
-                                onChange={(v) => setForeignKeys(i(), "refColumn", v)}
-                                style={inputStyle}
-                              />
+                                onChange={(e) => setForeignKeys(i(), "refColumn", e.currentTarget.value)}
+                                style={{ ...inputStyle, "min-width": "100px" }}
+                              >
+                                <option value="">— 列 —</option>
+                                <For each={fkColumns[`${fk.refSchema}.${fk.refTable}`] ?? []}>{(c) => <option value={c}>{c}</option>}</For>
+                              </select>
                             </td>
                             {/* ON DELETE */}
                             <td style={cellStyle}>
@@ -1255,8 +1274,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                               {/* 列 */}
                               <td style={cellStyle}>
                                 <IndexColumnPicker
-                                  selected={uq.columns ? uq.columns.split(",").map((c) => c.trim()).filter(Boolean) : []}
-                                  allColumns={columns.map((c) => c.name).filter(Boolean)}
+                                  selected={() => uq.columns ? uq.columns.split(",").map((c) => c.trim()).filter(Boolean) : []}
+                                  allColumns={() => columns.map((c) => c.name).filter(Boolean)}
                                   onChange={(next) => setUniqueConstraints(i(), "columns", next.join(", "))}
                                 />
                               </td>

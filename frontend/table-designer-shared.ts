@@ -22,6 +22,7 @@ export type FKAction = "NO ACTION" | "RESTRICT" | "CASCADE" | "SET NULL" | "SET 
 
 export interface IndexDef {
   name: string;
+  originalName?: string;
   indexType: "BTREE" | "HASH";
   columns: string[];
   unique: boolean;
@@ -32,6 +33,7 @@ export interface IndexDef {
 
 export interface ForeignKeyDef {
   constraintName?: string;
+  originalConstraintName?: string;
   column: string;
   refSchema: string;
   refTable: string;
@@ -45,6 +47,7 @@ export interface ForeignKeyDef {
 
 export interface UniqueConstraintDef {
   constraintName?: string;
+  originalConstraintName?: string;
   columns: string;          // 逗号分隔的列名
   isNew?: boolean;
   isExisting?: boolean;
@@ -53,6 +56,7 @@ export interface UniqueConstraintDef {
 
 export interface CheckConstraintDef {
   constraintName?: string;
+  originalConstraintName?: string;
   expression: string;
   isNew?: boolean;
   isExisting?: boolean;
@@ -391,19 +395,19 @@ export function buildDdlStatements(
   // 3. Constraint deletions (toDelete=true)
   for (const fk of current.foreignKeys) {
     if (!fk.toDelete) continue;
-    const constraintName = resolveFkConstraintName(tableName, fk);
+    const constraintName = fk.originalConstraintName || resolveFkConstraintName(tableName, fk);
     sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(constraintName)}`);
   }
   for (let i = 0; i < current.uniqueConstraints.length; i++) {
     const uq = current.uniqueConstraints[i];
     if (!uq.toDelete) continue;
-    const constraintName = resolveUqConstraintName(tableName, uq, i);
+    const constraintName = uq.originalConstraintName || resolveUqConstraintName(tableName, uq, i);
     sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(constraintName)}`);
   }
   for (let i = 0; i < current.checkConstraints.length; i++) {
     const chk = current.checkConstraints[i];
     if (!chk.toDelete) continue;
-    const constraintName = resolveChkConstraintName(tableName, chk, i);
+    const constraintName = chk.originalConstraintName || resolveChkConstraintName(tableName, chk, i);
     sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(constraintName)}`);
   }
 
@@ -414,6 +418,33 @@ export function buildDdlStatements(
     sqls.push(
       `ALTER TABLE ${qualified} ADD CONSTRAINT ${q(constraintName)} FOREIGN KEY (${q(fk.column)}) REFERENCES ${q(fk.refSchema)}.${q(fk.refTable)} (${q(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
     );
+  }
+
+  // 4b. FK modifications (existing FK changed)
+  const origFkMap = new Map<string, ForeignKeyDef>(
+    original.foreignKeys.map((fk) => [(fk.constraintName ?? "").toLowerCase(), fk])
+  );
+  for (const fk of current.foreignKeys) {
+    if (fk.isNew || fk.toDelete) continue;
+    const lookupKey = (fk.originalConstraintName || fk.constraintName || "").toLowerCase();
+    const orig = origFkMap.get(lookupKey);
+    if (!orig) continue;
+    const changed =
+      orig.constraintName !== fk.constraintName ||
+      orig.column !== fk.column ||
+      orig.refSchema !== fk.refSchema ||
+      orig.refTable !== fk.refTable ||
+      orig.refColumn !== fk.refColumn ||
+      orig.onDelete !== fk.onDelete ||
+      orig.onUpdate !== fk.onUpdate;
+    if (changed) {
+      const oldName = fk.originalConstraintName || orig.constraintName || resolveFkConstraintName(tableName, orig);
+      sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(oldName)}`);
+      const newName = resolveFkConstraintName(tableName, fk);
+      sqls.push(
+        `ALTER TABLE ${qualified} ADD CONSTRAINT ${q(newName)} FOREIGN KEY (${q(fk.column)}) REFERENCES ${q(fk.refSchema)}.${q(fk.refTable)} (${q(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
+      );
+    }
   }
   for (let i = 0; i < current.uniqueConstraints.length; i++) {
     const uq = current.uniqueConstraints[i];
@@ -427,6 +458,43 @@ export function buildDdlStatements(
     if (!chk.isNew) continue;
     const constraintName = resolveChkConstraintName(tableName, chk, i);
     sqls.push(`ALTER TABLE ${qualified} ADD CONSTRAINT ${q(constraintName)} CHECK (${chk.expression})`);
+  }
+
+  // 4c. Unique constraint modifications
+  const origUqMap = new Map<string, UniqueConstraintDef>(
+    original.uniqueConstraints.map((uq) => [(uq.constraintName ?? "").toLowerCase(), uq])
+  );
+  for (const uq of current.uniqueConstraints) {
+    if (uq.isNew || uq.toDelete) continue;
+    const lookupKey = (uq.originalConstraintName || uq.constraintName || "").toLowerCase();
+    const orig = origUqMap.get(lookupKey);
+    if (!orig) continue;
+    const origCols = orig.columns.split(",").map((c) => c.trim()).sort().join(",");
+    const newCols = uq.columns.split(",").map((c) => c.trim()).sort().join(",");
+    if (orig.constraintName !== uq.constraintName || origCols !== newCols) {
+      const oldName = uq.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(oldName)}`);
+      const newName = resolveUqConstraintName(tableName, uq, 0);
+      const cols = uq.columns.split(",").map((c) => q(c.trim())).join(", ");
+      sqls.push(`ALTER TABLE ${qualified} ADD CONSTRAINT ${q(newName)} UNIQUE (${cols})`);
+    }
+  }
+
+  // 4d. Check constraint modifications
+  const origChkMap = new Map<string, CheckConstraintDef>(
+    original.checkConstraints.map((chk) => [(chk.constraintName ?? "").toLowerCase(), chk])
+  );
+  for (const chk of current.checkConstraints) {
+    if (chk.isNew || chk.toDelete) continue;
+    const lookupKey = (chk.originalConstraintName || chk.constraintName || "").toLowerCase();
+    const orig = origChkMap.get(lookupKey);
+    if (!orig) continue;
+    if (orig.constraintName !== chk.constraintName || orig.expression !== chk.expression) {
+      const oldName = chk.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualified} DROP CONSTRAINT ${q(oldName)}`);
+      const newName = resolveChkConstraintName(tableName, chk, 0);
+      sqls.push(`ALTER TABLE ${qualified} ADD CONSTRAINT ${q(newName)} CHECK (${chk.expression})`);
+    }
   }
 
   // 5. Index deletions (toDelete=true)
@@ -443,6 +511,30 @@ export function buildDdlStatements(
     const unique = idx.unique ? "UNIQUE " : "";
     const cols = idx.columns.map(q).join(", ");
     sqls.push(`CREATE ${unique}INDEX ${q(idxName)} ON ${qualified} USING ${idx.indexType} (${cols})`);
+  }
+
+  // 7. Index modifications (existing index changed: name/type/columns/unique)
+  const origIdxMap = new Map<string, IndexDef>(
+    original.indexes.map((idx) => [idx.name.toLowerCase(), idx])
+  );
+  for (const idx of current.indexes) {
+    if (idx.isNew || idx.toDelete) continue;
+    // Use originalName to find the original record (handles name changes)
+    const lookupKey = (idx.originalName || idx.name).toLowerCase();
+    const orig = origIdxMap.get(lookupKey);
+    if (!orig) continue;
+    const nameChanged = orig.name !== idx.name;
+    const typeChanged = orig.indexType !== idx.indexType;
+    const uniqueChanged = orig.unique !== idx.unique;
+    const colsChanged = JSON.stringify([...orig.columns].sort()) !== JSON.stringify([...idx.columns].sort());
+    if (nameChanged || typeChanged || uniqueChanged || colsChanged) {
+      // DROP old, CREATE new
+      sqls.push(`DROP INDEX ${q(schema)}.${q(orig.name)}`);
+      const unique = idx.unique ? "UNIQUE " : "";
+      const cols = idx.columns.map(q).join(", ");
+      const newIdxName = resolveIndexName(tableName, idx);
+      sqls.push(`CREATE ${unique}INDEX ${q(newIdxName)} ON ${qualified} USING ${idx.indexType} (${cols})`);
+    }
   }
 
   // 7. Comments

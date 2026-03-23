@@ -565,7 +565,19 @@ export async function handleApiRequest<M extends ApiMethod>(
          ORDER BY i.relname`,
         [schema, table]
       );
-      return { indexes: result.rows };
+      const toColsIdx = (v: any): string[] => {
+        if (Array.isArray(v)) return v;
+        if (v == null) return [];
+        const s = String(v).trim();
+        if (s.startsWith("{") && s.endsWith("}")) return s.slice(1, -1).split(",").map((x) => x.trim());
+        return [s];
+      };
+      return {
+        indexes: result.rows.map((r: any) => ({
+          ...r,
+          columns: toColsIdx(r.columns),
+        })),
+      };
     }
 
     case "postgres/primary-keys": {
