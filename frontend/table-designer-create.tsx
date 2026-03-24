@@ -71,23 +71,29 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const addFk = () => setFkConstraints((prev) => [...prev, { column: "", refSchema: props.schema, refTable: "", refColumn: "" }]);
   const removeFk = (i: number) => setFkConstraints((prev) => prev.filter((_, idx) => idx !== i));
 
-  const previewSql = () =>
-    buildCreateTableSql(props.schema, tableName(), columns as unknown as TableColumn[], {
-      unique: uniqueConstraints.length ? uniqueConstraints : undefined,
-      check: checkConstraints.filter((c) => c.expression.trim()).length ? checkConstraints : undefined,
-      foreignKey: fkConstraints.filter((f) => f.column && f.refTable && f.refColumn).length ? fkConstraints : undefined,
-    });
+  const getStmts = () => buildCreateTableSql(
+    props.schema,
+    tableName(),
+    columns as unknown as TableColumn[],
+    uniqueConstraints.length ? [...uniqueConstraints] : [],
+    checkConstraints.filter((c) => c.expression.trim()),
+    fkConstraints.filter((f) => f.column && f.refTable && f.refColumn),
+  );
+
+  const previewSql = () => getStmts().map(s => s + ";").join("\n\n");
 
   const handleExecute = async () => {
-    const sql = previewSql();
-    if (!sql.trim()) {
+    const stmts = getStmts();
+    if (stmts.length === 0) {
       setError("请填写表名和至少一列");
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      await executeDdl(props.connectionId, sql);
+      for (const stmt of stmts) {
+        await executeDdl(props.connectionId, stmt + ";");
+      }
       setShowPreview(false);
       setTableName("");
       setColumns([{ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true }]);

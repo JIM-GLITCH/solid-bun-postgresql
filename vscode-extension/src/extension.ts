@@ -107,19 +107,11 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("db-player.helloWorld", () => {
-      (async () => {
-        const result = await licenseValidator.validate();
-        await expiryNotifier.checkAndNotify(result.expiresAt);
-        if (!result.valid) {
-          showSubscriptionGate(context);
-          return;
-        }
-        openDbPlayerWebview(context).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          vscode.window.showErrorMessage("DB Player 启动失败: " + msg);
-          console.error("DB Player open error:", err);
-        });
-      })();
+      openDbPlayerWebview(context).catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage("DB Player 启动失败: " + msg);
+        console.error("DB Player open error:", err);
+      });
     })
   );
   // Create a status bar item that opens the DB Player when clicked

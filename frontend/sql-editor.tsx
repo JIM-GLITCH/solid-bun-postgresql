@@ -93,7 +93,7 @@ export interface SqlEditorProps {
 }
 
 export default function SqlEditor(props: SqlEditorProps) {
-  let container: HTMLDivElement;
+  let container!: HTMLDivElement;
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
   /** 刚通过 executeEdits 应用的格式化结果，effect 里若 val 等于它则跳过 setValue，避免清空撤销栈 */
   let lastFormattedValue: string | null = null;
