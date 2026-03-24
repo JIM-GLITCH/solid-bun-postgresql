@@ -14,8 +14,10 @@ export interface TableColumn {
   nullable: boolean;
   primaryKey: boolean;
   defaultValue: string;
+  autoIncrement?: boolean;  // create 模式：生成 GENERATED ALWAYS AS IDENTITY
   comment?: string;         // 列注释
   isNew?: boolean;          // true = 新增列（edit 模式）
+  isExisting?: boolean;     // true = 已存在于数据库的列
 }
 
 export type FKAction = "NO ACTION" | "RESTRICT" | "CASCADE" | "SET NULL" | "SET DEFAULT";
@@ -210,9 +212,12 @@ function buildColumnTypeSql(col: TableColumn): string {
 
 function buildColumnInlineSql(col: TableColumn): string {
   let sql = `  ${q(col.name)} ${buildColumnTypeSql(col)}`;
+  if (col.autoIncrement) {
+    sql += " GENERATED ALWAYS AS IDENTITY";
+  }
   if (!col.nullable) sql += " NOT NULL";
   if (col.primaryKey) sql += " PRIMARY KEY";
-  if (col.defaultValue.trim()) {
+  if (!col.autoIncrement && col.defaultValue.trim()) {
     sql += ` DEFAULT ${formatDefaultValue(col.defaultValue.trim())}`;
   }
   return sql;
@@ -318,8 +323,11 @@ export function buildDdlStatements(
   for (const col of current.columns) {
     if (!col.isNew) continue;
     let sql = `ALTER TABLE ${qualified} ADD COLUMN ${q(col.name)} ${buildColumnTypeSql(col)}`;
+    if (col.autoIncrement) {
+      sql += " GENERATED ALWAYS AS IDENTITY";
+    }
     if (!col.nullable) sql += " NOT NULL";
-    if (col.defaultValue.trim()) sql += ` DEFAULT ${formatDefaultValue(col.defaultValue.trim())}`;
+    if (!col.autoIncrement && col.defaultValue.trim()) sql += ` DEFAULT ${formatDefaultValue(col.defaultValue.trim())}`;
     sqls.push(sql);
   }
 

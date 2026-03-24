@@ -536,7 +536,8 @@ export async function handleApiRequest<M extends ApiMethod>(
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
       const session = getS(cid);
       const result = await session.backGroundPool.query(
-        `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length
+        `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length,
+         numeric_precision, numeric_scale, identity_generation
          FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
         [schema, table]
       );
@@ -707,7 +708,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       // 表：获取列、约束、索引
       const colsRes = await pool.query(
         `SELECT column_name, data_type, character_maximum_length, numeric_precision, numeric_scale,
-         is_nullable, column_default, udt_name
+         is_nullable, column_default, udt_name, identity_generation
          FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
         [schema, table]
       );

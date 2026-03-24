@@ -262,6 +262,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         nullable: c.is_nullable === "YES",
         primaryKey: pkSet.has(c.column_name.toLowerCase()),
         defaultValue: String(c.column_default ?? ""),
+        autoIncrement: !!c.identity_generation,
         comment: c.column_comment ?? "",
         isNew: false,
         isExisting: true,
@@ -651,7 +652,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                 <table style={{ width: "100%", "border-collapse": "collapse" }}>
                   <thead>
                     <tr>
-                      {(["列名", "类型", "长度/精度", "小数位", "非空", "主键", "默认值", "注释", "操作"] as const).map((h) => (
+                      {(["列名", "类型", "长度/精度", "小数位", "非空", "主键", "自增", "默认值", "注释", "操作"] as const).map((h) => (
                         <th style={{
                           "background-color": vscode.sidebarBg,
                           color: vscode.foreground,
@@ -775,6 +776,17 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                                 type="checkbox"
                                 checked={col.primaryKey}
                                 onChange={(e) => setColumns(i(), "primaryKey", e.currentTarget.checked)}
+                              />
+                            </td>
+                            {/* 自增 */}
+                            <td style={{ ...cellStyle, "text-align": "center" }}>
+                              <input
+                                type="checkbox"
+                                checked={!!col.autoIncrement}
+                                disabled={props.mode === "edit" && !!col.isExisting}
+                                title={props.mode === "edit" && !!col.isExisting ? "已有列不支持修改自增" : ""}
+                                onChange={(e) => setColumns(i(), "autoIncrement", e.currentTarget.checked)}
+                                style={{ cursor: props.mode === "edit" && !!col.isExisting ? "not-allowed" : "pointer", opacity: props.mode === "edit" && !!col.isExisting ? "0.5" : "1" }}
                               />
                             </td>
                             {/* 默认值 */}
