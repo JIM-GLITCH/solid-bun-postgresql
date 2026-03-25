@@ -181,6 +181,15 @@ export function formatCellToEditable(value: unknown, dataTypeOid?: number): stri
 /** 格式化为 SQL 字面量（用于 UPDATE 的 SET 子句） */
 export function formatSqlValue(value: unknown, dataTypeOid?: number): string {
   if (value === null || value === undefined) return "NULL";
+
+  // JSONB/JSON 类型：字符串值直接作为 JSON 字面量处理，不走通用 null/bool 检测
+  if (typeof value === "string" && dataTypeOid === PG_OID.jsonb) {
+    return `'${value.replace(/'/g, "''")}'::jsonb`;
+  }
+  if (typeof value === "string" && dataTypeOid === PG_OID.json) {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+
   if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
   if (typeof value === "number") return String(value);
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
