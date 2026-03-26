@@ -1,14 +1,31 @@
 /**
- * 弹窗上下文：替代 alert/confirm/prompt，在 VSCode 插件中可用
+ * 弹窗上下文：替代 alert/confirm/prompt，并托管 JSONB 编辑器、改表名等全屏模态（与 App 同级 DOM，避免点穿）
  */
 
 import { createContext, createSignal, useContext, onMount, type JSX } from "solid-js";
-import { vscode } from "./theme";
+import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
+import { JSONB_Editor } from "./jsonb-editor";
+import RenameTableModal from "./rename-table-modal";
+
+export interface OpenJsonbEditorOptions {
+  initialValue: string | null;
+  isReadOnly: boolean;
+  onSave: (value: string | null) => void;
+}
+
+export interface OpenRenameTableOptions {
+  connectionId: string;
+  schema: string;
+  table: string;
+  onSuccess: (connectionId: string, schema: string) => void;
+}
 
 export interface DialogContextValue {
   showAlert: (message: string, title?: string) => void;
   showConfirm: (message: string, title?: string) => Promise<boolean>;
   showPrompt: (message: string, title?: string, defaultValue?: string) => Promise<string | null>;
+  openJsonbEditor: (opts: OpenJsonbEditorOptions) => void;
+  openRenameTable: (opts: OpenRenameTableOptions) => void;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -27,6 +44,9 @@ export function DialogProvider(props: { children: JSX.Element }) {
     resolve: (v: string | null) => void;
   } | null>(null);
 
+  const [jsonbEditorState, setJsonbEditorState] = createSignal<OpenJsonbEditorOptions | null>(null);
+  const [renameTableState, setRenameTableState] = createSignal<OpenRenameTableOptions | null>(null);
+
   const showAlert = (message: string, title = "提示") => {
     setAlertState({ message, title });
   };
@@ -41,7 +61,23 @@ export function DialogProvider(props: { children: JSX.Element }) {
       setPromptState({ message, title, defaultValue, resolve });
     });
 
-  const value: DialogContextValue = { showAlert, showConfirm, showPrompt };
+  const openJsonbEditor = (opts: OpenJsonbEditorOptions) => {
+    setRenameTableState(null);
+    setJsonbEditorState(opts);
+  };
+
+  const openRenameTable = (opts: OpenRenameTableOptions) => {
+    setJsonbEditorState(null);
+    setRenameTableState(opts);
+  };
+
+  const value: DialogContextValue = {
+    showAlert,
+    showConfirm,
+    showPrompt,
+    openJsonbEditor,
+    openRenameTable,
+  };
 
   return (
     <DialogContext.Provider value={value}>
@@ -56,7 +92,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
             display: "flex",
             "align-items": "center",
             "justify-content": "center",
-            "z-index": 10000,
+            "z-index": MODAL_Z_FULLSCREEN - 3,
           }}
           onClick={() => setAlertState(null)}
         >
@@ -71,6 +107,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
               "min-width": "320px",
               "max-width": "480px",
               padding: "24px",
+              "z-index": 1,
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -110,7 +147,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
             display: "flex",
             "align-items": "center",
             "justify-content": "center",
-            "z-index": 10000,
+            "z-index": MODAL_Z_FULLSCREEN - 3,
           }}
           onClick={() => {
             confirmState()?.resolve(false);
@@ -128,6 +165,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
               "min-width": "320px",
               "max-width": "480px",
               padding: "24px",
+              "z-index": 1,
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -194,6 +232,32 @@ export function DialogProvider(props: { children: JSX.Element }) {
           }}
         />
       )}
+      {/* 改表名：与 App 同级，最后挂载的阻塞层在最上 */}
+      {renameTableState() && (
+        <RenameTableModal
+          connectionId={renameTableState()!.connectionId}
+          schema={renameTableState()!.schema}
+          table={renameTableState()!.table}
+          onClose={() => setRenameTableState(null)}
+          onSuccess={(connectionId, schema) => {
+            const st = renameTableState();
+            setRenameTableState(null);
+            st?.onSuccess(connectionId, schema);
+          }}
+        />
+      )}
+      {jsonbEditorState() && (
+        <JSONB_Editor
+          initialValue={jsonbEditorState()!.initialValue}
+          isReadOnly={jsonbEditorState()!.isReadOnly}
+          onSave={(v) => {
+            const st = jsonbEditorState();
+            setJsonbEditorState(null);
+            st?.onSave(v);
+          }}
+          onClose={() => setJsonbEditorState(null)}
+        />
+      )}
     </DialogContext.Provider>
   );
 }
@@ -223,7 +287,7 @@ function PromptModal(props: {
         display: "flex",
         "align-items": "center",
         "justify-content": "center",
-        "z-index": 10000,
+        "z-index": MODAL_Z_FULLSCREEN - 3,
       }}
       onClick={props.onCancel}
     >
@@ -238,6 +302,7 @@ function PromptModal(props: {
           "min-width": "320px",
           "max-width": "480px",
           padding: "24px",
+          "z-index": 1,
         }}
         onClick={(e) => e.stopPropagation()}
       >

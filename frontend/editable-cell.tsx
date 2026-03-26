@@ -1,8 +1,6 @@
 import { createSignal, createEffect, Show } from "solid-js";
-import { Portal } from "solid-js/web";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 import { vscode } from "./theme";
-import { JSONB_Editor } from "./jsonb-editor";
 
 interface EditableCellProps {
   /** 直接传值，或传访问器 () => value 以建立对 store 的细粒度依赖 */
@@ -32,7 +30,6 @@ interface EditableCellProps {
 export default function EditableCell(props: EditableCellProps) {
   const [isEditing, setIsEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
-  const [showJsonEditor, setShowJsonEditor] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
 
   createEffect(() => {
@@ -42,11 +39,10 @@ export default function EditableCell(props: EditableCellProps) {
   const getValue = () => (typeof props.value === "function" ? props.value() : props.value);
   const getAlign = () => (typeof props.align === "function" ? props.align() : (props.align ?? "left"));
 
+  const isJsonColumn =
+    () => props.dataTypeOid === 114 || props.dataTypeOid === 3802;
+
   function startEditing() {
-    if (props.dataTypeOid === 114 || props.dataTypeOid === 3802) {
-      setShowJsonEditor(true);
-      return;
-    }
     if (!props.isEditable) return;
     setEditValue(formatCellToEditable(getValue(), props.dataTypeOid));
     setIsEditing(true);
@@ -91,7 +87,7 @@ export default function EditableCell(props: EditableCellProps) {
       onDblClick={startEditing}
       onContextMenu={handleContextMenu}
       style={{
-        cursor: props.isEditable ? "pointer" : "default",
+        cursor: props.isEditable || isJsonColumn() ? "pointer" : "default",
         padding: "8px 12px",
         "text-align": getAlign(),
         "border": `1px solid ${vscode.border}`,
@@ -115,7 +111,15 @@ export default function EditableCell(props: EditableCellProps) {
         when={isEditing()}
         fallback={
           <span
-            title={props.isEditable ? "双击编辑" : ""}
+            title={
+              props.isEditable
+                ? isJsonColumn()
+                  ? "双击在单元格内编辑；右键菜单可打开 JSON/JSONB 可视化编辑器"
+                  : "双击编辑"
+                : isJsonColumn()
+                  ? "右键菜单可打开 JSON/JSONB 可视化编辑器"
+                  : ""
+            }
             style={
               getValue() === null || getValue() === undefined
                 ? { "font-style": "italic", opacity: 0.5, color: vscode.foregroundDim }
@@ -149,24 +153,6 @@ export default function EditableCell(props: EditableCellProps) {
             "min-width": "calc(100% + 12px)"
           }}
         />
-      </Show>
-      <Show when={showJsonEditor()}>
-        <Portal mount={document.body}>
-          <JSONB_Editor
-            initialValue={(() => {
-              const v = getValue();
-              if (v === null || v === undefined) return null;
-              if (typeof v === "string") return v;
-              try { return JSON.stringify(v); } catch { return String(v); }
-            })()}
-            isReadOnly={!props.isEditable}
-            onSave={(v) => {
-              props.onSave?.(v);
-              setShowJsonEditor(false);
-            }}
-            onClose={() => setShowJsonEditor(false)}
-          />
-        </Portal>
       </Show>
     </td>
   );

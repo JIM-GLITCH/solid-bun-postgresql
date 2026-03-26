@@ -43,3 +43,6 @@ export const vscode = {
   inputBorder: "var(--vscode-input-border, #3c3c3c)",
   inputFg: "var(--vscode-input-foreground, #D4D4D4)",
 } as const;
+
+/** 全屏遮罩类模态，须高于表格内右键菜单、侧栏等局部 z-index（避免点穿） */
+export const MODAL_Z_FULLSCREEN = 2147483646;

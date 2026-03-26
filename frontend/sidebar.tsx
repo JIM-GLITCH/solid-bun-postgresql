@@ -3,7 +3,6 @@ import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import { getSchemas, getTables, getColumns, getIndexes, getTableDdl, getFunctionDdl } from "./api";
-import RenameTableModal from "./rename-table-modal";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
@@ -85,7 +84,7 @@ function NodeIcon(props: { type: NodeType }) {
 }
 
 export default function Sidebar(props: SidebarProps) {
-  const { showPrompt, showConfirm } = useDialog();
+  const { showPrompt, showConfirm, openRenameTable } = useDialog();
   const panel = Resizable.usePanelContext();
   const onCollapse = () => panel.collapse();
   const collapsed = () => panel.collapsed();
@@ -141,7 +140,6 @@ export default function Sidebar(props: SidebarProps) {
 
   const [searchTerm, setSearchTerm] = createSignal("");
   const [contextMenu, setContextMenu] = createSignal<{ x: number; y: number; node: TreeNode } | null>(null);
-  const [renameModal, setRenameModal] = createSignal<{ connectionId: string; connectionInfo: string; schema: string; table: string } | null>(null);
   const [copyModal, setCopyModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [deleteModal, setDeleteModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
   const [truncateModal, setTruncateModal] = createSignal<{ connectionId: string; schema: string; table: string } | null>(null);
@@ -663,12 +661,11 @@ export default function Sidebar(props: SidebarProps) {
         break;
       case "renameTable":
         if (node.type === "table" && node.schema && node.table && cid) {
-          const conn = props.connections.find((c) => c.id === cid);
-          setRenameModal({
+          openRenameTable({
             connectionId: cid,
-            connectionInfo: conn?.info ?? node.name,
             schema: node.schema,
             table: node.table,
+            onSuccess: (connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema),
           });
         }
         break;
@@ -1494,20 +1491,6 @@ export default function Sidebar(props: SidebarProps) {
               schema={m.schema}
               table={m.table}
               onClose={() => setCopyModal(null)}
-              onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
-            />
-          );
-        })()}
-      </Show>
-      <Show when={renameModal()}>
-        {(() => {
-          const m = renameModal()!;
-          return (
-            <RenameTableModal
-              connectionId={m.connectionId}
-              schema={m.schema}
-              table={m.table}
-              onClose={() => setRenameModal(null)}
               onSuccess={(connectionId, schema) => props.onRequestSchemaRefresh?.(connectionId, schema)}
             />
           );

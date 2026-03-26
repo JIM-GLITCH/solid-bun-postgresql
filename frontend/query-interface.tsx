@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
 import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents, explainQuery } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
@@ -15,6 +15,7 @@ import { writeClipboardText } from "./clipboard";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
 import ExplainPlanViewer from "./explain-plan-viewer";
+import { useDialog } from "./dialog-context";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
@@ -45,7 +46,18 @@ interface PendingInsert {
   rowIndex: number;
 }
 
+function cellValueToJsonbInitial(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return raw;
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return String(raw);
+  }
+}
+
 export default function QueryInterface(props: QueryInterfaceProps = {}) {
+  const { openJsonbEditor } = useDialog();
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -140,7 +152,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       setContainerHeight(Math.max(h, 200)); // 最小 200px，避免 0 导致 visible 为空
     };
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(updateHeight); // 等布局完成后再测量
+      requestAnimationFrame(() => {
+        requestAnimationFrame(updateHeight);
+      });
     });
     ro.observe(el);
     updateHeight(); // 立即测量一次
@@ -196,7 +210,15 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     return getSelectionAsTabSeparated();
   };
 
+  /** JSONB 编辑器 Portal 在 body 上，须在捕获阶段排除，否则会拦截 Ctrl+C / Ctrl+S（先于模态内 input 处理） */
+  function eventTargetInJsonbEditorModal(target: EventTarget | null): boolean {
+    if (!(target instanceof Node)) return false;
+    const el = target instanceof Element ? target : target.parentElement;
+    return el?.closest("[data-jsonb-editor-root]") != null;
+  }
+
   const handleCopy = (e: ClipboardEvent) => {
+    if (eventTargetInJsonbEditorModal(e.target) || eventTargetInJsonbEditorModal(document.activeElement)) return;
     const text = getTableCopyText();
     if (!text) return;
     e.preventDefault();
@@ -205,6 +227,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   const handleCopyKeyDown = (e: KeyboardEvent) => {
     if (!((e.ctrlKey || e.metaKey) && e.key === "c")) return;
+    if (eventTargetInJsonbEditorModal(e.target) || eventTargetInJsonbEditorModal(document.activeElement)) return;
     const text = getTableCopyText();
     if (!text) return;
     e.preventDefault();
@@ -215,6 +238,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   // Ctrl+S 保存结果：按上下文保存，不要求焦点；仅排除 SQL 编辑器（避免与 Monaco 冲突），多 Tab 时只保存当前 Tab
   const handleKeyDown = (e: KeyboardEvent) => {
     if (!((e.ctrlKey || e.metaKey) && e.key === "s")) return;
+    if (eventTargetInJsonbEditorModal(e.target) || eventTargetInJsonbEditorModal(document.activeElement)) return;
     if (props.isActiveTab && !props.isActiveTab()) return;
     if (document.activeElement?.closest("[data-sql-editor]")) return;
     e.preventDefault();
@@ -238,9 +262,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (e.button !== 0) return;
     const r = rowIndex;
     const c = colIndex;
-
-    // Webview 中需显式转移焦点，否则 Ctrl+C 时 document.activeElement 可能仍在 Monaco；setTimeout 延后执行避免被默认行为覆盖
-    setTimeout(() => tableContainerRef()?.focus(), 0);
 
     if (e.shiftKey) {
       // Shift+点击：从 selectionOrigin 扩展到当前单元格，将矩形范围内的单元格加入选区
@@ -1307,6 +1328,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 const isRowPendingDelete = () => pendingDeletes().some(d => d.rowIndex === rowIndex());
                 const isRowPendingInsert = () => pendingInserts().some(p => p.rowIndex === rowIndex());
                 const isCellEditable = () => colInfo() && (colInfo()!.isEditable || (isRowPendingInsert() && !!colInfo()!.tableName && !!colInfo()!.columnName));
+                const isJsonOrJsonbColumn = () => {
+                  const oid = colInfo()?.dataTypeOid;
+                  return oid === PG_OID.json || oid === PG_OID.jsonb;
+                };
                 return (
                   <div
                     ref={(el) => (tableContextMenuRef = el)}
@@ -1353,6 +1378,34 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
                         撤销修改
+                      </button>
+                    </Show>
+                    <Show when={hasContextCell() && isJsonOrJsonbColumn()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const ri = rowIndex();
+                          const ci = colIndex();
+                          const col = columns()[ci];
+                          const raw = result[ri][ci];
+                          const editable =
+                            col &&
+                            (col.isEditable ||
+                              (pendingInserts().some((p) => p.rowIndex === ri) && !!col.tableName && !!col.columnName));
+                          openJsonbEditor({
+                            initialValue: cellValueToJsonbInitial(raw),
+                            isReadOnly: !editable,
+                            onSave: (v) => handleCellSave(ri, ci, v),
+                          });
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        打开 JSON/JSONB 编辑器
                       </button>
                     </Show>
                     <Show when={hasContextCell() && isCellEditable()}>

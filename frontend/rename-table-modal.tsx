@@ -4,7 +4,7 @@
 
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
-import { vscode } from "./theme";
+import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
 
 export interface RenameTableModalProps {
   connectionId: string;
@@ -51,7 +51,7 @@ export default function RenameTableModal(props: RenameTableModalProps) {
         display: "flex",
         "align-items": "center",
         "justify-content": "center",
-        "z-index": 2000,
+        "z-index": MODAL_Z_FULLSCREEN,
       }}
       onClick={(e) => e.target === e.currentTarget && props.onClose()}
     >

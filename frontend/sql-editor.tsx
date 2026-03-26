@@ -33,9 +33,11 @@ function ensureExecHighlightStyle() {
   document.head.appendChild(el);
 }
 import { getTheme, subscribe } from "./theme-sync";
+import "./monaco-environment";
 import { getSqlSegments } from "../shared/src";
 import { registerSqlEditor } from "./monaco-paste-registry";
 import { readClipboardText, writeClipboardText } from "./clipboard";
+import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
 
 /** 光标所在块的文本及起止偏移（与后端 getStatements 同一套分块规则，前端多「空行」边界）。 */
 function getSqlBlockAtCursor(
@@ -60,21 +62,6 @@ function getAllBlocks(text: string): { start: number; end: number }[] {
   return getSqlSegments(text, { blankLineSeparator: true });
 }
 
-// Workers 从 ./vs 加载（Monaco 0.55.1 min hashed 文件名）
-// When running inside the VS Code webview we allow overriding via window.__MONACO_BASE__
-const MONACO_BASE = (typeof window !== 'undefined' && (window as any).__MONACO_BASE__) || "./vs";
-if (typeof self !== "undefined") {
-  (self as any).MonacoEnvironment = {
-    getWorkerUrl: (_: string, label: string) => {
-      if (label === "json") return `${MONACO_BASE}/assets/json.worker-DKiEKt88.js`;
-      if (label === "css" || label === "scss" || label === "less") return `${MONACO_BASE}/assets/css.worker-HnVq6Ewq.js`;
-      if (label === "html" || label === "handlebars" || label === "razor") return `${MONACO_BASE}/assets/html.worker-B51mlPHg.js`;
-      if (label === "typescript" || label === "javascript") return `${MONACO_BASE}/assets/ts.worker-CMbG-7ft.js`;
-      return `${MONACO_BASE}/assets/editor.worker-Be8ye1pW.js`;
-    },
-  };
-}
-
 export interface SqlEditorProps {
   value: string;
   onChange?: (value: string) => void;
@@ -95,6 +82,7 @@ export interface SqlEditorProps {
 export default function SqlEditor(props: SqlEditorProps) {
   let container!: HTMLDivElement;
   let editor: monaco.editor.IStandaloneCodeEditor | undefined;
+  let detachMonacoLayout: (() => void) | undefined;
   /** 刚通过 executeEdits 应用的格式化结果，effect 里若 val 等于它则跳过 setValue，避免清空撤销栈 */
   let lastFormattedValue: string | null = null;
 
@@ -115,8 +103,9 @@ export default function SqlEditor(props: SqlEditorProps) {
       fontSize: 13,
       lineNumbers: "on",
       wordWrap: "on",
-      automaticLayout: true,
+      automaticLayout: false,
     });
+    detachMonacoLayout = attachMonacoLayoutOnResize(container, editor);
 
     // subscribe to theme changes
     const unsub = subscribe((t) => {
@@ -125,6 +114,7 @@ export default function SqlEditor(props: SqlEditorProps) {
           buildAndDefineVscodeTheme(monaco, t.themeKind);
         }
         monaco.editor.setTheme(t.monacoTheme);
+        requestAnimationFrame(() => editor?.layout());
       } catch (e) {}
     });
 
@@ -446,6 +436,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   });
 
   onCleanup(() => {
+    detachMonacoLayout?.();
     editor?.dispose();
   });
 
