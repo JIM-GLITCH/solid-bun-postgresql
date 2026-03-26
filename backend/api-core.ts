@@ -965,112 +965,251 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "postgres/partition-info": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = getS(cid);
-      const pool = session.backGroundPool;
+      try {
+        const cid = getConnId();
+        const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+        const session = getS(cid);
+        const pool = session.backGroundPool;
 
-      const rel = await pool.query(
-        `SELECT c.oid, c.relkind::text AS relkind FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-         WHERE n.nspname = $1 AND c.relname = $2`,
-        [schema, table]
-      );
-      if (rel.rows.length === 0) throw new Error(`关系不存在: ${schema}.${table}`);
-      const oid = rel.rows[0].oid as number;
-      const relkind = String(rel.rows[0].relkind);
-
-      if (relkind === "p") {
-        const pt = await pool.query(
-          `SELECT CASE pt.partstrat
-              WHEN 'r' THEN 'range'
-              WHEN 'l' THEN 'list'
-              WHEN 'h' THEN 'hash'
-              ELSE pt.partstrat::text
-            END AS strategy,
-            pg_get_partkeydef(pt.partrelid) AS partition_key
-           FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
-          [oid]
-        );
-        const parts = await pool.query(
-          `SELECT n.nspname AS schema, c.relname AS name,
-                  pg_get_expr(c.relpartbound, c.oid) AS partition_bound
-           FROM pg_inherits i
-           JOIN pg_class c ON c.oid = i.inhrelid
+        const rel = await pool.query(
+          `SELECT c.oid, c.relkind::text AS relkind FROM pg_class c
            JOIN pg_namespace n ON n.oid = c.relnamespace
-           WHERE i.inhparent = $1
-           ORDER BY n.nspname, c.relname`,
+           WHERE n.nspname = $1 AND c.relname = $2`,
+          [schema, table]
+        );
+        if (rel.rows.length === 0) throw new Error(`关系不存在: ${schema}.${table}`);
+        const oid = rel.rows[0].oid as number;
+        const relkind = String(rel.rows[0].relkind);
+
+        if (relkind === "p") {
+          const pt = await pool.query(
+            `SELECT CASE pt.partstrat
+                WHEN 'r' THEN 'range'
+                WHEN 'l' THEN 'list'
+                WHEN 'h' THEN 'hash'
+                ELSE pt.partstrat::text
+              END AS strategy,
+              pg_get_partkeydef(pt.partrelid) AS partition_key
+             FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
+            [oid]
+          );
+          const parts = await pool.query(
+            `SELECT n.nspname AS schema, c.relname AS name,
+                    pg_get_expr(c.relpartbound, c.oid) AS partition_bound
+             FROM pg_inherits i
+             JOIN pg_class c ON c.oid = i.inhrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE i.inhparent = $1
+             ORDER BY n.nspname, c.relname`,
+            [oid]
+          );
+          return {
+            role: "parent",
+            strategy: pt.rows[0]?.strategy ?? null,
+            partitionKey: pt.rows[0]?.partition_key ?? null,
+            partitions: parts.rows.map((r: { schema: string; name: string; partition_bound: string | null }) => ({
+              schema: r.schema,
+              name: r.name,
+              qualified: `${r.schema}.${r.name}`,
+              bound: r.partition_bound || "",
+            })),
+          };
+        }
+
+        const inh = await pool.query(
+          `SELECT i.inhparent, n.nspname AS parent_schema, p.relname AS parent_name
+           FROM pg_inherits i
+           JOIN pg_class p ON p.oid = i.inhparent
+           JOIN pg_namespace n ON n.oid = p.relnamespace
+           WHERE i.inhrelid = $1
+           LIMIT 1`,
           [oid]
         );
-        return {
-          role: "parent",
-          strategy: pt.rows[0]?.strategy ?? null,
-          partitionKey: pt.rows[0]?.partition_key ?? null,
-          partitions: parts.rows.map((r: { schema: string; name: string; partition_bound: string | null }) => ({
-            schema: r.schema,
-            name: r.name,
-            qualified: `${r.schema}.${r.name}`,
-            bound: r.partition_bound || "",
-          })),
-        };
-      }
+        if (inh.rows.length > 0) {
+          const r = inh.rows[0] as { inhparent: number; parent_schema: string; parent_name: string };
+          const boundRes = await pool.query(
+            `SELECT pg_get_expr(c.relpartbound, c.oid) AS partition_bound FROM pg_class c WHERE c.oid = $1`,
+            [oid]
+          );
+          const pp = await pool.query(
+            `SELECT CASE pt.partstrat
+                WHEN 'r' THEN 'range'
+                WHEN 'l' THEN 'list'
+                WHEN 'h' THEN 'hash'
+                ELSE pt.partstrat::text
+              END AS strategy,
+              pg_get_partkeydef(pt.partrelid) AS partition_key
+             FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
+            [r.inhparent]
+          );
+          return {
+            role: "partition",
+            parentQualified: `${r.parent_schema}.${r.parent_name}`,
+            parentSchema: r.parent_schema,
+            parentName: r.parent_name,
+            thisBound: boundRes.rows[0]?.partition_bound ?? "",
+            strategy: pp.rows[0]?.strategy ?? null,
+            partitionKey: pp.rows[0]?.partition_key ?? null,
+          };
+        }
 
-      const inh = await pool.query(
-        `SELECT i.inhparent, n.nspname AS parent_schema, p.relname AS parent_name
-         FROM pg_inherits i
-         JOIN pg_class p ON p.oid = i.inhparent
-         JOIN pg_namespace n ON n.oid = p.relnamespace
-         WHERE i.inhrelid = $1
-         LIMIT 1`,
-        [oid]
-      );
-      if (inh.rows.length > 0) {
-        const r = inh.rows[0] as { inhparent: number; parent_schema: string; parent_name: string };
-        const boundRes = await pool.query(
-          `SELECT pg_get_expr(c.relpartbound, c.oid) AS partition_bound FROM pg_class c WHERE c.oid = $1`,
-          [oid]
-        );
-        const pp = await pool.query(
-          `SELECT CASE pt.partstrat
-              WHEN 'r' THEN 'range'
-              WHEN 'l' THEN 'list'
-              WHEN 'h' THEN 'hash'
-              ELSE pt.partstrat::text
-            END AS strategy,
-            pg_get_partkeydef(pt.partrelid) AS partition_key
-           FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
-          [r.inhparent]
-        );
-        return {
-          role: "partition",
-          parentQualified: `${r.parent_schema}.${r.parent_name}`,
-          parentSchema: r.parent_schema,
-          parentName: r.parent_name,
-          thisBound: boundRes.rows[0]?.partition_bound ?? "",
-          strategy: pp.rows[0]?.strategy ?? null,
-          partitionKey: pp.rows[0]?.partition_key ?? null,
-        };
+        return { role: "none" };
+      } catch (e: any) {
+        throw new Error(`partition-info: ${e?.message ?? String(e)}`);
       }
-
-      return { role: "none" };
     }
 
     case "postgres/explain-text": {
-      const cid = getConnId();
-      const { query } = payload as { connectionId: string; query: string };
-      const session = getS(cid);
-      const q = query.trim();
-      if (!q) throw new Error("SQL 为空");
-      const explainSql = `EXPLAIN (VERBOSE, COSTS ON, FORMAT TEXT) ${q}`;
-      const result = await session.backGroundPool.query(explainSql);
-      const lines: string[] = result.rows.map((row) => {
-        const v =
-          (row as Record<string, unknown>)["QUERY PLAN"] ??
-          (row as Record<string, unknown>)["query_plan"] ??
-          Object.values(row)[0];
-        return typeof v === "string" ? v : String(v ?? "");
-      });
-      return { lines };
+      try {
+        const cid = getConnId();
+        const { query } = payload as { connectionId: string; query: string };
+        const session = getS(cid);
+        const q = query.trim();
+        if (!q) throw new Error("SQL 为空");
+        const explainSql = `EXPLAIN (VERBOSE, COSTS ON, FORMAT TEXT) ${q}`;
+        const result = await session.backGroundPool.query(explainSql);
+        const lines: string[] = result.rows.map((row) => {
+          const v =
+            (row as Record<string, unknown>)["QUERY PLAN"] ??
+            (row as Record<string, unknown>)["query_plan"] ??
+            Object.values(row)[0];
+          return typeof v === "string" ? v : String(v ?? "");
+        });
+        return { lines };
+      } catch (e: any) {
+        throw new Error(`explain-text: ${e?.message ?? String(e)}`);
+      }
+    }
+
+    case "postgres/pg-stat-overview": {
+      try {
+        const cid = getConnId();
+        const { limit = 20 } = payload as { connectionId: string; limit?: number };
+        const lim = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 5), 200) : 20;
+        const session = getS(cid);
+        const client = await session.backGroundPool.connect();
+        try {
+          // 监控查询必须“快失败”，避免 UI 卡住；不用事务，避免某一步失败后进入 aborted 状态
+          await client.query("SET statement_timeout = '2500ms'");
+          await client.query("SET lock_timeout = '800ms'");
+
+          const connRes = await client.query(
+            `SELECT
+               COUNT(*)::int AS total,
+               COUNT(*) FILTER (WHERE state = 'active')::int AS active,
+               COUNT(*) FILTER (WHERE state = 'idle')::int AS idle,
+               COUNT(*) FILTER (WHERE wait_event_type IS NOT NULL)::int AS waiting
+             FROM pg_stat_activity
+             WHERE datname = current_database()`
+          );
+
+          const lockRes = await client.query(
+            `SELECT
+               a.pid AS waiting_pid,
+               a.usename AS waiting_user,
+               LEFT(COALESCE(a.query, ''), 240) AS waiting_query,
+               b.pid AS blocking_pid,
+               b.usename AS blocking_user,
+               LEFT(COALESCE(b.query, ''), 240) AS blocking_query,
+               a.wait_event_type,
+               a.wait_event
+             FROM pg_stat_activity a
+             JOIN pg_locks la ON la.pid = a.pid AND NOT la.granted
+             JOIN pg_locks lb ON lb.locktype = la.locktype
+                            AND (lb.database = la.database OR (lb.database IS NULL AND la.database IS NULL))
+                            AND (lb.relation = la.relation OR (lb.relation IS NULL AND la.relation IS NULL))
+                            AND (lb.page = la.page OR (lb.page IS NULL AND la.page IS NULL))
+                            AND (lb.tuple = la.tuple OR (lb.tuple IS NULL AND la.tuple IS NULL))
+                            AND (lb.virtualxid = la.virtualxid OR (lb.virtualxid IS NULL AND la.virtualxid IS NULL))
+                            AND (lb.transactionid = la.transactionid OR (lb.transactionid IS NULL AND la.transactionid IS NULL))
+                            AND (lb.classid = la.classid OR (lb.classid IS NULL AND la.classid IS NULL))
+                            AND (lb.objid = la.objid OR (lb.objid IS NULL AND la.objid IS NULL))
+                            AND (lb.objsubid = la.objsubid OR (lb.objsubid IS NULL AND la.objsubid IS NULL))
+                             AND lb.pid <> la.pid
+             JOIN pg_stat_activity b ON b.pid = lb.pid
+             WHERE a.datname = current_database()
+             ORDER BY a.query_start NULLS LAST
+             LIMIT $1`,
+            [lim]
+          );
+
+          let slowQueries: Array<Record<string, unknown>> = [];
+          let slowQuerySource: "pg_stat_statements" | "pg_stat_activity" = "pg_stat_statements";
+          try {
+            const slowRes = await client.query(
+              `SELECT
+                 LEFT(query, 240) AS query,
+                 calls,
+                 ROUND(total_exec_time::numeric, 3)::float8 AS total_exec_time,
+                 ROUND(mean_exec_time::numeric, 3)::float8 AS mean_exec_time,
+                 rows::bigint AS rows
+               FROM pg_stat_statements
+               WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+               ORDER BY total_exec_time DESC
+               LIMIT $1`,
+              [lim]
+            );
+            slowQueries = slowRes.rows as Array<Record<string, unknown>>;
+          } catch {
+            slowQuerySource = "pg_stat_activity";
+            const fallbackRes = await client.query(
+              `SELECT
+                 LEFT(COALESCE(query, ''), 240) AS query,
+                 EXTRACT(EPOCH FROM (now() - query_start)) * 1000 AS total_exec_time,
+                 state,
+                 wait_event_type,
+                 wait_event
+               FROM pg_stat_activity
+               WHERE datname = current_database()
+                 AND state = 'active'
+                 AND query IS NOT NULL
+               ORDER BY query_start ASC NULLS LAST
+               LIMIT $1`,
+              [lim]
+            );
+            slowQueries = fallbackRes.rows as Array<Record<string, unknown>>;
+          }
+
+          return {
+            connectionStats: connRes.rows[0] ?? { total: 0, active: 0, idle: 0, waiting: 0 },
+            lockWaits: lockRes.rows,
+            slowQueries,
+            slowQuerySource,
+            collectedAt: Date.now(),
+          };
+        } catch (e) {
+          throw e;
+        } finally {
+          try { await client.query("RESET statement_timeout"); } catch {}
+          try { await client.query("RESET lock_timeout"); } catch {}
+          client.release();
+        }
+      } catch (e: any) {
+        throw new Error(`pg-stat-overview: ${e?.message ?? String(e)}`);
+      }
+    }
+
+    case "postgres/manage-backend": {
+      try {
+        const cid = getConnId();
+        const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("pid 非法");
+        const session = getS(cid);
+        const self = await session.backGroundPool.query("SELECT pg_backend_pid() AS self_pid");
+        const selfPid = Number(self.rows[0]?.self_pid ?? 0);
+        if (pid === selfPid) {
+          throw new Error("不允许操作当前监控会话自身 pid");
+        }
+        const fn = action === "terminate" ? "pg_terminate_backend" : "pg_cancel_backend";
+        const rs = await session.backGroundPool.query(
+          `SELECT ${fn}($1) AS ok`,
+          [pid]
+        );
+        const ok = !!rs.rows[0]?.ok;
+        return { success: ok, pid, action };
+      } catch (e: any) {
+        throw new Error(`manage-backend: ${e?.message ?? String(e)}`);
+      }
     }
 
     default:

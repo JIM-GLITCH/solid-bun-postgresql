@@ -4,7 +4,7 @@
   "description": "",
   "scripts": {
     "deploy": "bun standalone/deploy.ts",
-    "dev": "concurrently -n api,vite \"tsx standalone/server-node.ts\" \"vp dev\"",
+    "dev": "concurrently -n api,vite \"tsx watch standalone/server-node.ts\" \"vp dev\"",
     "dev:standalone": "vp dev -c standalone/vite.config.standalone.ts",
     "build:linux": "bun run standalone/build-linux.ts",
     "build:win": "bun run standalone/build-win.ts",

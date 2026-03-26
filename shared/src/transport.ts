@@ -45,6 +45,8 @@ export type ApiMethod =
   | "postgres/check-constraints"
   | "postgres/partition-info"
   | "postgres/explain-text"
+  | "postgres/pg-stat-overview"
+  | "postgres/manage-backend"
   | "vscode/save-file"
   | "vscode/read-file"
   | "vscode/clipboard-write"
@@ -111,6 +113,10 @@ export type ApiRequestPayload = {
   "postgres/partition-info": { connectionId: string; schema: string; table: string };
   /** EXPLAIN (FORMAT TEXT)，不写库、不 ANALYZE，用于分区裁剪等计划预览 */
   "postgres/explain-text": { connectionId: string; query: string };
+  /** pg_stat 监控概览：慢查询、锁等待、连接统计 */
+  "postgres/pg-stat-overview": { connectionId: string; limit?: number };
+  /** pg_stat 中对会话执行 cancel/terminate */
+  "postgres/manage-backend": { connectionId: string; pid: number; action: "cancel" | "terminate" };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

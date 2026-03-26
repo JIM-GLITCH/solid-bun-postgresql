@@ -212,6 +212,35 @@ export async function explainQueryText(connectionId: string, query: string) {
   return api().request("postgres/explain-text", { connectionId, query }) as Promise<{ lines: string[] }>;
 }
 
+/** pg_stat 监控概览 */
+export async function getPgStatOverview(connectionId: string, limit = 20) {
+  return api().request("postgres/pg-stat-overview", { connectionId, limit }) as Promise<{
+    connectionStats: { total: number; active: number; idle: number; waiting: number };
+    lockWaits: Array<{
+      waiting_pid: number;
+      waiting_user: string;
+      waiting_query: string;
+      blocking_pid: number;
+      blocking_user: string;
+      blocking_query: string;
+      wait_event_type?: string | null;
+      wait_event?: string | null;
+    }>;
+    slowQueries: Array<Record<string, unknown>>;
+    slowQuerySource: "pg_stat_statements" | "pg_stat_activity";
+    collectedAt: number;
+  }>;
+}
+
+/** 取消/终止指定后端会话 */
+export async function manageBackend(connectionId: string, pid: number, action: "cancel" | "terminate") {
+  return api().request("postgres/manage-backend", { connectionId, pid, action }) as Promise<{
+    success: boolean;
+    pid: number;
+    action: "cancel" | "terminate";
+  }>;
+}
+
 /** 订阅服务端推送事件 */
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {  return api().subscribeEvents(connectionId, callback);
 }
