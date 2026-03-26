@@ -964,6 +964,115 @@ export async function handleApiRequest<M extends ApiMethod>(
       return { constraints: result.rows };
     }
 
+    case "postgres/partition-info": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = getS(cid);
+      const pool = session.backGroundPool;
+
+      const rel = await pool.query(
+        `SELECT c.oid, c.relkind::text AS relkind FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = $1 AND c.relname = $2`,
+        [schema, table]
+      );
+      if (rel.rows.length === 0) throw new Error(`关系不存在: ${schema}.${table}`);
+      const oid = rel.rows[0].oid as number;
+      const relkind = String(rel.rows[0].relkind);
+
+      if (relkind === "p") {
+        const pt = await pool.query(
+          `SELECT CASE pt.partstrat
+              WHEN 'r' THEN 'range'
+              WHEN 'l' THEN 'list'
+              WHEN 'h' THEN 'hash'
+              ELSE pt.partstrat::text
+            END AS strategy,
+            pg_get_partkeydef(pt.partrelid) AS partition_key
+           FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
+          [oid]
+        );
+        const parts = await pool.query(
+          `SELECT n.nspname AS schema, c.relname AS name,
+                  pg_get_expr(c.relpartbound, c.oid) AS partition_bound
+           FROM pg_inherits i
+           JOIN pg_class c ON c.oid = i.inhrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE i.inhparent = $1
+           ORDER BY n.nspname, c.relname`,
+          [oid]
+        );
+        return {
+          role: "parent",
+          strategy: pt.rows[0]?.strategy ?? null,
+          partitionKey: pt.rows[0]?.partition_key ?? null,
+          partitions: parts.rows.map((r: { schema: string; name: string; partition_bound: string | null }) => ({
+            schema: r.schema,
+            name: r.name,
+            qualified: `${r.schema}.${r.name}`,
+            bound: r.partition_bound || "",
+          })),
+        };
+      }
+
+      const inh = await pool.query(
+        `SELECT i.inhparent, n.nspname AS parent_schema, p.relname AS parent_name
+         FROM pg_inherits i
+         JOIN pg_class p ON p.oid = i.inhparent
+         JOIN pg_namespace n ON n.oid = p.relnamespace
+         WHERE i.inhrelid = $1
+         LIMIT 1`,
+        [oid]
+      );
+      if (inh.rows.length > 0) {
+        const r = inh.rows[0] as { inhparent: number; parent_schema: string; parent_name: string };
+        const boundRes = await pool.query(
+          `SELECT pg_get_expr(c.relpartbound, c.oid) AS partition_bound FROM pg_class c WHERE c.oid = $1`,
+          [oid]
+        );
+        const pp = await pool.query(
+          `SELECT CASE pt.partstrat
+              WHEN 'r' THEN 'range'
+              WHEN 'l' THEN 'list'
+              WHEN 'h' THEN 'hash'
+              ELSE pt.partstrat::text
+            END AS strategy,
+            pg_get_partkeydef(pt.partrelid) AS partition_key
+           FROM pg_partitioned_table pt WHERE pt.partrelid = $1`,
+          [r.inhparent]
+        );
+        return {
+          role: "partition",
+          parentQualified: `${r.parent_schema}.${r.parent_name}`,
+          parentSchema: r.parent_schema,
+          parentName: r.parent_name,
+          thisBound: boundRes.rows[0]?.partition_bound ?? "",
+          strategy: pp.rows[0]?.strategy ?? null,
+          partitionKey: pp.rows[0]?.partition_key ?? null,
+        };
+      }
+
+      return { role: "none" };
+    }
+
+    case "postgres/explain-text": {
+      const cid = getConnId();
+      const { query } = payload as { connectionId: string; query: string };
+      const session = getS(cid);
+      const q = query.trim();
+      if (!q) throw new Error("SQL 为空");
+      const explainSql = `EXPLAIN (VERBOSE, COSTS ON, FORMAT TEXT) ${q}`;
+      const result = await session.backGroundPool.query(explainSql);
+      const lines: string[] = result.rows.map((row) => {
+        const v =
+          (row as Record<string, unknown>)["QUERY PLAN"] ??
+          (row as Record<string, unknown>)["query_plan"] ??
+          Object.values(row)[0];
+        return typeof v === "string" ? v : String(v ?? "");
+      });
+      return { lines };
+    }
+
     default:
       throw new Error(`未知 API 方法: ${method}`);
   }

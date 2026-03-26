@@ -43,6 +43,8 @@ export type ApiMethod =
   | "postgres/import-rows"
   | "postgres/table-comment"
   | "postgres/check-constraints"
+  | "postgres/partition-info"
+  | "postgres/explain-text"
   | "vscode/save-file"
   | "vscode/read-file"
   | "vscode/clipboard-write"
@@ -106,6 +108,9 @@ export type ApiRequestPayload = {
   "vscode/clipboard-read": Record<string, never>;
   "postgres/table-comment": { connectionId: string; schema: string; table: string };
   "postgres/check-constraints": { connectionId: string; schema: string; table: string };
+  "postgres/partition-info": { connectionId: string; schema: string; table: string };
+  /** EXPLAIN (FORMAT TEXT)，不写库、不 ANALYZE，用于分区裁剪等计划预览 */
+  "postgres/explain-text": { connectionId: string; query: string };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

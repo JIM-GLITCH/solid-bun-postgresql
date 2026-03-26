@@ -17,15 +17,19 @@ export class HttpTransport implements IApiTransport {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-
-    const data = await res.json();
-
-    if (!res.ok) {
-      throw new Error(data.error || `请求失败: ${method}`);
+    const raw = await res.text();
+    let data: any;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      const preview = raw.slice(0, 180).replace(/\s+/g, " ").trim();
+      throw new Error(
+        `接口返回非 JSON（${res.status} ${res.statusText}）：${method}${preview ? ` | ${preview}` : ""}`
+      );
     }
 
-    if (data.error && !res.ok) {
-      throw new Error(data.error);
+    if (!res.ok) {
+      throw new Error(data?.error || `请求失败: ${method}`);
     }
 
     return data;

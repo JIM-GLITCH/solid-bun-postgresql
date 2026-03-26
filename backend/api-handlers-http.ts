@@ -71,6 +71,8 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
   { path: "/api/postgres/table-comment", method: "postgres/table-comment" },
   { path: "/api/postgres/check-constraints", method: "postgres/check-constraints" },
+  { path: "/api/postgres/partition-info", method: "postgres/partition-info" },
+  { path: "/api/postgres/explain-text", method: "postgres/explain-text" },
 ];
 
 /** 创建 HTTP 格式的 API 路由（供 Hono 使用） */

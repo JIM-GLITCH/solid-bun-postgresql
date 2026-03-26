@@ -185,6 +185,33 @@ export async function getCheckConstraints(connectionId: string, schema: string, 
   return api().request("postgres/check-constraints", { connectionId, schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
 }
 
+/** 分区表：父表/分区子表元数据（非分区表返回 role:none） */
+export async function getPartitionInfo(connectionId: string, schema: string, table: string) {
+  return api().request("postgres/partition-info", { connectionId, schema, table }) as Promise<
+    | { role: "none" }
+    | {
+        role: "parent";
+        strategy: string | null;
+        partitionKey: string | null;
+        partitions: Array<{ schema: string; name: string; qualified: string; bound: string }>;
+      }
+    | {
+        role: "partition";
+        parentQualified: string;
+        parentSchema: string;
+        parentName: string;
+        thisBound: string;
+        strategy: string | null;
+        partitionKey: string | null;
+      }
+  >;
+}
+
+/** EXPLAIN 文本计划（不执行查询），用于分区裁剪预览 */
+export async function explainQueryText(connectionId: string, query: string) {
+  return api().request("postgres/explain-text", { connectionId, query }) as Promise<{ lines: string[] }>;
+}
+
 /** 订阅服务端推送事件 */
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {  return api().subscribeEvents(connectionId, callback);
 }
