@@ -232,6 +232,20 @@ export async function getPgStatOverview(connectionId: string, limit = 20) {
   }>;
 }
 
+/** 当前数据库已安装的扩展（名称、版本、说明） */
+export async function getInstalledExtensions(connectionId: string) {
+  return api().request("postgres/installed-extensions", { connectionId }) as Promise<{
+    extensions: Array<{
+      name: string;
+      installedVersion: string;
+      schema: string;
+      relocatable: boolean;
+      defaultVersion: string | null;
+      description: string | null;
+    }>;
+  }>;
+}
+
 /** 取消/终止指定后端会话 */
 export async function manageBackend(connectionId: string, pid: number, action: "cancel" | "terminate") {
   return api().request("postgres/manage-backend", { connectionId, pid, action }) as Promise<{

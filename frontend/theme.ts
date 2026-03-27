@@ -46,3 +46,6 @@ export const vscode = {
 
 /** 全屏遮罩类模态，须高于表格内右键菜单、侧栏等局部 z-index（避免点穿） */
 export const MODAL_Z_FULLSCREEN = 2147483646;
+
+/** DialogProvider 的 alert/confirm/prompt，须高于全屏模态（JSONB、pg_stat 等），否则嵌套时无法点到 */
+export const MODAL_Z_DIALOG_OVERLAY = 2147483647;

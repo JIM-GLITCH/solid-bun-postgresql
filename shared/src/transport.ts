@@ -47,6 +47,7 @@ export type ApiMethod =
   | "postgres/explain-text"
   | "postgres/pg-stat-overview"
   | "postgres/manage-backend"
+  | "postgres/installed-extensions"
   | "vscode/save-file"
   | "vscode/read-file"
   | "vscode/clipboard-write"
@@ -117,6 +118,8 @@ export type ApiRequestPayload = {
   "postgres/pg-stat-overview": { connectionId: string; limit?: number };
   /** pg_stat 中对会话执行 cancel/terminate */
   "postgres/manage-backend": { connectionId: string; pid: number; action: "cancel" | "terminate" };
+  /** 当前库已安装的 PostgreSQL 扩展（名称、版本、说明等） */
+  "postgres/installed-extensions": { connectionId: string };
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */

@@ -3,7 +3,7 @@
  */
 
 import { createContext, createSignal, useContext, onMount, type JSX } from "solid-js";
-import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
+import { vscode, MODAL_Z_DIALOG_OVERLAY } from "./theme";
 import { JSONB_Editor } from "./jsonb-editor";
 import RenameTableModal from "./rename-table-modal";
 
@@ -92,7 +92,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
             display: "flex",
             "align-items": "center",
             "justify-content": "center",
-            "z-index": MODAL_Z_FULLSCREEN - 3,
+            "z-index": MODAL_Z_DIALOG_OVERLAY,
           }}
           onClick={() => setAlertState(null)}
         >
@@ -147,7 +147,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
             display: "flex",
             "align-items": "center",
             "justify-content": "center",
-            "z-index": MODAL_Z_FULLSCREEN - 3,
+            "z-index": MODAL_Z_DIALOG_OVERLAY,
           }}
           onClick={() => {
             confirmState()?.resolve(false);
@@ -287,7 +287,7 @@ function PromptModal(props: {
         display: "flex",
         "align-items": "center",
         "justify-content": "center",
-        "z-index": MODAL_Z_FULLSCREEN - 3,
+        "z-index": MODAL_Z_DIALOG_OVERLAY,
       }}
       onClick={props.onCancel}
     >

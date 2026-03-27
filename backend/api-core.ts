@@ -1189,6 +1189,37 @@ export async function handleApiRequest<M extends ApiMethod>(
       }
     }
 
+    case "postgres/installed-extensions": {
+      try {
+        const cid = getConnId();
+        const session = getS(cid);
+        const result = await session.backGroundPool.query(
+          `SELECT
+             e.extname AS name,
+             e.extversion AS installed_version,
+             n.nspname AS schema,
+             e.extrelocatable AS relocatable,
+             ae.default_version AS default_version,
+             COALESCE(pg_catalog.obj_description(e.oid, 'pg_extension'), ae.comment) AS description
+           FROM pg_extension e
+           JOIN pg_namespace n ON n.oid = e.extnamespace
+           LEFT JOIN pg_catalog.pg_available_extensions ae ON ae.name = e.extname
+           ORDER BY e.extname`
+        );
+        const extensions = (result.rows as Array<Record<string, unknown>>).map((row) => ({
+          name: String(row.name ?? ""),
+          installedVersion: String(row.installed_version ?? ""),
+          schema: String(row.schema ?? ""),
+          relocatable: Boolean(row.relocatable),
+          defaultVersion: row.default_version != null ? String(row.default_version) : null,
+          description: row.description != null ? String(row.description) : null,
+        }));
+        return { extensions };
+      } catch (e: any) {
+        throw new Error(`installed-extensions: ${e?.message ?? String(e)}`);
+      }
+    }
+
     case "postgres/manage-backend": {
       try {
         const cid = getConnId();

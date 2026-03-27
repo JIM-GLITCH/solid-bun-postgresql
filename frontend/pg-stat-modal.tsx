@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { getPgStatOverview, manageBackend } from "./api";
+import { useDialog } from "./dialog-context";
 import { MODAL_Z_FULLSCREEN, vscode } from "./theme";
 
 interface PgStatModalProps {
@@ -10,6 +11,7 @@ interface PgStatModalProps {
 type PgStatData = Awaited<ReturnType<typeof getPgStatOverview>>;
 
 export default function PgStatModal(props: PgStatModalProps) {
+  const { showConfirm } = useDialog();
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [data, setData] = createSignal<PgStatData | null>(null);
@@ -46,7 +48,8 @@ export default function PgStatModal(props: PgStatModalProps) {
     const tip = action === "terminate"
       ? `确定终止会话 ${pid} 吗？这会断开该连接并回滚其未提交事务。`
       : `确定取消会话 ${pid} 当前 SQL 吗？`;
-    if (!window.confirm(tip)) return;
+    const title = action === "terminate" ? "终止会话" : "取消查询";
+    if (!(await showConfirm(tip, title))) return;
     setOpLoadingPid(pid);
     try {
       const res = await manageBackend(props.connectionId, pid, action);

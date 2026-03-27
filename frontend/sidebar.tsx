@@ -12,6 +12,7 @@ import ErDiagramModal from "./er-diagram-modal";
 import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import PartitionTableModal from "./partition-table-modal";
 import PgStatModal from "./pg-stat-modal";
+import ExtensionsModal from "./extensions-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
 import type { ConnectionInfo } from "./app";
 import { findStoredConnection, hasStoredConnection, updateStoredConnectionMeta, reorderConnectionList, type ConnectionList, type StoredConnection } from "./connection-storage";
@@ -163,6 +164,7 @@ export default function Sidebar(props: SidebarProps) {
     table: string;
   } | null>(null);
   const [pgStatModal, setPgStatModal] = createSignal<{ connectionId: string } | null>(null);
+  const [extensionsModal, setExtensionsModal] = createSignal<{ connectionId: string } | null>(null);
   const [dragOverZone, setDragOverZone] = createSignal<string | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
@@ -656,6 +658,11 @@ export default function Sidebar(props: SidebarProps) {
       case "openPgStat":
         if (node.type === "connection" && cid) {
           setPgStatModal({ connectionId: cid });
+        }
+        break;
+      case "openExtensions":
+        if (node.type === "connection" && cid) {
+          setExtensionsModal({ connectionId: cid });
         }
         break;
       case "backupSchema":
@@ -1352,6 +1359,22 @@ export default function Sidebar(props: SidebarProps) {
                 <span>📈</span> pg_stat 监控
               </div>
               <div
+                onClick={() => handleMenuAction("openExtensions")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>🧩</span> 扩展管理
+              </div>
+              <div
                 onClick={() => handleMenuAction("openQuery")}
                 style={{
                   padding: "8px 16px",
@@ -1619,6 +1642,12 @@ export default function Sidebar(props: SidebarProps) {
         {(() => {
           const m = pgStatModal()!;
           return <PgStatModal connectionId={m.connectionId} onClose={() => setPgStatModal(null)} />;
+        })()}
+      </Show>
+      <Show when={extensionsModal()}>
+        {(() => {
+          const m = extensionsModal()!;
+          return <ExtensionsModal connectionId={m.connectionId} onClose={() => setExtensionsModal(null)} />;
         })()}
       </Show>
 

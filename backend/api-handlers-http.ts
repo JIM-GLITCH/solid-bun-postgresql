@@ -75,6 +75,7 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/explain-text", method: "postgres/explain-text" },
   { path: "/api/postgres/pg-stat-overview", method: "postgres/pg-stat-overview" },
   { path: "/api/postgres/manage-backend", method: "postgres/manage-backend" },
+  { path: "/api/postgres/installed-extensions", method: "postgres/installed-extensions" },
   // backward-compat aliases (older/cached frontend typo or underscore variant)
   { path: "/api/postgres/pg_stat-overview", method: "postgres/pg-stat-overview" },
   { path: "/api/postgres/pg_stat-overciew", method: "postgres/pg-stat-overview" },
