@@ -4,13 +4,7 @@
  */
 
 import type { ApiMethod, ApiRequestPayload } from "../shared/src";
-import {
-  handleApiRequest,
-  getSession,
-  subscribeSessionEvents,
-  disconnectConnection,
-  type SSEMessage,
-} from "./api-core";
+import { handleApiRequest, getSession, subscribeSessionEvents, type SSEMessage } from "./api-core";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
@@ -137,8 +131,7 @@ export function createApiRoutes(): Record<
           },
           cancel() {
             cleanup?.();
-            // 标签页关闭时 SSE 断开，释放 connectionMap 中的资源（pg 连接、SSH 隧道等）
-            disconnectConnection(connectionId).catch(() => {});
+            // 不在此断开 DB：SSE 可能因网络/代理短暂断开，断会话会导致误杀。释放连接由前端 pagehide → disconnect-postgres。
           },
         });
 

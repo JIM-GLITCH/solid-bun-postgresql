@@ -6,7 +6,7 @@ import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
 import Sidebar from './sidebar';
-import { disconnectPostgres, subscribeEvents } from './api';
+import { disconnectPostgres, disconnectPostgresOnPageUnload, subscribeEvents } from './api';
 import {
   loadStoredConnections,
   connectFromSaved,
@@ -97,9 +97,18 @@ export default function App() {
 
   onMount(() => {
     loadStoredConnections().then(setSavedConnections);
+
+    const onPageHide = (e: PageTransitionEvent) => {
+      if (e.persisted) return;
+      for (const c of connections) {
+        disconnectPostgresOnPageUnload(c.id);
+      }
+    };
+    window.addEventListener('pagehide', onPageHide);
+    onCleanup(() => window.removeEventListener('pagehide', onPageHide));
   });
 
-  // 为每个连接维持 SSE，关闭标签页时服务端可检测断开并释放 connectionMap 资源
+  // 为每个连接维持 SSE（NOTICE 等）；SSE 断线不再自动断开 DB，关页时在 pagehide 中 disconnect
   createEffect(() => {
     const conns = connections;
     const unsubs = conns.map((c) => subscribeEvents(c.id, () => {}));

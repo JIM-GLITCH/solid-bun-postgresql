@@ -18,6 +18,28 @@ export async function disconnectPostgres(connectionId: string) {
   return api().request("disconnect-postgres", { connectionId }) as Promise<{ success: boolean; error?: string }>;
 }
 
+/**
+ * 页面关闭/隐藏且即将卸载时调用：释放服务端 connectionMap。
+ * Web 使用 keepalive fetch，避免关页时普通请求被取消；VSCode webview 走 postMessage。
+ */
+export function disconnectPostgresOnPageUnload(connectionId: string): void {
+  const w = typeof window !== "undefined" ? (window as unknown as { acquireVsCodeApi?: () => unknown }) : undefined;
+  if (typeof w?.acquireVsCodeApi === "function") {
+    void disconnectPostgres(connectionId);
+    return;
+  }
+  try {
+    fetch(`/api/disconnect-postgres`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId }),
+      keepalive: true,
+    });
+  } catch {
+    void disconnectPostgres(connectionId);
+  }
+}
+
 /** 流式查询 - 第一批。传 statements 时后端不再分句，避免重复计算。 */
 export async function queryStream(
   connectionId: string,

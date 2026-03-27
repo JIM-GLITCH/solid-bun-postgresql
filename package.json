@@ -11,7 +11,7 @@
     "build:sea": "bun standalone/build-sea.ts",
     "build:sea:deploy": "bun standalone/build-sea-linux.ts",
     "build-extension": "bun run vscode-extension/build.ts",
-    "publish-extension": "bun run build-extension && cd vscode-extension && vsce publish --allow-star-activation  && ovsx publish --allow-star-activation ",
+    "publish-extension": "bun run build-extension && cd vscode-extension && vsce publish && ovsx publish",
     "electrobun:start": "bun run build:electrobun ; bunx electrobun dev",
     "build:electrobun": "bun run build:electrobun:frontend  && bunx electrobun build",
     "build:electrobun:frontend": "bun run electrobun-app/build.ts",
