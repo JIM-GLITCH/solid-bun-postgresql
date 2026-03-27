@@ -29,10 +29,36 @@ export function getSqlSegments(
   let blockStart = 0;
   let inSingle = false;
   let inDouble = false;
+  let inDollar: string | null = null;
   let i = 0;
+
+  const readDollarTagAt = (idx: number): string | null => {
+    if (text[idx] !== "$") return null;
+    let j = idx + 1;
+    // PostgreSQL dollar-quote tag: $...$ ; tag body不能含'$'或换行
+    while (j < text.length && text[j] !== "$" && text[j] !== "\n" && text[j] !== "\r") j++;
+    if (j < text.length && text[j] === "$") {
+      const body = text.slice(idx + 1, j);
+      // 允许 $$ 以及更宽松的 $tag$（含 Unicode），避免空白分隔
+      if (!body || !/[\s$]/.test(body)) {
+        return text.slice(idx, j + 1);
+      }
+    }
+    return null;
+  };
 
   while (i < text.length) {
     const c = text[i];
+
+    if (inDollar) {
+      if (text.startsWith(inDollar, i)) {
+        i += inDollar.length;
+        inDollar = null;
+      } else {
+        i++;
+      }
+      continue;
+    }
 
     if (inSingle) {
       if (c === "'") {
@@ -72,6 +98,12 @@ export function getSqlSegments(
     if (c === "'") {
       inSingle = true;
       i++;
+      continue;
+    }
+    const dollarTag = readDollarTagAt(i);
+    if (dollarTag) {
+      inDollar = dollarTag;
+      i += dollarTag.length;
       continue;
     }
     if (c === '"') {

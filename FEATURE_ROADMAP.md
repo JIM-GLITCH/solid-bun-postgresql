@@ -23,7 +23,7 @@
 
 ## 三、长期投入 - 拉开差距
 
-- **10. AI 辅助写 SQL** - 自然语言 → SQL，或 SQL 补全 / 优化建议（Copilot、Claude API 等） *(DBCode)*
+- ✅ **10. AI 辅助写 SQL** - 自然语言 → SQL，或 SQL 补全 / 优化建议（Copilot、Claude API 等） *(DBCode)*
 - **11. SQL Notebook** - 多段 SQL + Markdown 混排，可分段执行、保存为文档 *(DBCode)*
 - **12. 查询结果可视化** - 结果集转柱状图、折线图、饼图等 *(DBCode)*
 - **13. 多数据库支持（可选）** - 若希望扩大受众，可考虑先支持 SQLite / MySQL *(与 Antares、Database Client 对标)*

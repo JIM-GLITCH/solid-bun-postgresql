@@ -71,6 +71,37 @@ export interface SqlEditorProps {
   onExplain?: (sqlToRun: string) => void;
   /** 格式化函数：传入当前 SQL 返回格式化后的 SQL，在编辑器内用 executeEdits 应用以便支持 Ctrl+Z */
   onFormat?: (sql: string) => string | void;
+  /** 对当前块执行 AI 优化 */
+  onAiOptimize?: (sqlToOptimize: string) => void;
+  /** 对当前块执行 AI 编辑（通常由 Ctrl+K 触发） */
+  onAiEdit?: (
+    sql: string,
+    instruction: string
+  ) =>
+    | Promise<
+        | string
+        | {
+            sql: string;
+            elapsedMs?: number;
+            usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+            schemaInjected?: string[];
+          }
+        | void
+      >
+    | string
+    | {
+        sql: string;
+        elapsedMs?: number;
+        usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+        schemaInjected?: string[];
+      }
+    | void;
+  /** 生成并复制可发给免费 AI 的 prompt；用户要求由父级 signal（onAiEditInstructionChange）实时同步 */
+  onAiCopyPrompt?: (sql: string, instruction?: string) => void;
+  /** AI 编辑栏输入变化时回调，供父组件 setSignal 与「复制 Prompt」共用同一份「用户要求」 */
+  onAiEditInstructionChange?: (value: string) => void;
+  /** 生成并复制 diff prompt（驱动免费 AI 输出 diff JSON） */
+  onAiCopyDiffPrompt?: (sql: string) => void;
   /** 编辑器就绪后回调，可调用 api.format() 触发格式化（供工具栏按钮用） */
   onEditorReady?: (api: { format: () => void }) => void;
   placeholder?: string;
@@ -120,6 +151,122 @@ export default function SqlEditor(props: SqlEditorProps) {
 
     const blockRunZoneIds: string[] = [];
     const highlightDecorations = editor.createDecorationsCollection();
+    let lastAiEditInstruction = "补全";
+    let aiEditResolve: ((value: string | null) => void) | null = null;
+
+    // In-editor instruction bar for Ctrl+K / AI Edit, replacing window.prompt.
+    container.style.position = "relative";
+    const aiEditBar = document.createElement("div");
+    aiEditBar.style.cssText = [
+      "position:absolute",
+      "left:12px",
+      "right:12px",
+      "top:8px",
+      "z-index:30",
+      "display:none",
+      "align-items:center",
+      "gap:8px",
+      "padding:8px",
+      "border-radius:8px",
+      "background:var(--vscode-editorWidget-background,#252526)",
+      "border:1px solid var(--vscode-widget-border,#454545)",
+      "box-shadow:0 4px 12px rgba(0,0,0,.25)",
+    ].join(";");
+    const aiEditLabel = document.createElement("span");
+    aiEditLabel.textContent = "AI 编辑要求";
+    aiEditLabel.style.cssText = "font-size:12px;color:var(--vscode-foreground,#ddd);white-space:nowrap;";
+    const aiEditInput = document.createElement("input");
+    aiEditInput.type = "text";
+    aiEditInput.style.cssText = [
+      "flex:1",
+      "min-width:160px",
+      "height:28px",
+      "padding:0 8px",
+      "border-radius:6px",
+      "border:1px solid var(--vscode-input-border,#3c3c3c)",
+      "background:var(--vscode-input-background,#3c3c3c)",
+      "color:var(--vscode-input-foreground,#ddd)",
+      "outline:none",
+      "font-size:12px",
+    ].join(";");
+    const aiEditOk = document.createElement("button");
+    aiEditOk.type = "button";
+    aiEditOk.textContent = "确定";
+    aiEditOk.style.cssText =
+      "height:28px;padding:0 10px;border:none;border-radius:6px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);cursor:pointer;font-size:12px;";
+    const aiEditCancel = document.createElement("button");
+    aiEditCancel.type = "button";
+    aiEditCancel.textContent = "取消";
+    aiEditCancel.style.cssText =
+      "height:28px;padding:0 10px;border:1px solid var(--vscode-widget-border,#454545);border-radius:6px;background:transparent;color:var(--vscode-foreground,#ddd);cursor:pointer;font-size:12px;";
+    const aiEditCopyPrompt = document.createElement("button");
+    aiEditCopyPrompt.type = "button";
+    aiEditCopyPrompt.textContent = "复制 Prompt";
+    aiEditCopyPrompt.style.cssText =
+      "height:28px;padding:0 10px;border:1px solid var(--vscode-widget-border,#454545);border-radius:6px;background:transparent;color:var(--vscode-foreground,#ddd);cursor:pointer;font-size:12px;";
+    aiEditBar.append(aiEditLabel, aiEditInput, aiEditCopyPrompt, aiEditOk, aiEditCancel);
+    container.appendChild(aiEditBar);
+
+    const closeAiEditBar = (value: string | null) => {
+      aiEditBar.style.display = "none";
+      const resolver = aiEditResolve;
+      aiEditResolve = null;
+      resolver?.(value);
+    };
+    aiEditOk.addEventListener("click", () => closeAiEditBar(aiEditInput.value.trim() || null));
+    aiEditCancel.addEventListener("click", () => closeAiEditBar(null));
+    const getCurrentSqlForAiBar = (): string => {
+      const model = editor?.getModel();
+      if (!editor || !model) return "";
+      const selection = editor.getSelection();
+      if (selection && !selection.isEmpty()) {
+        return model.getValueInRange(selection).trim();
+      }
+      const pos = editor.getPosition();
+      const full = model.getValue();
+      const offset = pos ? model.getOffsetAt(pos) : 0;
+      const block = getSqlBlockAtCursor(full, offset);
+      return block.text.trim();
+    };
+    aiEditCopyPrompt.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!props.onAiCopyPrompt) return;
+      const sqlForPrompt = getCurrentSqlForAiBar();
+      if (!sqlForPrompt) return;
+      props.onAiCopyPrompt(sqlForPrompt);
+    });
+    aiEditInput.addEventListener("input", () => {
+      props.onAiEditInstructionChange?.(aiEditInput.value);
+    });
+    aiEditInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        closeAiEditBar(aiEditInput.value.trim() || null);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeAiEditBar(null);
+      }
+    });
+    const askAiInstruction = async (): Promise<string | null> => {
+      if (aiEditResolve) return null;
+      aiEditInput.value = lastAiEditInstruction;
+      props.onAiEditInstructionChange?.(aiEditInput.value);
+      aiEditBar.style.display = "flex";
+      requestAnimationFrame(() => {
+        aiEditInput.focus();
+        aiEditInput.select();
+      });
+      const value = await new Promise<string | null>((resolve) => {
+        aiEditResolve = resolve;
+      });
+      if (value && value.trim()) {
+        lastAiEditInstruction = value.trim();
+        props.onAiEditInstructionChange?.(lastAiEditInstruction);
+      }
+      editor?.focus();
+      return value?.trim() || null;
+    };
 
     const runBlockWithHighlight = (startOffset: number, endOffset: number) => {
       const model = editor?.getModel();
@@ -221,6 +368,63 @@ export default function SqlEditor(props: SqlEditorProps) {
           });
           dom.appendChild(explainBtn);
         }
+        if (props.onAiEdit) {
+          const aiEditSep = document.createElement("span");
+          aiEditSep.className = "sql-codelens-sep";
+          aiEditSep.textContent = "|";
+          dom.appendChild(aiEditSep);
+          const aiEditBtn = document.createElement("button");
+          aiEditBtn.type = "button";
+          aiEditBtn.className = "sql-codelens-link";
+          aiEditBtn.innerHTML = '<span class="sql-codelens-icon">🤖</span> AI Edit';
+          aiEditBtn.addEventListener("click", async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const model = editor?.getModel();
+            if (!model) return;
+            const currentSql = text.slice(b.start, b.end).trim();
+            if (!currentSql) return;
+            const instruction = await askAiInstruction();
+            if (!instruction || !instruction.trim()) return;
+            const edited = await props.onAiEdit!(currentSql, instruction.trim());
+            const output =
+              typeof edited === "string"
+                ? edited.trim()
+                : typeof edited === "object" && edited && typeof edited.sql === "string"
+                  ? edited.sql.trim()
+                  : "";
+            if (!output) return;
+            editor!.executeEdits("ai-edit-block", [
+              {
+                range: {
+                  startLineNumber: model.getPositionAt(b.start).lineNumber,
+                  startColumn: model.getPositionAt(b.start).column,
+                  endLineNumber: model.getPositionAt(b.end).lineNumber,
+                  endColumn: model.getPositionAt(b.end).column,
+                },
+                text: output,
+              },
+            ]);
+          });
+          dom.appendChild(aiEditBtn);
+        }
+        if (props.onAiOptimize) {
+          const aiOptSep = document.createElement("span");
+          aiOptSep.className = "sql-codelens-sep";
+          aiOptSep.textContent = "|";
+          dom.appendChild(aiOptSep);
+          const aiOptimizeBtn = document.createElement("button");
+          aiOptimizeBtn.type = "button";
+          aiOptimizeBtn.className = "sql-codelens-link";
+          aiOptimizeBtn.innerHTML = '<span class="sql-codelens-icon">⚡</span> AI Optimize';
+          aiOptimizeBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sql = text.slice(b.start, b.end).trim();
+            if (sql) props.onAiOptimize!(sql);
+          });
+          dom.appendChild(aiOptimizeBtn);
+        }
       });
       return dom;
     };
@@ -262,7 +466,6 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
       updateBlockRunZones();
     });
-
     updateBlockRunZones();
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
@@ -293,6 +496,53 @@ export default function SqlEditor(props: SqlEditorProps) {
       } else {
         props.onRun?.();
       }
+    });
+
+    // Ctrl/Cmd + K: ask AI to edit selected SQL (or current block)
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, async () => {
+      if (!editor || !props.onAiEdit) return;
+      const model = editor.getModel();
+      if (!model) return;
+      const selection = editor.getSelection();
+      let start = 0;
+      let end = 0;
+      let sqlToEdit = "";
+      if (selection && !selection.isEmpty()) {
+        start = model.getOffsetAt(selection.getStartPosition());
+        end = model.getOffsetAt(selection.getEndPosition());
+        sqlToEdit = model.getValueInRange(selection).trim();
+      } else {
+        const pos = editor.getPosition();
+        const full = model.getValue();
+        const offset = pos ? model.getOffsetAt(pos) : 0;
+        const block = getSqlBlockAtCursor(full, offset);
+        start = block.start;
+        end = block.end;
+        sqlToEdit = block.text;
+      }
+      const instruction = await askAiInstruction();
+      if (!instruction || !instruction.trim()) return;
+      // Allow Ctrl/Cmd+K on empty line/block: pass a tiny placeholder so backend can generate SQL.
+      const sqlInput = sqlToEdit || "/* empty sql block */";
+      const edited = await props.onAiEdit(sqlInput, instruction.trim());
+      const output =
+        typeof edited === "string"
+          ? edited.trim()
+          : typeof edited === "object" && edited && typeof edited.sql === "string"
+            ? edited.sql.trim()
+            : "";
+      if (!output) return;
+      editor.executeEdits("ai-edit-shortcut", [
+        {
+          range: {
+            startLineNumber: model.getPositionAt(start).lineNumber,
+            startColumn: model.getPositionAt(start).column,
+            endLineNumber: model.getPositionAt(end).lineNumber,
+            endColumn: model.getPositionAt(end).column,
+          },
+          text: output,
+        },
+      ]);
     });
 
     const doFormat = () => {

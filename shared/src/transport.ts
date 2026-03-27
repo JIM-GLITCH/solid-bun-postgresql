@@ -48,10 +48,19 @@ export type ApiMethod =
   | "postgres/pg-stat-overview"
   | "postgres/manage-backend"
   | "postgres/installed-extensions"
+  | "ai/config/get"
+  | "ai/config/set"
+  | "ai/key/delete"
+  | "ai/test-connection"
+  | "ai/sql-edit"
+  | "ai/prompt-build"
+  | "ai/prompt-build-diff"
   | "vscode/save-file"
   | "vscode/read-file"
   | "vscode/clipboard-write"
-  | "vscode/clipboard-read";
+  | "vscode/clipboard-read"
+  | "vscode/ai-key-set"
+  | "vscode/ai-key-delete";
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -109,6 +118,60 @@ export type ApiRequestPayload = {
   "vscode/clipboard-write": { text: string };
   /** VSCode 插件内：读取剪贴板 */
   "vscode/clipboard-read": Record<string, never>;
+  /** VSCode 插件内：保存 AI key 到 SecretStorage */
+  "vscode/ai-key-set": { keyRef: string; apiKey: string };
+  /** VSCode 插件内：删除 AI key */
+  "vscode/ai-key-delete": { keyRef: string };
+  /** 获取 AI 配置（不含密钥） */
+  "ai/config/get": Record<string, never>;
+  /** 设置 AI 配置（Web 可附带 apiKey 用于会话缓存） */
+  "ai/config/set": {
+    provider?: "openai" | "anthropic" | "aliyun";
+    baseUrl?: string;
+    model: string;
+    keyRef?: string;
+    apiKey?: string;
+    temperature?: number;
+    topP?: number;
+    stream?: boolean;
+    maxTokens?: number;
+  };
+  /** 删除已保存 AI key（Web 持久化存储） */
+  "ai/key/delete": {
+    keyRef?: string;
+  };
+  /** 校验 AI Provider 连接可用性 */
+  "ai/test-connection": {
+    provider?: "openai" | "anthropic" | "aliyun";
+    baseUrl?: string;
+    model?: string;
+    keyRef?: string;
+    temperature?: number;
+    topP?: number;
+    stream?: boolean;
+    maxTokens?: number;
+  };
+  /** 自然语言 -> SQL */
+  "ai/sql-edit": {
+    connectionId: string;
+    sql: string;
+    instructions?: string;
+    keyRef?: string;
+    schema?: string;
+  };
+  /** 构建可复制到免费 AI 的 prompt（含 schema 注入） */
+  "ai/prompt-build": {
+    connectionId: string;
+    sql: string;
+    schema?: string;
+    instructions?: string;
+  };
+  /** 构建 diff prompt（含 schema 注入） */
+  "ai/prompt-build-diff": {
+    connectionId: string;
+    sql: string;
+    schema?: string;
+  };
   "postgres/table-comment": { connectionId: string; schema: string; table: string };
   "postgres/check-constraints": { connectionId: string; schema: string; table: string };
   "postgres/partition-info": { connectionId: string; schema: string; table: string };

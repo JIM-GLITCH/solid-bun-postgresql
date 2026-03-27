@@ -14,6 +14,8 @@ import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-post
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
+import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
+import { runAiSqlTask, type AiProvider } from "./ai-service";
 import { Client, Pool, type PoolClient } from "pg";
 import Cursor from "pg-cursor";
 
@@ -48,6 +50,253 @@ function getStatements(sql: string): string[] {
 
 /** 以 connectionId 为 key 存储多个连接 */
 const connectionMap = new Map<string, SessionConnection>();
+const aiKeyStore = new Map<string, string>();
+
+let aiKeyResolver: ((keyRef: string) => Promise<string | undefined>) | null = null;
+
+export function setAiKeyResolver(resolver: ((keyRef: string) => Promise<string | undefined>) | null): void {
+  aiKeyResolver = resolver;
+}
+
+interface AiRuntimeConfig {
+  provider: AiProvider;
+  baseUrl?: string;
+  model: string;
+  keyRef: string;
+  temperature: number;
+  topP?: number;
+  stream: boolean;
+  maxTokens: number;
+}
+
+let aiConfig: AiRuntimeConfig = {
+  provider: "aliyun",
+  baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  model: "qwen-plus",
+  keyRef: "default",
+  temperature: 0.2,
+  topP: undefined,
+  stream: true,
+  maxTokens: 700,
+};
+
+function inferProviderFromBaseUrl(baseUrl?: string): AiProvider {
+  const u = (baseUrl || "").toLowerCase();
+  if (u.includes("anthropic.com")) return "anthropic";
+  if (u.includes("dashscope.aliyuncs.com") || u.includes("aliyun")) return "aliyun";
+  return "openai";
+}
+
+async function resolveAiApiKey(keyRef: string): Promise<string | undefined> {
+  const inMemory = aiKeyStore.get(keyRef);
+  if (inMemory) return inMemory;
+  const fromFileStore = getAiKeyFromStore(keyRef);
+  if (fromFileStore) {
+    aiKeyStore.set(keyRef, fromFileStore);
+    return fromFileStore;
+  }
+  if (aiKeyResolver) {
+    const fromResolver = await aiKeyResolver(keyRef);
+    if (fromResolver) return fromResolver;
+  }
+  if (keyRef === "default") {
+    return process.env.ALIYUN_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+  }
+  return undefined;
+}
+
+async function buildSchemaContext(pool: Pool, schema?: string): Promise<{ context: string; injected: string[] }> {
+  const schemas = schema
+    ? [schema]
+    : (
+      await pool.query(
+        `SELECT schema_name
+         FROM information_schema.schemata
+         WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema'
+         ORDER BY schema_name
+         LIMIT 2`
+      )
+    ).rows.map((r: any) => r.schema_name as string);
+
+  const chunks: string[] = [];
+  const injected: string[] = [];
+  for (const s of schemas) {
+    const tablesRes = await pool.query(
+      `SELECT table_name
+       FROM information_schema.tables
+       WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+       ORDER BY table_name
+       LIMIT 6`,
+      [s]
+    );
+    for (const t of tablesRes.rows as Array<{ table_name: string }>) {
+      const colsRes = await pool.query(
+        `SELECT column_name, data_type
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = $2
+         ORDER BY ordinal_position
+         LIMIT 12`,
+        [s, t.table_name]
+      );
+      const cols = colsRes.rows.map((c: any) => `${c.column_name}:${c.data_type}`).join(", ");
+      const tableRef = `${s}.${t.table_name}`;
+      chunks.push(`${tableRef}(${cols})`);
+      injected.push(tableRef);
+    }
+  }
+  return { context: chunks.join("\n"), injected };
+}
+
+function buildPortableSqlPrompt(params: {
+  sql: string;
+  schemaContext: string;
+  extraInstruction?: string;
+}): string {
+  const { sql, schemaContext, extraInstruction } = params;
+  return [
+    "你是 SQL 助手，请严格按要求输出。",
+    "任务: 按用户要求编辑当前 SQL",
+    "数据库: PostgreSQL",
+    "",
+    "Schema Context (仅可使用以下表/列):",
+    schemaContext || "(empty)",
+    "",
+    "当前 SQL:",
+    sql.trim(),
+    ...(extraInstruction?.trim()
+      ? ["", "额外用户要求:", extraInstruction.trim()]
+      : []),
+    "",
+    "输出要求:",
+    "1) 仅输出 SQL，不要 markdown 代码块，不要解释文本。",
+    "2) 必须保留原 SQL 中已有注释（-- 和 /* */），并随结果一起返回。",
+    "3) 优先复用给定 schema 中的表和列。",
+    "4) 不要生成高风险语句（DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE）。",
+  ].join("\n");
+}
+
+function buildDiffSqlPrompt(params: { sql: string; schemaContext: string }): string {
+  const { sql, schemaContext } = params;
+  return [
+    "[DIFF MODE] 你是 SQL 助手，请严格按要求输出。",
+    "任务: 输出最小改动的 SQL diff JSON",
+    "数据库: PostgreSQL",
+    "",
+    "Schema Context (仅可使用以下表/列):",
+    schemaContext || "(empty)",
+    "",
+    "当前 SQL:",
+    sql.trim(),
+    "",
+    "输出格式（必须严格遵守）:",
+    "只输出一个 JSON，不要 markdown，不要解释：",
+    "{",
+    '  "type": "sql_diff_v1",',
+    '  "before": "<原始SQL（逐字）>",',
+    '  "after": "<修改后SQL>",',
+    '  "changes": [{"kind":"replace","old":"<片段>","new":"<片段>"}]',
+    "}",
+    "",
+    "硬约束:",
+    "1) before 必须与“当前 SQL”逐字一致。",
+    "2) after 必须是可执行 PostgreSQL SQL。",
+    "3) 最小修改，changes 尽量少。",
+    "4) 不允许 DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE。",
+    "5) 若无需修改，after=before，changes=[]。",
+    "6) 仅输出 JSON，不允许输出任何额外文字。",
+  ].join("\n");
+}
+
+const AI_JSON_SYSTEM_PROMPT = [
+  "You are a SQL assistant for database developers.",
+  "Output MUST be valid JSON only, no markdown fences.",
+  "Do NOT output LaTeX, math boxes, markdown tables, or prose outside JSON.",
+  "JSON keys MUST be exactly: sql, rationale, warnings, alternatives.",
+  "Target dialect is PostgreSQL unless explicitly overridden.",
+  "Do not include dangerous SQL unless user explicitly asks.",
+  "When suggesting UPDATE/DELETE, require clear WHERE conditions.",
+  "Prefer deterministic, production-safe SQL.",
+].join("\n");
+
+function normalizeAiSqlRequest(
+  payload: unknown,
+  fallbackKeyRef: string
+): {
+  connectionId: string;
+  sql: string;
+  keyRef: string;
+  schema?: string;
+  instructions?: string;
+} {
+  const p = payload as {
+    connectionId?: string;
+    sql?: string;
+    keyRef?: string;
+    schema?: string;
+    instructions?: string;
+  };
+  return {
+    connectionId: String(p.connectionId ?? ""),
+    sql: String(p.sql ?? ""),
+    keyRef: p.keyRef || fallbackKeyRef,
+    schema: p.schema,
+    instructions: p.instructions,
+  };
+}
+
+async function buildPortablePromptWithSchema(
+  session: SessionConnection,
+  params: { sql: string; schema?: string; instructions?: string }
+): Promise<{ prompt: string; schemaInjected: string[] }> {
+  const schemaMeta = await buildSchemaContext(session.backGroundPool, params.schema);
+  const prompt = buildPortableSqlPrompt({
+    sql: params.sql,
+    schemaContext: schemaMeta.context,
+    extraInstruction: params.instructions,
+  });
+  return { prompt, schemaInjected: schemaMeta.injected };
+}
+
+async function executeAiSqlEdit(params: {
+  session: SessionConnection;
+  sql: string;
+  keyRef: string;
+  schema?: string;
+  instruction?: string;
+}): Promise<{
+  sql: string;
+  rationale: string;
+  warnings: string[];
+  alternatives?: string[];
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  elapsedMs?: number;
+  schemaInjected: string[];
+}> {
+  const promptMeta = await buildPortablePromptWithSchema(params.session, {
+    sql: params.sql,
+    schema: params.schema,
+    instructions: params.instruction,
+  });
+  const apiKey = await resolveAiApiKey(params.keyRef);
+  if (!apiKey) throw new Error("未配置 AI API Key");
+  const result = await runAiSqlTask(
+    {
+      provider: aiConfig.provider,
+      baseUrl: aiConfig.baseUrl,
+      model: aiConfig.model,
+      apiKey,
+      temperature: aiConfig.temperature,
+      topP: aiConfig.topP,
+      stream: aiConfig.stream,
+      maxTokens: aiConfig.maxTokens,
+    },
+    {
+      systemPrompt: AI_JSON_SYSTEM_PROMPT,
+      userPrompt: promptMeta.prompt,
+    }
+  );
+  return { ...result, schemaInjected: promptMeta.schemaInjected };
+}
 
 /** 断开并释放连接资源（供 SSE 关闭时调用，释放标签页关闭后的泄漏） */
 export async function disconnectConnection(connectionId: string): Promise<void> {
@@ -202,6 +451,147 @@ export async function handleApiRequest<M extends ApiMethod>(
     case "query-history/clear": {
       clearQueryHistory();
       return { success: true };
+    }
+
+    case "ai/config/get": {
+      return {
+        provider: aiConfig.provider,
+        baseUrl: aiConfig.baseUrl,
+        model: aiConfig.model,
+        keyRef: aiConfig.keyRef,
+        temperature: aiConfig.temperature,
+        topP: aiConfig.topP,
+        stream: aiConfig.stream,
+        maxTokens: aiConfig.maxTokens,
+        hasKey: !!(await resolveAiApiKey(aiConfig.keyRef)),
+      };
+    }
+
+    case "ai/config/set": {
+      const {
+        provider,
+        baseUrl,
+        model,
+        keyRef = "default",
+        apiKey,
+        temperature,
+        topP,
+        stream,
+        maxTokens,
+      } = payload as {
+        provider?: AiProvider;
+        baseUrl?: string;
+        model: string;
+        keyRef?: string;
+        apiKey?: string;
+        temperature?: number;
+        topP?: number;
+        stream?: boolean;
+        maxTokens?: number;
+      };
+      const resolvedProvider = provider ?? inferProviderFromBaseUrl(baseUrl);
+      aiConfig = {
+        provider: resolvedProvider,
+        baseUrl: baseUrl?.trim() || aiConfig.baseUrl,
+        model: model?.trim() || aiConfig.model,
+        keyRef: keyRef.trim() || "default",
+        temperature: typeof temperature === "number" ? Math.max(0, Math.min(1, temperature)) : aiConfig.temperature,
+        topP: typeof topP === "number" ? Math.max(0, Math.min(1, topP)) : aiConfig.topP,
+        stream: typeof stream === "boolean" ? stream : aiConfig.stream,
+        maxTokens: typeof maxTokens === "number" ? Math.max(64, Math.min(8192, Math.round(maxTokens))) : aiConfig.maxTokens,
+      };
+      if (apiKey?.trim()) {
+        const trimmed = apiKey.trim();
+        aiKeyStore.set(aiConfig.keyRef, trimmed);
+        // Web 端落盘加密，VSCode 端仍以 SecretStorage 为主（此处不影响其逻辑）
+        setAiKeyToStore(aiConfig.keyRef, trimmed);
+      }
+      return { success: true };
+    }
+
+    case "ai/key/delete": {
+      const { keyRef = aiConfig.keyRef } = payload as { keyRef?: string };
+      const ref = keyRef.trim() || "default";
+      aiKeyStore.delete(ref);
+      deleteAiKeyFromStore(ref);
+      return { success: true };
+    }
+
+    case "ai/test-connection": {
+      const {
+        provider = aiConfig.provider,
+        baseUrl = aiConfig.baseUrl,
+        model = aiConfig.model,
+        keyRef = aiConfig.keyRef,
+        temperature = aiConfig.temperature,
+        topP = aiConfig.topP,
+        stream = aiConfig.stream,
+        maxTokens = aiConfig.maxTokens,
+      } = payload as {
+        provider?: AiProvider;
+        baseUrl?: string;
+        model?: string;
+        keyRef?: string;
+        temperature?: number;
+        topP?: number;
+        stream?: boolean;
+        maxTokens?: number;
+      };
+      const apiKey = await resolveAiApiKey(keyRef);
+      if (!apiKey) throw new Error("未配置 AI API Key");
+      await runAiSqlTask(
+        { provider, baseUrl, model, apiKey, temperature, topP, stream, maxTokens },
+        {
+          systemPrompt: AI_JSON_SYSTEM_PROMPT,
+          userPrompt: "请输出 JSON，其中 sql 字段为 select 1;",
+        }
+      );
+      return { success: true };
+    }
+
+    case "ai/sql-edit": {
+      const req = normalizeAiSqlRequest(payload, aiConfig.keyRef);
+      if (!req.connectionId) throw new Error("缺少 connectionId");
+      if (!req.sql.trim()) throw new Error("sql 不能为空");
+      const session = getS(req.connectionId);
+      return executeAiSqlEdit({
+        session,
+        sql: req.sql,
+        keyRef: req.keyRef,
+        schema: req.schema,
+        instruction: req.instructions || "补全",
+      });
+    }
+
+    case "ai/prompt-build": {
+      const req = normalizeAiSqlRequest(payload, aiConfig.keyRef);
+      if (!req.connectionId) throw new Error("缺少 connectionId");
+      if (!req.sql.trim()) throw new Error("sql 不能为空");
+      const session = getS(req.connectionId);
+      const promptMeta = await buildPortablePromptWithSchema(session, {
+        sql: req.sql,
+        schema: req.schema,
+        instructions: req.instructions,
+      });
+      return {
+        prompt: promptMeta.prompt,
+        schemaInjected: promptMeta.schemaInjected,
+      };
+    }
+
+    case "ai/prompt-build-diff": {
+      const { connectionId: cid, sql, schema } = payload as {
+        connectionId: string;
+        sql: string;
+        schema?: string;
+      };
+      if (!sql?.trim()) throw new Error("sql 不能为空");
+      const session = getS(cid);
+      const schemaMeta = await buildSchemaContext(session.backGroundPool, schema);
+      return {
+        prompt: buildDiffSqlPrompt({ sql, schemaContext: schemaMeta.context }),
+        schemaInjected: schemaMeta.injected,
+      };
     }
 
     case "connect-postgres": {

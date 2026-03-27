@@ -278,3 +278,97 @@ export async function readFileViaVscode(options?: { accept?: string[] }): Promis
   if (result?.content != null && result?.filename) return { content: result.content, filename: result.filename };
   return null;
 }
+
+export async function getAiConfig() {
+  return api().request("ai/config/get", {}) as Promise<{
+    provider: "openai" | "anthropic" | "aliyun";
+    baseUrl?: string;
+    model: string;
+    keyRef: string;
+    temperature: number;
+    topP?: number;
+    stream?: boolean;
+    maxTokens?: number;
+    hasKey: boolean;
+  }>;
+}
+
+export async function setAiConfig(payload: {
+  provider?: "openai" | "anthropic" | "aliyun";
+  baseUrl?: string;
+  model: string;
+  keyRef?: string;
+  apiKey?: string;
+  temperature?: number;
+  topP?: number;
+  stream?: boolean;
+  maxTokens?: number;
+}) {
+  return api().request("ai/config/set", payload) as Promise<{ success: boolean }>;
+}
+
+export async function deleteAiKey(payload?: { keyRef?: string }) {
+  return api().request("ai/key/delete", payload ?? {}) as Promise<{ success: boolean }>;
+}
+
+export async function testAiConnection(payload?: {
+  provider?: "openai" | "anthropic" | "aliyun";
+  baseUrl?: string;
+  model?: string;
+  keyRef?: string;
+  temperature?: number;
+  topP?: number;
+  stream?: boolean;
+  maxTokens?: number;
+}) {
+  return api().request("ai/test-connection", payload ?? {}) as Promise<{ success: boolean }>;
+}
+
+export async function aiSqlEdit(payload: {
+  connectionId: string;
+  sql: string;
+  instructions?: string;
+  keyRef?: string;
+  schema?: string;
+}) {
+  return api().request("ai/sql-edit", payload) as Promise<{
+    sql: string;
+    rationale: string;
+    warnings: string[];
+    alternatives?: string[];
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+    elapsedMs?: number;
+    schemaInjected?: string[];
+  }>;
+}
+
+export async function aiBuildPrompt(payload: {
+  connectionId: string;
+  sql: string;
+  schema?: string;
+  instructions?: string;
+}) {
+  return api().request("ai/prompt-build", payload) as Promise<{
+    prompt: string;
+    schemaInjected?: string[];
+  }>;
+}
+
+export async function aiBuildDiffPrompt(payload: {
+  connectionId: string;
+  sql: string;
+  schema?: string;
+}) {
+  return api().request("ai/prompt-build-diff", payload) as Promise<{
+    prompt: string;
+    schemaInjected?: string[];
+  }>;
+}
+
+export async function setAiKeyViaVscode(keyRef: string, apiKey: string) {
+  return api().request("vscode/ai-key-set", { keyRef, apiKey }) as Promise<{ success: boolean }>;
+}
+
+export async function deleteAiKeyViaVscode(keyRef: string) {
+  return api().request("vscode/ai-key-delete", { keyRef }) as Promise<{ success: boolean }>;
+}

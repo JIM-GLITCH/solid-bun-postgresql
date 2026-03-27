@@ -1,6 +1,7 @@
 // 前端 Webview 使用 frontend 打包的 webview.js，后端使用 backend/api-handlers-vscode，通过 postMessage 通信
 import * as vscode from "vscode";
 import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
+import { setAiKeyResolver } from "../../backend/api-core.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
@@ -11,6 +12,7 @@ let currentPanel: vscode.WebviewPanel | null = null;
 const SUBSCRIPTION_API = process.env.DBPLAYER_SUBSCRIPTION_API ?? "https://your-fc-endpoint.aliyuncs.com";
 const SUBSCRIPTION_FRONTEND = process.env.DBPLAYER_SUBSCRIPTION_FRONTEND ?? "https://your-oss-frontend.aliyuncs.com";
 const TOKEN_SECRET_KEY = "dbplayer_token";
+const AI_SECRET_PREFIX = "dbplayer_ai_key_";
 
 async function checkSubscription(context: vscode.ExtensionContext): Promise<boolean> {
   const token = await context.secrets.get(TOKEN_SECRET_KEY);
@@ -97,6 +99,7 @@ export function activate(context: vscode.ExtensionContext) {
   const tokenStorage = new TokenStorage(context.secrets);
   const licenseValidator = new LicenseValidator(tokenStorage, SUBSCRIPTION_API);
   const expiryNotifier = new ExpiryNotifier(SUBSCRIPTION_FRONTEND);
+  setAiKeyResolver(async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`));
 
   // 注册 URI Handler，支付完成后网页通过 vscode://lilr.db-player/auth?token=JWT 回传 token
   context.subscriptions.push(
@@ -263,6 +266,28 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
       try {
         const text = await vscode.env.clipboard.readText();
         webview.postMessage({ id: msg.id, data: { text: text ?? "" } });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
+    if (typeof msg.id === "number" && msg.method === "vscode/ai-key-set" && msg.payload != null) {
+      try {
+        const { keyRef, apiKey } = msg.payload as { keyRef?: string; apiKey?: string };
+        if (!keyRef?.trim() || !apiKey?.trim()) throw new Error("缺少 keyRef 或 apiKey");
+        await context.secrets.store(`${AI_SECRET_PREFIX}${keyRef.trim()}`, apiKey.trim());
+        webview.postMessage({ id: msg.id, data: { success: true } });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
+    if (typeof msg.id === "number" && msg.method === "vscode/ai-key-delete" && msg.payload != null) {
+      try {
+        const { keyRef } = msg.payload as { keyRef?: string };
+        if (!keyRef?.trim()) throw new Error("缺少 keyRef");
+        await context.secrets.delete(`${AI_SECRET_PREFIX}${keyRef.trim()}`);
+        webview.postMessage({ id: msg.id, data: { success: true } });
       } catch (e: any) {
         webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
       }

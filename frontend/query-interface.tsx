@@ -6,7 +6,24 @@ import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
-import { queryStream, queryStreamMore, cancelQuery, saveChanges, queryReadonly, subscribeEvents, explainQuery } from "./api";
+import {
+  queryStream,
+  queryStreamMore,
+  cancelQuery,
+  saveChanges,
+  queryReadonly,
+  subscribeEvents,
+  explainQuery,
+  getAiConfig,
+  setAiConfig,
+  testAiConnection,
+  aiSqlEdit,
+  aiBuildPrompt,
+  aiBuildDiffPrompt,
+  setAiKeyViaVscode,
+  deleteAiKeyViaVscode,
+  deleteAiKey,
+} from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
@@ -19,7 +36,7 @@ import { useDialog } from "./dialog-context";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
-  activeConnectionId: Accessor<string | null>;
+  activeConnectionId?: Accessor<string | null>;
   /** 外部触发的查询（如侧边栏点击表），处理后应清空 */
   externalQuery?: Accessor<{ connectionId: string; sql: string } | null>;
   onExternalQueryHandled?: () => void;
@@ -46,6 +63,13 @@ interface PendingInsert {
   rowIndex: number;
 }
 
+interface AiEditResult {
+  sql: string;
+  elapsedMs?: number;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  schemaInjected?: string[];
+}
+
 function cellValueToJsonbInitial(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "string") return raw;
@@ -57,6 +81,7 @@ function cellValueToJsonbInitial(raw: unknown): string | null {
 }
 
 export default function QueryInterface(props: QueryInterfaceProps = {}) {
+  const AI_MODEL_PREF_KEY = "dbplayer.ai.model";
   const { openJsonbEditor } = useDialog();
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
@@ -83,6 +108,22 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
   const [explainPlan, setExplainPlan] = createSignal<Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }> | null>(null);
   const [explainLoading, setExplainLoading] = createSignal(false);
+  const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "aliyun">("aliyun");
+  const [aiBaseUrl, setAiBaseUrl] = createSignal("https://dashscope.aliyuncs.com/compatible-mode/v1");
+  const [aiModel, setAiModel] = createSignal("qwen-plus");
+  const [aiKeyRef, setAiKeyRef] = createSignal("default");
+  const [aiTemperature, setAiTemperature] = createSignal("0.2");
+  const [aiTopP, setAiTopP] = createSignal("1");
+  const [aiStream, setAiStream] = createSignal(true);
+  const [aiMaxTokens, setAiMaxTokens] = createSignal("700");
+  const [showAiAdvanced, setShowAiAdvanced] = createSignal(false);
+  const [aiApiKey, setAiApiKey] = createSignal("");
+  const [aiHasStoredKey, setAiHasStoredKey] = createSignal(false);
+  const [aiLoading, setAiLoading] = createSignal(false);
+  const [showAiDialog, setShowAiDialog] = createSignal(false);
+  /** 与 Monaco 内 AI 编辑栏同步：用户要求（实时输入 + 默认「补全」） */
+  const [aiEditInstruction, setAiEditInstruction] = createSignal("补全");
+  const isVscodeWebview = typeof window !== "undefined" && typeof (window as any).acquireVsCodeApi === "function";
 
   let sqlEditorFormatApi: { format: () => void } | null = null;  // 格式化由编辑器内 executeEdits 执行，支持 Ctrl+Z
 
@@ -176,7 +217,28 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       if (el) setContainerHeight(Math.max(el.clientHeight, 200));
     };
     window.addEventListener("resize", onResize);
-    onCleanup(() => window.removeEventListener("resize", onResize));
+    onCleanup(() => {
+      window.removeEventListener("resize", onResize);
+    });
+    getAiConfig()
+      .then((cfg) => {
+        setAiProvider(cfg.provider);
+        setAiBaseUrl(cfg.baseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1");
+        setAiModel(cfg.model);
+        setAiKeyRef(cfg.keyRef || "default");
+        setAiTemperature(String(cfg.temperature ?? 0.2));
+        setAiTopP(String(cfg.topP ?? 1));
+        setAiStream(cfg.stream !== false);
+        setAiMaxTokens(String(cfg.maxTokens ?? 700));
+        setAiHasStoredKey(!!cfg.hasKey);
+      })
+      .catch(() => {});
+    try {
+      const savedModel = localStorage.getItem(AI_MODEL_PREF_KEY);
+      if (savedModel?.trim()) setAiModel(savedModel.trim());
+    } catch {
+      // ignore localStorage errors in restricted environments
+    }
   });
 
   // 将表格选区转为制表符分隔的文本（便于粘贴到 Excel）
@@ -546,6 +608,170 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       }
     } catch (e: any) {
       console.error("取消请求失败:", e.message);
+    }
+  }
+
+  async function saveAiSettings() {
+    const normalizeBaseUrl = (raw: string): string => {
+      const trimmed = raw.trim();
+      if (!trimmed) throw new Error("Base URL 不能为空");
+      const withProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+      let parsed: URL;
+      try {
+        parsed = new URL(withProtocol);
+      } catch {
+        throw new Error("Base URL 格式无效，请输入完整域名或 URL");
+      }
+      if (!/^https?:$/i.test(parsed.protocol)) {
+        throw new Error("Base URL 仅支持 http/https");
+      }
+      return parsed.toString().replace(/\/+$/, "");
+    };
+
+    try {
+      const keyRef = aiKeyRef().trim() || "default";
+      const normalizedBaseUrl = normalizeBaseUrl(aiBaseUrl());
+      setAiBaseUrl(normalizedBaseUrl);
+      const payload = {
+        provider: aiProvider(),
+        baseUrl: normalizedBaseUrl,
+        model: aiModel().trim() || (aiProvider() === "openai" ? "gpt-4o-mini" : aiProvider() === "anthropic" ? "claude-3-5-sonnet-latest" : "qwen-plus"),
+        keyRef,
+        temperature: Number(aiTemperature()),
+        topP: Number(aiTopP()),
+        stream: aiStream(),
+        maxTokens: Number(aiMaxTokens()),
+      };
+      if (isVscodeWebview && aiApiKey().trim()) {
+        await setAiKeyViaVscode(keyRef, aiApiKey().trim());
+        await setAiConfig(payload);
+      } else {
+        await setAiConfig({ ...payload, apiKey: aiApiKey().trim() || undefined });
+      }
+      await testAiConnection({
+        keyRef,
+        provider: payload.provider,
+        baseUrl: payload.baseUrl,
+        model: payload.model,
+        temperature: payload.temperature,
+        topP: payload.topP,
+        stream: payload.stream,
+        maxTokens: payload.maxTokens,
+      });
+      setAiApiKey("");
+      try {
+        localStorage.setItem(AI_MODEL_PREF_KEY, payload.model);
+      } catch {
+        // ignore localStorage errors in restricted environments
+      }
+      setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: "AI 配置已更新并校验通过", timestamp: Date.now() }]);
+      setAiHasStoredKey(true);
+    } catch (e: any) {
+      setError(e?.message || "AI 配置保存失败");
+      setNotices((prev) => [...prev.slice(-49), { type: "ERROR", message: e?.message || "AI 配置保存失败", timestamp: Date.now() }]);
+    }
+  }
+
+  async function clearStoredAiKey() {
+    const keyRef = aiKeyRef().trim() || "default";
+    try {
+      if (isVscodeWebview) {
+        await deleteAiKeyViaVscode(keyRef);
+      } else {
+        await deleteAiKey({ keyRef });
+      }
+      setAiApiKey("");
+      setAiHasStoredKey(false);
+      setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: "已清除保存的 AI Key", timestamp: Date.now() }]);
+    } catch (e: any) {
+      setError(e?.message || "清除 AI Key 失败");
+      setNotices((prev) => [...prev.slice(-49), { type: "ERROR", message: e?.message || "清除 AI Key 失败", timestamp: Date.now() }]);
+    }
+  }
+
+  function applyAiPreset(preset: "openai" | "anthropic" | "aliyun") {
+    if (preset === "openai") {
+      setAiProvider("openai");
+      setAiBaseUrl("https://api.openai.com/v1");
+      if (!aiModel().trim()) setAiModel("gpt-4o-mini");
+      return;
+    }
+    if (preset === "anthropic") {
+      setAiProvider("anthropic");
+      setAiBaseUrl("https://api.anthropic.com/v1");
+      if (!aiModel().trim()) setAiModel("claude-3-5-sonnet-latest");
+      return;
+    }
+    setAiProvider("aliyun");
+    setAiBaseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
+    if (!aiModel().trim()) setAiModel("qwen-plus");
+  }
+
+  async function handleAiEdit(sourceSql: string, instruction: string): Promise<AiEditResult | string> {
+    const cid = props.activeConnectionId?.();
+    if (!cid || !sourceSql.trim()) return "";
+    setAiLoading(true);
+    setError(null);
+    try {
+      const res = await aiSqlEdit({
+        connectionId: cid,
+        sql: sourceSql,
+        instructions: instruction?.trim() || "补全",
+        keyRef: aiKeyRef().trim() || "default",
+      });
+      return {
+        sql: res.sql || "",
+        elapsedMs: res.elapsedMs,
+        usage: res.usage,
+        schemaInjected: res.schemaInjected,
+      };
+    } catch (e: any) {
+      setError(e.message || "AI 编辑失败");
+      return "";
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function handleAiCopyPrompt(sourceSql?: string, instructions?: string): Promise<void> {
+    const cid = props.activeConnectionId?.();
+    const sqlSource = sourceSql ?? sql();
+    const userReq = instructions?.trim() || aiEditInstruction().trim() || "补全";
+    if (!cid || !sqlSource.trim()) return;
+    try {
+      const res = await aiBuildPrompt({
+        connectionId: cid,
+        sql: sqlSource,
+        instructions: userReq,
+      });
+      await writeClipboardText(res.prompt);
+      const schemaText = Array.isArray(res.schemaInjected) && res.schemaInjected.length
+        ? `，注入 schema: ${res.schemaInjected.slice(0, 5).join(", ")}${res.schemaInjected.length > 5 ? "..." : ""}`
+        : "";
+      setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: `已复制 AI Prompt${schemaText}`, timestamp: Date.now() }]);
+    } catch (e: any) {
+      setError(e?.message || "复制 AI Prompt 失败");
+      setNotices((prev) => [...prev.slice(-49), { type: "ERROR", message: e?.message || "复制 AI Prompt 失败", timestamp: Date.now() }]);
+    }
+  }
+
+  async function handleAiCopyDiffPrompt(sourceSql?: string): Promise<void> {
+    const cid = props.activeConnectionId?.();
+    const sqlSource = sourceSql ?? sql();
+    if (!cid || !sqlSource.trim()) return;
+    try {
+      const res = await aiBuildDiffPrompt({
+        connectionId: cid,
+        sql: sqlSource,
+      });
+      await writeClipboardText(res.prompt);
+      const schemaText = Array.isArray(res.schemaInjected) && res.schemaInjected.length
+        ? `，注入 schema: ${res.schemaInjected.slice(0, 5).join(", ")}${res.schemaInjected.length > 5 ? "..." : ""}`
+        : "";
+      setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: `已复制 Diff Prompt${schemaText}`, timestamp: Date.now() }]);
+    } catch (e: any) {
+      setError(e?.message || "复制 Diff Prompt 失败");
+      setNotices((prev) => [...prev.slice(-49), { type: "ERROR", message: e?.message || "复制 Diff Prompt 失败", timestamp: Date.now() }]);
     }
   }
 
@@ -1618,7 +1844,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               <span>▶</span> 执行
             </button>
             <button
-              onClick={runExplain}
+              onClick={() => runExplain()}
               disabled={loading() || explainLoading() || sql().trim().length === 0}
               title="解释分析（EXPLAIN ANALYZE）"
               style={{
@@ -1732,6 +1958,24 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>📥</span> 导入
             </button>
+            <button
+              onClick={() => setShowAiDialog(true)}
+              style={{
+                padding: "10px 24px",
+                "font-size": "14px",
+                "font-weight": "500",
+                "background-color": vscode.buttonSecondary,
+                color: "#fff",
+                border: "none",
+                "border-radius": "6px",
+                cursor: "pointer",
+                display: "flex",
+                "align-items": "center",
+                gap: "6px",
+              }}
+            >
+              <span>🤖</span> AI 助手
+            </button>
             <span style={{ 
               "margin-left": "auto", 
               color: vscode.foregroundDim, 
@@ -1755,6 +1999,16 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   onRun={runUserQuery}
                   onExplain={runExplain}
                   onFormat={(s) => formatSql(s)}
+                  onAiEdit={(blockSql, instruction) => {
+                    return handleAiEdit(blockSql, instruction);
+                  }}
+                  onAiCopyPrompt={(blockSql, instruction) => {
+                    void handleAiCopyPrompt(blockSql, instruction);
+                  }}
+                  onAiCopyDiffPrompt={(blockSql) => {
+                    void handleAiCopyDiffPrompt(blockSql);
+                  }}
+                  onAiEditInstructionChange={setAiEditInstruction}
                   onEditorReady={(api) => { sqlEditorFormatApi = api; }}
                   style={{ height: "100%" }}
                 />
@@ -2004,6 +2258,180 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               setNotices((prev) => [...prev.slice(-49), { type: "INFO", message: msg, timestamp: Date.now() }]);
             }}
           />
+        </Show>
+        <Show when={showAiDialog()}>
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              "background-color": "rgba(0,0,0,0.6)",
+              "z-index": 180,
+              display: "flex",
+              "align-items": "center",
+              "justify-content": "center",
+              padding: "24px",
+            }}
+            onClick={(e) => e.target === e.currentTarget && setShowAiDialog(false)}
+          >
+            <div
+              style={{
+                width: "92%",
+                "max-width": "900px",
+                "background-color": vscode.editorBg,
+                border: `1px solid ${vscode.border}`,
+                "border-radius": "10px",
+                "box-shadow": "0 16px 48px rgba(0,0,0,0.4)",
+                padding: "16px",
+                display: "flex",
+                "flex-direction": "column",
+                gap: "12px",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: "flex", "justify-content": "space-between", "align-items": "center" }}>
+                <div style={{ "font-size": "16px", "font-weight": "600", color: vscode.foreground }}>AI 助手</div>
+                <button
+                  onClick={() => setShowAiDialog(false)}
+                  style={{ border: "none", background: "none", color: vscode.foregroundDim, cursor: "pointer", "font-size": "20px", "line-height": 1 }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div style={{ "font-size": "12px", color: vscode.foregroundDim }}>
+                此处仅用于配置 AI。实际使用请在 SQL 编辑器每个语句块的 View Zone 中点击 <strong>AI Edit</strong>，
+                结果会自动插入到该块下方的 AI 注释下面。
+              </div>
+              <div
+                style={{
+                  "font-size": "12px",
+                  color: vscode.foregroundDim,
+                  padding: "10px",
+                  border: `1px solid ${vscode.border}`,
+                  "border-radius": "6px",
+                  "line-height": 1.6,
+                  "background-color": vscode.inputBg,
+                }}
+              >
+                <div><strong>配置说明</strong></div>
+                <div>Base URL：服务地址（示例：OpenAI `https://api.openai.com/v1`，Aliyun `https://dashscope.aliyuncs.com/compatible-mode/v1`）。</div>
+                <div>Model：模型名（示例：`gpt-4o-mini`、`qwen-plus`）。</div>
+                <div>API Key：你的服务密钥；在 VSCode 插件中会存入 SecretStorage。</div>
+                <div>高级设置：`temperature` 越低越稳定；`top_p` 默认 1 即可；`max_tokens` 控制回复长度；`stream` 决定是否流式返回。</div>
+                <div>推荐：SQL 场景可用 `temperature=0.2`、`top_p=1`、`max_tokens=700`。</div>
+              </div>
+
+              <div style={{ display: "flex", "flex-direction": "column", gap: "10px" }}>
+                <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                  <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>接口格式</div>
+                  <select
+                    value={aiProvider() === "anthropic" ? "anthropic" : "openai-compatible"}
+                    onChange={(e) => {
+                      const mode = e.currentTarget.value;
+                      if (mode === "anthropic") setAiProvider("anthropic");
+                      else setAiProvider("openai");
+                    }}
+                    style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }}
+                  >
+                    <option value="openai-compatible">OpenAI Compatible</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                </div>
+                <div style={{ display: "flex", "align-items": "center", gap: "8px", "margin-left": "130px", "flex-wrap": "wrap" }}>
+                  <span style={{ "font-size": "12px", color: vscode.foregroundDim }}>快捷填充:</span>
+                  <button
+                    onClick={() => applyAiPreset("openai")}
+                    style={{ padding: "6px 10px", border: `1px solid ${vscode.border}`, "border-radius": "999px", background: "transparent", color: vscode.foreground, cursor: "pointer", "font-size": "12px", "white-space": "nowrap" }}
+                  >
+                    OpenAI
+                  </button>
+                  <button
+                    onClick={() => applyAiPreset("anthropic")}
+                    style={{ padding: "6px 10px", border: `1px solid ${vscode.border}`, "border-radius": "999px", background: "transparent", color: vscode.foreground, cursor: "pointer", "font-size": "12px", "white-space": "nowrap" }}
+                  >
+                    Anthropic
+                  </button>
+                  <button
+                    onClick={() => applyAiPreset("aliyun")}
+                    style={{ padding: "6px 10px", border: `1px solid ${vscode.border}`, "border-radius": "999px", background: "transparent", color: vscode.foreground, cursor: "pointer", "font-size": "12px", "white-space": "nowrap" }}
+                  >
+                    Aliyun
+                  </button>
+                </div>
+                <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                  <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>url</div>
+                  <input
+                    value={aiBaseUrl()}
+                    onInput={(e) => setAiBaseUrl(e.currentTarget.value)}
+                    placeholder="Base URL (e.g. https://api.openai.com/v1)"
+                    style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }}
+                  />
+                </div>
+                <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                  <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>model</div>
+                  <input value={aiModel()} onInput={(e) => setAiModel(e.currentTarget.value)} placeholder="model" style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }} />
+                </div>
+                <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                  <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>api key</div>
+                  <input value={aiApiKey()} onInput={(e) => setAiApiKey(e.currentTarget.value)} placeholder={aiHasStoredKey() ? "已保存（留空表示不修改）" : "AI API Key (可留空)"} type="password" style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }} />
+                </div>
+                <div style={{ "margin-left": "130px", display: "flex", "justify-content": "flex-end" }}>
+                  <button
+                    onClick={clearStoredAiKey}
+                    disabled={!aiHasStoredKey()}
+                    style={{ padding: "6px 10px", border: `1px solid ${vscode.border}`, "border-radius": "6px", background: "transparent", color: aiHasStoredKey() ? vscode.foreground : vscode.foregroundDim, cursor: aiHasStoredKey() ? "pointer" : "not-allowed", "font-size": "12px", "white-space": "nowrap" }}
+                  >
+                    清除已保存 key
+                  </button>
+                </div>
+                <div style={{ "margin-left": "130px", "font-size": "12px", color: aiHasStoredKey() ? "#2ea043" : vscode.foregroundDim }}>
+                  {aiHasStoredKey() ? "状态：已保存本地密钥（不回显明文）" : "状态：未保存密钥"}
+                </div>
+                <button
+                  onClick={() => setShowAiAdvanced((v) => !v)}
+                  style={{
+                    border: `1px solid ${vscode.border}`,
+                    "border-radius": "6px",
+                    background: "transparent",
+                    color: vscode.foreground,
+                    cursor: "pointer",
+                    padding: "8px 10px",
+                    "text-align": "left",
+                  }}
+                >
+                  {showAiAdvanced() ? "收起高级设置 ▲" : "展开高级设置 ▼"}
+                </button>
+                <Show when={showAiAdvanced()}>
+                  <div style={{ display: "flex", "flex-direction": "column", gap: "10px", padding: "10px", border: `1px dashed ${vscode.border}`, "border-radius": "6px" }}>
+                    <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                      <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>temperature</div>
+                      <input value={aiTemperature()} onInput={(e) => setAiTemperature(e.currentTarget.value)} placeholder="temperature (0~1)" style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }} />
+                    </div>
+                    <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                      <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>top_p</div>
+                      <input value={aiTopP()} onInput={(e) => setAiTopP(e.currentTarget.value)} placeholder="top_p (0~1)" style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }} />
+                    </div>
+                    <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
+                      <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>max_tokens</div>
+                      <input value={aiMaxTokens()} onInput={(e) => setAiMaxTokens(e.currentTarget.value)} placeholder="max_tokens (64~8192)" style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }} />
+                    </div>
+                    <label style={{ display: "flex", "align-items": "center", gap: "8px", color: vscode.foreground, "font-size": "13px" }}>
+                      <input
+                        type="checkbox"
+                        checked={aiStream()}
+                        onChange={(e) => setAiStream(e.currentTarget.checked)}
+                      />
+                      stream
+                    </label>
+                  </div>
+                </Show>
+                <div style={{ display: "flex", "justify-content": "flex-end", gap: "8px" }}>
+                  <button onClick={saveAiSettings} disabled={aiLoading()} style={{ border: "none", "border-radius": "6px", cursor: aiLoading() ? "not-allowed" : "pointer", "background-color": vscode.buttonSecondary, color: "#fff", padding: "8px 14px" }}>保存设置</button>
+                </div>
+              </div>
+
+            </div>
+          </div>
         </Show>
     </div>
   );

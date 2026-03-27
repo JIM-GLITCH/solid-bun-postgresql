@@ -76,6 +76,13 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/postgres/pg-stat-overview", method: "postgres/pg-stat-overview" },
   { path: "/api/postgres/manage-backend", method: "postgres/manage-backend" },
   { path: "/api/postgres/installed-extensions", method: "postgres/installed-extensions" },
+  { path: "/api/ai/config/get", method: "ai/config/get" },
+  { path: "/api/ai/config/set", method: "ai/config/set" },
+  { path: "/api/ai/key/delete", method: "ai/key/delete" },
+  { path: "/api/ai/test-connection", method: "ai/test-connection" },
+  { path: "/api/ai/sql-edit", method: "ai/sql-edit" },
+  { path: "/api/ai/prompt-build", method: "ai/prompt-build" },
+  { path: "/api/ai/prompt-build-diff", method: "ai/prompt-build-diff" },
   // backward-compat aliases (older/cached frontend typo or underscore variant)
   { path: "/api/postgres/pg_stat-overview", method: "postgres/pg-stat-overview" },
   { path: "/api/postgres/pg_stat-overciew", method: "postgres/pg-stat-overview" },
