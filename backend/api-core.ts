@@ -158,20 +158,19 @@ function buildPortableSqlPrompt(params: {
     "任务: 按用户要求编辑当前 SQL",
     "数据库: PostgreSQL",
     "",
-    "Schema Context (仅可使用以下表/列):",
+    "Schema Context (可使用表/列):",
     schemaContext || "(empty)",
     "",
     "当前 SQL:",
     sql.trim(),
     ...(extraInstruction?.trim()
-      ? ["", "额外用户要求:", extraInstruction.trim()]
+      ? ["", "用户要求:", extraInstruction.trim()]
       : []),
     "",
     "输出要求:",
     "1) 仅输出 SQL，不要 markdown 代码块，所有解释要以sql注释形式给出。",
     "2) 必须保留原 SQL 中已有注释（-- 和 /* */），并随结果一起返回。",
-    "3) 优先复用给定 schema 中的表和列。",
-    "4) 不要生成高风险语句（DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE）。",
+    "3) 不要生成高风险语句（DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE）。",
   ].join("\n");
 }
 

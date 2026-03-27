@@ -710,7 +710,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   async function handleAiEdit(sourceSql: string, instruction: string): Promise<AiEditResult | string> {
     const cid = props.activeConnectionId?.();
     if (!cid || !sourceSql.trim()) return "";
-    setAiLoading(true);
     setError(null);
     try {
       const res = await aiSqlEdit({
@@ -728,8 +727,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     } catch (e: any) {
       setError(e.message || "AI 编辑失败");
       return "";
-    } finally {
-      setAiLoading(false);
     }
   }
 
@@ -2009,6 +2006,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                     void handleAiCopyDiffPrompt(blockSql);
                   }}
                   onAiEditInstructionChange={setAiEditInstruction}
+                  onAiEditPhaseChange={(phase) => setAiLoading(phase === "loading")}
                   onEditorReady={(api) => { sqlEditorFormatApi = api; }}
                   style={{ height: "100%" }}
                 />
