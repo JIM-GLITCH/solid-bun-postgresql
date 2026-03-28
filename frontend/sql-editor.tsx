@@ -34,6 +34,9 @@ function ensureExecHighlightStyle() {
     .monaco-sql-codelens .sql-codelens-link .sql-codelens-icon { font-size: 9px; opacity: 0.9; }
     .monaco-sql-codelens .sql-codelens-sep { color: var(--vscode-editorCodeLens-foreground, #999); opacity: 0.6; padding: 0 6px; user-select: none; }
     .monaco-sql-ai-panel .sql-ai-diff-host .monaco-editor { outline: none !important; }
+    .monaco-sql-ai-panel .sql-ai-diff-host {
+      background-color: var(--vscode-editor-background, #1e1e1e);
+    }
   `;
   document.head.appendChild(el);
 }
@@ -42,7 +45,7 @@ import "./monaco-environment";
 import { getSqlSegments } from "../shared/src";
 import { registerSqlEditor } from "./monaco-paste-registry";
 import { readClipboardText, writeClipboardText } from "./clipboard";
-import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
+import { attachMonacoLayoutOnResize, attachDiffEditorLayoutOnResize } from "./monaco-resize-layout";
 
 /** 光标所在块的文本及起止偏移（与后端 getStatements 同一套分块规则，前端多「空行」边界）。 */
 function getSqlBlockAtCursor(
@@ -90,6 +93,19 @@ function lineStartOffsetForOffset(model: monaco.editor.ITextModel, offset: numbe
   const o = Math.min(Math.max(0, offset), len);
   const pos = model.getPositionAt(o);
   return model.getOffsetAt({ lineNumber: pos.lineNumber, column: 1 });
+}
+
+/** 面板宽度超过此值时使用并排 diff（与计划一致 ~560px） */
+const AI_DIFF_SIDEBYSIDE_MIN_PX = 560;
+
+function computeAiDiffHostHeightPx(original: string, modified: string): number {
+  const linesA = original ? original.split("\n").length : 1;
+  const linesB = modified ? modified.split("\n").length : 1;
+  const lineCount = Math.max(linesA, linesB, 1);
+  const cap = Math.min(Math.round(window.innerHeight * 0.55), 400);
+  const minH = 160;
+  const perLine = 18;
+  return Math.min(cap, Math.max(minH, lineCount * perLine + 32));
 }
 
 export interface SqlEditorProps {
@@ -200,18 +216,27 @@ export default function SqlEditor(props: SqlEditorProps) {
     let aiZoneGutter: HTMLDivElement | null = null;
     let aiInstructionResolve: ((value: string | null) => void) | null = null;
     let aiPreviewResolve: ((accepted: boolean) => void) | null = null;
+    const resolveAiPreview = (accepted: boolean) => {
+      if (!aiPreviewResolve) return;
+      const r = aiPreviewResolve;
+      aiPreviewResolve = null;
+      r(accepted);
+    };
     let aiDiffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
     let aiOriginalModel: monaco.editor.ITextModel | null = null;
     let aiModifiedModel: monaco.editor.ITextModel | null = null;
     let panelResizeObs: ResizeObserver | null = null;
     /** 将 zone 同步移出 RO 回调；在回调里改尺寸会触发 undelivered notifications，用 macrotask 合批 */
     let aiPanelResizeFlushHandle: ReturnType<typeof setTimeout> | null = null;
+    let detachDiffLayout: (() => void) | null = null;
 
     const emitAiPhaseToParent = (phase: "idle" | "instruct" | "loading" | "preview") => {
       props.onAiEditPhaseChange?.(phase);
     };
 
     const disposeAiDiff = () => {
+      detachDiffLayout?.();
+      detachDiffLayout = null;
       aiDiffEditor?.dispose();
       aiDiffEditor = null;
       aiOriginalModel?.dispose();
@@ -322,6 +347,27 @@ export default function SqlEditor(props: SqlEditorProps) {
     const diffSection = document.createElement("div");
     // 不用 flex:1：在 View Zone 内父级高度由 Monaco 指派时，子项 flex:1 会与「测高度→改 zone」形成正反馈，导致高度持续上涨
     diffSection.style.cssText = "display:none;flex-direction:column;gap:6px;flex-shrink:0;min-width:0";
+    const previewRow = document.createElement("div");
+    previewRow.style.cssText =
+      "display:none;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;flex-shrink:0;width:100%";
+    const previewHint = document.createElement("span");
+    previewHint.textContent = "Ctrl+Enter 接受 · Esc 拒绝";
+    previewHint.style.cssText =
+      "font-size:11px;color:var(--vscode-descriptionForeground,#858585);margin-right:auto;flex:1;min-width:120px";
+    const rejectPreviewBtn = document.createElement("button");
+    rejectPreviewBtn.type = "button";
+    rejectPreviewBtn.textContent = "拒绝";
+    rejectPreviewBtn.title = "拒绝修改 (Esc)";
+    rejectPreviewBtn.style.cssText =
+      "height:28px;padding:0 10px;border:1px solid var(--vscode-widget-border,#454545);border-radius:6px;background:transparent;color:var(--vscode-foreground,#ddd);cursor:pointer;font-size:12px";
+    const acceptPreviewBtn = document.createElement("button");
+    acceptPreviewBtn.type = "button";
+    acceptPreviewBtn.textContent = "接受";
+    acceptPreviewBtn.title = "接受修改 (Ctrl+Enter)";
+    acceptPreviewBtn.style.cssText =
+      "height:28px;padding:0 10px;border:none;border-radius:6px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);cursor:pointer;font-size:12px";
+    previewRow.append(previewHint, rejectPreviewBtn, acceptPreviewBtn);
+
     const loadingRow = document.createElement("div");
     loadingRow.textContent = "生成中…";
     loadingRow.style.cssText =
@@ -329,25 +375,27 @@ export default function SqlEditor(props: SqlEditorProps) {
     const diffHost = document.createElement("div");
     diffHost.className = "sql-ai-diff-host";
     diffHost.style.cssText =
-      "display:none;min-height:160px;height:220px;width:100%;overflow:hidden;border:1px solid var(--vscode-widget-border,#454545);border-radius:4px;box-sizing:border-box";
-    diffSection.append(loadingRow, diffHost);
+      "display:none;min-height:160px;width:100%;overflow:hidden;border:1px solid var(--vscode-widget-border,#454545);border-radius:4px;box-sizing:border-box;background-color:var(--vscode-editor-background,#1e1e1e)";
+    diffSection.append(previewRow, loadingRow, diffHost);
 
-    const previewRow = document.createElement("div");
-    previewRow.style.cssText = "display:none;gap:8px;justify-content:flex-end;flex-shrink:0";
-    const rejectPreviewBtn = document.createElement("button");
-    rejectPreviewBtn.type = "button";
-    rejectPreviewBtn.textContent = "拒绝";
-    rejectPreviewBtn.style.cssText =
-      "height:28px;padding:0 10px;border:1px solid var(--vscode-widget-border,#454545);border-radius:6px;background:transparent;color:var(--vscode-foreground,#ddd);cursor:pointer;font-size:12px";
-    const acceptPreviewBtn = document.createElement("button");
-    acceptPreviewBtn.type = "button";
-    acceptPreviewBtn.textContent = "接受";
-    acceptPreviewBtn.style.cssText =
-      "height:28px;padding:0 10px;border:none;border-radius:6px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);cursor:pointer;font-size:12px";
-    previewRow.append(rejectPreviewBtn, acceptPreviewBtn);
-
-    aiEditPanel.append(instructionRow, diffSection, previewRow);
+    aiEditPanel.append(instructionRow, diffSection);
     container.appendChild(aiEditPanel);
+
+    const applyDiffSideBySideFromWidth = () => {
+      if (!aiDiffEditor) return;
+      const w = diffHost.getBoundingClientRect().width;
+      try {
+        const sideBySide = w >= AI_DIFF_SIDEBYSIDE_MIN_PX;
+        aiDiffEditor.updateOptions({ renderSideBySide: sideBySide, compactMode: !sideBySide });
+      } catch {
+        /* disposed */
+      }
+      try {
+        aiDiffEditor.layout();
+      } catch {
+        /* disposed */
+      }
+    };
 
     const applyAiPanelStylesDockedHidden = () => {
       aiEditPanel.style.cssText = [
@@ -379,7 +427,7 @@ export default function SqlEditor(props: SqlEditorProps) {
         "z-index:100",
         "flex:1",
         "min-width:0",
-        "max-width:500px",
+        "max-width:min(900px,100%)",
         "margin-left:2px",
         "margin-right:16px",
         "display:flex",
@@ -676,18 +724,8 @@ export default function SqlEditor(props: SqlEditorProps) {
       closeAiPanel();
     });
 
-    acceptPreviewBtn.addEventListener("click", () => {
-      if (!aiPreviewResolve) return;
-      const r = aiPreviewResolve;
-      aiPreviewResolve = null;
-      r(true);
-    });
-    rejectPreviewBtn.addEventListener("click", () => {
-      if (!aiPreviewResolve) return;
-      const r = aiPreviewResolve;
-      aiPreviewResolve = null;
-      r(false);
-    });
+    acceptPreviewBtn.addEventListener("click", () => resolveAiPreview(true));
+    rejectPreviewBtn.addEventListener("click", () => resolveAiPreview(false));
 
     const isCtrlCmdK = (e: KeyboardEvent) =>
       (e.key === "k" || e.key === "K") &&
@@ -696,11 +734,22 @@ export default function SqlEditor(props: SqlEditorProps) {
       !e.shiftKey;
 
     aiEditPanel.addEventListener("keydown", (e) => {
+      if (
+        aiPanelPhase === "preview" &&
+        aiPreviewResolve &&
+        e.key === "Enter" &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        resolveAiPreview(true);
+        return;
+      }
       if (e.key === "Escape" && aiPanelPhase === "preview" && aiPreviewResolve) {
         e.preventDefault();
-        const r = aiPreviewResolve;
-        aiPreviewResolve = null;
-        r(false);
+        resolveAiPreview(false);
         return;
       }
       if (isCtrlCmdK(e) && aiPanelPhase !== "closed" && editor) {
@@ -719,7 +768,7 @@ export default function SqlEditor(props: SqlEditorProps) {
           aiPanelResizeFlushHandle = null;
           if (aiPanelPhase === "closed" || !panelResizeObs) return;
           syncAiPanelViewZone();
-          aiDiffEditor?.layout();
+          applyDiffSideBySideFromWidth();
         }, 0);
       });
       panelResizeObs.observe(aiEditPanel);
@@ -730,15 +779,21 @@ export default function SqlEditor(props: SqlEditorProps) {
       diffHost.innerHTML = "";
       const currentTheme = getTheme()?.monacoTheme ?? "vs-dark";
 
+      setUiForPreview();
+      const h = computeAiDiffHostHeightPx(original, modified);
+      diffHost.style.height = `${h}px`;
+
+      const sideBySide = diffHost.getBoundingClientRect().width >= AI_DIFF_SIDEBYSIDE_MIN_PX;
+
       aiOriginalModel = monaco.editor.createModel(original, "sql");
       aiModifiedModel = monaco.editor.createModel(modified, "sql");
       aiDiffEditor = monaco.editor.createDiffEditor(diffHost, {
         originalEditable: false,
         readOnly: true,
         minimap: { enabled: false },
-        renderSideBySide: false,
+        renderSideBySide: sideBySide,
         diffWordWrap: "on",
-        compactMode: true,
+        compactMode: !sideBySide,
         renderOverviewRuler: false,
         renderMarginRevertIcon: false,
         ignoreTrimWhitespace: false,
@@ -748,14 +803,25 @@ export default function SqlEditor(props: SqlEditorProps) {
         automaticLayout: false,
         lineNumbers: "on",
         wordWrap: "on",
-        experimental: { useTrueInlineView: true },
       });
       aiDiffEditor.setModel({ original: aiOriginalModel, modified: aiModifiedModel });
       monaco.editor.setTheme(currentTheme);
-      setUiForPreview();
+
+      detachDiffLayout = attachDiffEditorLayoutOnResize(diffHost, aiDiffEditor);
+
+      const runAcceptPreview = () => resolveAiPreview(true);
+      const runRejectPreview = () => resolveAiPreview(false);
+      aiDiffEditor.getOriginalEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runAcceptPreview);
+      aiDiffEditor.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runAcceptPreview);
+      aiDiffEditor.getOriginalEditor().addCommand(monaco.KeyCode.Escape, runRejectPreview);
+      aiDiffEditor.getModifiedEditor().addCommand(monaco.KeyCode.Escape, runRejectPreview);
+
+      applyDiffSideBySideFromWidth();
+
       aiPanelPhase = "preview";
       emitAiPhaseToParent("preview");
       requestAnimationFrame(() => {
+        applyDiffSideBySideFromWidth();
         aiDiffEditor?.layout();
         syncAiPanelViewZone();
         focusAiDialogPrimary();
