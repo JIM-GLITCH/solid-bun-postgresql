@@ -168,14 +168,24 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const OVERSCAN = 10; // 预渲染行数
 
   const visible = createMemo(() => {
+    const rowCount = result.length;
     const start = Math.floor(scrollTop() / ROW_HEIGHT);
     const end = Math.ceil((scrollTop() + containerHeight()) / ROW_HEIGHT);
-    const s = Math.max(0, start - OVERSCAN);
-    const e = Math.min(result.length, end + OVERSCAN);
+    let s = Math.max(0, start - OVERSCAN);
+    let e = Math.min(rowCount, end + OVERSCAN);
+    // 上次结果很长且滚到底部后，若新结果很短，会出现 s >= e（或 s >= rowCount），indices 为空；滚轮会改 scrollTop 才「恢复」
+    if (rowCount > 0 && s >= rowCount) {
+      s = 0;
+      e = Math.min(rowCount, Math.ceil(containerHeight() / ROW_HEIGHT) + OVERSCAN);
+    } else if (e <= s && rowCount > 0) {
+      s = 0;
+      e = Math.min(rowCount, Math.ceil(containerHeight() / ROW_HEIGHT) + OVERSCAN);
+    }
+    const count = Math.max(0, e - s);
     return {
       start: s,
       end: e,
-      indices: Array.from({ length: e - s }, (_, i) => s + i)
+      indices: Array.from({ length: count }, (_, i) => s + i)
     };
   });
 
@@ -183,24 +193,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const offsetY = () => visible().start * ROW_HEIGHT;
 
   const [tableContainerRef, setTableContainerRef] = createSignal<HTMLDivElement | null>(null);
-
-  // 使用 ResizeObserver 正确追踪表格容器高度，解决加载完成后表格不显示的问题
-  createEffect(() => {
-    const el = tableContainerRef();
-    if (!el) return;
-    const updateHeight = () => {
-      const h = el.clientHeight;
-      setContainerHeight(Math.max(h, 200)); // 最小 200px，避免 0 导致 visible 为空
-    };
-    const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        requestAnimationFrame(updateHeight);
-      });
-    });
-    ro.observe(el);
-    updateHeight(); // 立即测量一次
-    onCleanup(() => ro.disconnect());
-  });
 
   // 响应外部查询请求（如侧边栏点击表）
   createEffect(() => {
@@ -479,6 +471,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const statements = getStatementsFromText(sqlToRun);
     setLoading(true);
     setError(null);
+    resetTableScrollForNewQuery();
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
     setPendingDeletes([]);  // 清空待执行的删除
@@ -569,6 +562,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (scrollBottom < 200 && hasMore() && !loadingMore()) {
       loadMore();
     }
+  }
+
+  /** 新一次完整结果集查询时重置滚动，避免虚拟窗口仍落在上一次大结果集的 scrollTop 上 */
+  function resetTableScrollForNewQuery() {
+    setScrollTop(0);
+    const el = tableContainerRef();
+    if (el) el.scrollTop = 0;
   }
 
   // 执行 EXPLAIN ANALYZE（可选传入 sql，否则用编辑器内第一个语句）
@@ -1737,6 +1737,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setSql(querySql);
     setLoading(true);
     setError(null);
+    resetTableScrollForNewQuery();
     setResult([]);
     setPendingUpdates([]);
     setPendingDeletes([]);
