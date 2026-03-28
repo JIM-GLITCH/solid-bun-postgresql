@@ -378,6 +378,31 @@ export default function SqlEditor(props: SqlEditorProps) {
       "display:none;min-height:160px;width:100%;overflow:hidden;border:1px solid var(--vscode-widget-border,#454545);border-radius:4px;box-sizing:border-box;background-color:var(--vscode-editor-background,#1e1e1e)";
     diffSection.append(previewRow, loadingRow, diffHost);
 
+    /** 勿在嵌套 Diff 子编辑器上 addCommand(Ctrl+Enter)：会与主 SQL 编辑器的全局快捷键冲突，dispose 后主编辑器仍可能无法执行查询 */
+    diffHost.addEventListener(
+      "keydown",
+      (e) => {
+        if (aiPanelPhase !== "preview" || !aiPreviewResolve) return;
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          resolveAiPreview(false);
+          return;
+        }
+        if (
+          e.key === "Enter" &&
+          (e.ctrlKey || e.metaKey) &&
+          !e.altKey &&
+          !e.shiftKey
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          resolveAiPreview(true);
+        }
+      },
+      true
+    );
+
     aiEditPanel.append(instructionRow, diffSection);
     container.appendChild(aiEditPanel);
 
@@ -628,6 +653,9 @@ export default function SqlEditor(props: SqlEditorProps) {
       emitAiPhaseToParent("idle");
       aiSentRangeDecorations.clear();
       editor?.focus();
+      requestAnimationFrame(() => {
+        editor?.focus();
+      });
     };
 
     /** 将要发给 AI 的 [start,end) 范围高亮（与 editor 选区风格接近） */
@@ -809,13 +837,6 @@ export default function SqlEditor(props: SqlEditorProps) {
 
       detachDiffLayout = attachDiffEditorLayoutOnResize(diffHost, aiDiffEditor);
 
-      const runAcceptPreview = () => resolveAiPreview(true);
-      const runRejectPreview = () => resolveAiPreview(false);
-      aiDiffEditor.getOriginalEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runAcceptPreview);
-      aiDiffEditor.getModifiedEditor().addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runAcceptPreview);
-      aiDiffEditor.getOriginalEditor().addCommand(monaco.KeyCode.Escape, runRejectPreview);
-      aiDiffEditor.getModifiedEditor().addCommand(monaco.KeyCode.Escape, runRejectPreview);
-
       applyDiffSideBySideFromWidth();
 
       aiPanelPhase = "preview";
@@ -916,6 +937,7 @@ export default function SqlEditor(props: SqlEditorProps) {
 
       const accepted = await showDiffPreview(aiOriginalSnippet, output);
       if (accepted && editor) {
+        disposeAiDiff();
         const m = editor.getModel();
         if (m && aiRangeOffsets) {
           const s = Math.min(aiRangeOffsets.start, m.getValue().length);
