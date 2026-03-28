@@ -10,7 +10,12 @@ import {
   type ApiRequestPayload,
   type ConnectPostgresRequest,
 } from "../shared/src";
-import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
+import {
+  connectPostgres,
+  createPostgresPool,
+  getDbConfig,
+  type GetDbConfigResult,
+} from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
@@ -29,6 +34,8 @@ export interface SSEMessage {
 export interface SessionConnection {
   userUsedClient: Client;
   backGroundPool: Pool;
+  /** 与建连时一致，用于 userUsedClient 断线后按原隧道/配置重建（勿重复 getDbConfig 以免多开 SSH 隧道） */
+  dbForReconnect: GetDbConfigResult;
   runningQueryPid?: number;
   eventPushers: Set<(msg: SSEMessage) => void>;
   closeTunnel?: () => Promise<void>;
@@ -37,6 +44,58 @@ export interface SessionConnection {
     columns?: any[];
     isDone: boolean;
   };
+  /** 对 userUsedClient 定时探活，减轻空闲被防火墙/服务端掐断 */
+  keepAliveTimer?: ReturnType<typeof setInterval>;
+}
+
+function isPgUserClientDeadError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return /not queryable|connection error|Connection terminated/i.test(msg);
+}
+
+function attachPostgresClientHandlers(cid: string, client: Client): void {
+  client.on("error", (err) => {
+    sendSSEMessage(cid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
+  });
+  client.on("notice", (msg: any) => {
+    const severity = (msg.severity || "NOTICE").toUpperCase();
+    sendSSEMessage(cid, {
+      type: severity as SSEMessage["type"],
+      message: msg.message || String(msg),
+      timestamp: Date.now(),
+      detail: msg.detail || msg.hint || undefined,
+    });
+  });
+  client.on("notification", (msg: any) => {
+    sendSSEMessage(cid, {
+      type: "NOTIFICATION",
+      message: `[${msg.channel}] ${msg.payload || "(无内容)"}`,
+      timestamp: Date.now(),
+    });
+  });
+  client.on("end", () => {
+    sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
+  });
+}
+
+/** Monaco 等使用的长连接 Client 异常后 pg 会报 not queryable；连接池仍可用故侧栏只读查询正常 */
+async function recreateUserUsedClient(cid: string): Promise<void> {
+  const session = connectionMap.get(cid);
+  if (!session) throw new Error("连接不存在");
+  if (session.cursor) {
+    try {
+      await new Promise<void>((r) => session.cursor!.instance.close(() => r()));
+    } catch {
+      /* ignore */
+    }
+    session.cursor = undefined;
+  }
+  session.runningQueryPid = undefined;
+  await session.userUsedClient.end().catch(() => {});
+  const client = await connectPostgres(session.dbForReconnect);
+  attachPostgresClientHandlers(cid, client);
+  session.userUsedClient = client;
+  sendSSEMessage(cid, { type: "INFO", message: "查询专用连接已自动重建", timestamp: Date.now() });
 }
 
 /** 按不在引号/注释内的 ; 拆成多条语句（与前端分块规则一致，仅不分空行）。 */
@@ -51,6 +110,37 @@ function getStatements(sql: string): string[] {
 /** 以 connectionId 为 key 存储多个连接 */
 const connectionMap = new Map<string, SessionConnection>();
 const aiKeyStore = new Map<string, string>();
+
+/** 探活间隔：略小于常见 idle 超时，避免首条 Monaco 查询才暴露死连接 */
+const USER_CLIENT_KEEPALIVE_MS = 60_000;
+const USER_CLIENT_KEEPALIVE_SQL = "SELECT 1 --keepalive";
+
+function stopUserClientKeepalive(session: SessionConnection): void {
+  if (session.keepAliveTimer != null) {
+    clearInterval(session.keepAliveTimer);
+    session.keepAliveTimer = undefined;
+  }
+}
+
+function startUserClientKeepalive(cid: string): void {
+  const session = connectionMap.get(cid);
+  if (!session) return;
+  stopUserClientKeepalive(session);
+  session.keepAliveTimer = setInterval(() => {
+    void (async () => {
+      const s = connectionMap.get(cid);
+      if (!s) return;
+      if (s.cursor) return;
+      try {
+        await s.userUsedClient.query(USER_CLIENT_KEEPALIVE_SQL);
+      } catch (e) {
+        if (isPgUserClientDeadError(e)) {
+          await recreateUserUsedClient(cid).catch(() => {});
+        }
+      }
+    })();
+  }, USER_CLIENT_KEEPALIVE_MS);
+}
 
 let aiKeyResolver: ((keyRef: string) => Promise<string | undefined>) | null = null;
 
@@ -302,6 +392,7 @@ export async function disconnectConnection(connectionId: string): Promise<void> 
   const conn = connectionMap.get(connectionId);
   if (conn) {
     connectionMap.delete(connectionId);
+    stopUserClientKeepalive(conn);
     await conn.userUsedClient.end().catch(() => {});
     await conn.backGroundPool.end().catch(() => {});
     await conn.closeTunnel?.().catch(() => {});
@@ -602,6 +693,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       const existing = connectionMap.get(cid);
       if (existing) {
         connectionMap.delete(cid);
+        stopUserClientKeepalive(existing);
         await existing.userUsedClient.end().catch(() => {});
         await existing.backGroundPool.end().catch(() => {});
         await existing.closeTunnel?.().catch(() => {});
@@ -611,35 +703,16 @@ export async function handleApiRequest<M extends ApiMethod>(
       const client = await connectPostgres(db);
       const adminPool = createPostgresPool(db);
 
-      client.on("error", (err) => {
-        sendSSEMessage(cid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
-      });
-      client.on("notice", (msg: any) => {
-        const severity = (msg.severity || "NOTICE").toUpperCase();
-        sendSSEMessage(cid, {
-          type: severity as SSEMessage["type"],
-          message: msg.message || String(msg),
-          timestamp: Date.now(),
-          detail: msg.detail || msg.hint || undefined,
-        });
-      });
-      client.on("notification", (msg: any) => {
-        sendSSEMessage(cid, {
-          type: "NOTIFICATION",
-          message: `[${msg.channel}] ${msg.payload || "(无内容)"}`,
-          timestamp: Date.now(),
-        });
-      });
-      client.on("end", () => {
-        sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
-      });
+      attachPostgresClientHandlers(cid, client);
 
       connectionMap.set(cid, {
         userUsedClient: client,
         backGroundPool: adminPool,
+        dbForReconnect: db,
         eventPushers: new Set(),
         closeTunnel: db.closeTunnel,
       });
+      startUserClientKeepalive(cid);
       return { sucess: true, connectionId: cid };
     }
 
@@ -657,49 +730,61 @@ export async function handleApiRequest<M extends ApiMethod>(
         statements?: string[];
         batchSize?: number;
       };
-      const session = getS(cid);
-      const { userUsedClient: client, backGroundPool: adminPool } = session;
-
-      if (session.cursor) {
-        await new Promise<void>((r) => session.cursor!.instance.close(() => r()));
-        session.cursor = undefined;
-      }
-
-      try {
-        const pidRes = await client.query("SELECT pg_backend_pid() as pid");
-        session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
-      } catch {
-        session.runningQueryPid = (client as any).processID;
-      }
-
       const statements = payloadStatements?.length ? payloadStatements : getStatements(query ?? "");
       if (statements.length === 0) {
         return { rows: [], columns: [], hasMore: false };
       }
 
-      // 前面的语句逐条用简单 query 执行（不支持 prepared 多命令）
-      for (let i = 0; i < statements.length - 1; i++) {
-        await client.query(statements[i]);
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const session = getS(cid);
+        const client = session.userUsedClient;
+        const adminPool = session.backGroundPool;
+        try {
+          if (session.cursor) {
+            await new Promise<void>((r) => session.cursor!.instance.close(() => r()));
+            session.cursor = undefined;
+          }
+
+          try {
+            const pidRes = await client.query("SELECT pg_backend_pid() as pid");
+            session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
+          } catch {
+            session.runningQueryPid = (client as any).processID;
+          }
+
+          for (let i = 0; i < statements.length - 1; i++) {
+            await client.query(statements[i]);
+          }
+
+          const lastStatement = statements[statements.length - 1];
+          const cursor = client.query(new Cursor(lastStatement, [], { rowMode: "array" }));
+          const rows = await new Promise<any[]>((resolve, reject) => {
+            cursor.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
+          });
+
+          const fields = (cursor as any)._result?.fields;
+          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, lastStatement) : [];
+          const isDone = rows.length < batchSize;
+
+          if (isDone) {
+            await new Promise<void>((r) => cursor.close(() => r()));
+            session.runningQueryPid = undefined;
+          } else {
+            session.cursor = { instance: cursor, columns: columnsInfo, isDone: false };
+          }
+
+          return { rows, columns: columnsInfo, hasMore: !isDone };
+        } catch (e) {
+          lastErr = e;
+          if (attempt === 0 && isPgUserClientDeadError(e)) {
+            await recreateUserUsedClient(cid);
+            continue;
+          }
+          throw e;
+        }
       }
-
-      const lastStatement = statements[statements.length - 1];
-      const cursor = client.query(new Cursor(lastStatement, [], { rowMode: "array" }));
-      const rows = await new Promise<any[]>((resolve, reject) => {
-        cursor.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
-      });
-
-      const fields = (cursor as any)._result?.fields;
-      const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, lastStatement) : [];
-      const isDone = rows.length < batchSize;
-
-      if (isDone) {
-        await new Promise<void>((r) => cursor.close(() => r()));
-        session.runningQueryPid = undefined;
-      } else {
-        session.cursor = { instance: cursor, columns: columnsInfo, isDone: false };
-      }
-
-      return { rows, columns: columnsInfo, hasMore: !isDone };
+      throw lastErr;
     }
 
     case "postgres/query-stream-more": {
@@ -710,9 +795,19 @@ export async function handleApiRequest<M extends ApiMethod>(
       if (!session.cursor || session.cursor.isDone) return { rows: [], hasMore: false };
 
       const { cursor } = session;
-      const rows = await new Promise<any[]>((resolve, reject) => {
-        cursor.instance.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
-      });
+      let rows: any[];
+      try {
+        rows = await new Promise<any[]>((resolve, reject) => {
+          cursor.instance.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
+        });
+      } catch (e) {
+        if (isPgUserClientDeadError(e)) {
+          session.cursor = undefined;
+          session.runningQueryPid = undefined;
+          await recreateUserUsedClient(cid);
+        }
+        throw e;
+      }
       const isDone = rows.length < batchSize;
 
       if (isDone) {
@@ -1298,27 +1393,34 @@ export async function handleApiRequest<M extends ApiMethod>(
     case "postgres/query": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      const session = getS(cid);
-      const client = session.userUsedClient;
-
-      if ((client as any).processID) session.runningQueryPid = (client as any).processID;
-
-      try {
-        sendSSEMessage(cid, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
-        const result = await client.query({ text: query, rowMode: "array" });
-        session.runningQueryPid = undefined;
-        sendSSEMessage(cid, {
-          type: "INFO",
-          message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`,
-          timestamp: Date.now(),
-        });
-        const columnsInfo = await calculateColumnEditable(client, result.fields);
-        return { result: result.rows, columns: columnsInfo };
-      } catch (e: any) {
-        session.runningQueryPid = undefined;
-        sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
-        throw e;
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const session = getS(cid);
+        const client = session.userUsedClient;
+        if ((client as any).processID) session.runningQueryPid = (client as any).processID;
+        try {
+          sendSSEMessage(cid, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
+          const result = await client.query({ text: query, rowMode: "array" });
+          session.runningQueryPid = undefined;
+          sendSSEMessage(cid, {
+            type: "INFO",
+            message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`,
+            timestamp: Date.now(),
+          });
+          const columnsInfo = await calculateColumnEditable(client, result.fields);
+          return { result: result.rows, columns: columnsInfo };
+        } catch (e: any) {
+          session.runningQueryPid = undefined;
+          if (attempt === 0 && isPgUserClientDeadError(e)) {
+            lastErr = e;
+            await recreateUserUsedClient(cid);
+            continue;
+          }
+          sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
+          throw e;
+        }
       }
+      throw lastErr;
     }
 
     case "postgres/table-comment": {
