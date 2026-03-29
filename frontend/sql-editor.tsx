@@ -359,8 +359,8 @@ export interface SqlEditorProps {
   onAiPreviewDock?: (payload: null | { onAccept: () => void; onReject: () => void }) => void;
   /** 生成并复制 diff prompt（驱动免费 AI 输出 diff JSON） */
   onAiCopyDiffPrompt?: (sql: string) => void;
-  /** 编辑器就绪后回调，可调用 api.format() 触发格式化（供工具栏按钮用） */
-  onEditorReady?: (api: { format: () => void }) => void;
+  /** 编辑器就绪后回调：format / insertQueryHistoryAtEnd 均走 executeEdits，保留 Ctrl+Z */
+  onEditorReady?: (api: { format: () => void; insertQueryHistoryAtEnd: (sql: string) => void }) => void;
   placeholder?: string;
   disabled?: boolean;
   class?: string;
@@ -1938,6 +1938,22 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
     };
 
+    /** 与查询历史「仅填入」一致：(全文).trimEnd() + "\\n\\n" + sql；避免 setValue 清空撤销栈 */
+    const insertQueryHistoryAtEnd = (sqlChunk: string) => {
+      const model = editor?.getModel();
+      if (!model || !editor) return;
+      const prev = model.getValue();
+      const trimmed = prev.trimEnd();
+      const start = model.getPositionAt(trimmed.length);
+      const end = model.getPositionAt(prev.length);
+      editor.executeEdits("query-history-insert", [
+        { range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column), text: "\n\n" + sqlChunk },
+      ]);
+      const next = model.getValue();
+      if (props.onChange && next !== props.value) props.onChange(next);
+      editor.focus();
+    };
+
     editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, doFormat);
 
     // Webview 中 clipboard 受限：统一用 vscode.env.clipboard 桥接，保持单一剪贴板状态
@@ -2038,7 +2054,7 @@ export default function SqlEditor(props: SqlEditorProps) {
 
     registerSqlEditor(container, editor);
 
-    props.onEditorReady?.({ format: doFormat });
+    props.onEditorReady?.({ format: doFormat, insertQueryHistoryAtEnd });
 
     onCleanup(() => {
       window.removeEventListener("keydown", onPreviewGlobalKeydownCapture, true);

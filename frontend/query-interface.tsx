@@ -126,7 +126,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [aiEditInstruction, setAiEditInstruction] = createSignal("补全");
   const isVscodeWebview = typeof window !== "undefined" && typeof (window as any).acquireVsCodeApi === "function";
 
-  let sqlEditorFormatApi: { format: () => void } | null = null;  // 格式化由编辑器内 executeEdits 执行，支持 Ctrl+Z
+  let sqlEditorFormatApi: { format: () => void; insertQueryHistoryAtEnd: (sql: string) => void } | null = null;
 
   // 单元格选区：Set<"row,col">，支持非连续多选（Ctrl+点击添加）
   const [selection, setSelection] = createSignal<Set<string> | null>(null);
@@ -2042,7 +2042,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 <div style={{ width: "300px", "flex-shrink": 0, overflow: "hidden" }}>
                   <QueryHistoryPanel
                     onSelect={(s) => setSql(s)}
-                    onInsertAtEnd={(s) => setSql((prev) => (prev || "").trimEnd() + "\n\n" + s)}
+                    onInsertAtEnd={(s) => {
+                      const api = sqlEditorFormatApi;
+                      if (api) api.insertQueryHistoryAtEnd(s);
+                      else setSql((prev) => (prev || "").trimEnd() + "\n\n" + s);
+                    }}
                     onExecuteOnly={(s) => runUserQuery(s)}
                     onSelectAndRun={(s) => {
                       setSql(s);
