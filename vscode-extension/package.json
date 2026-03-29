@@ -1,8 +1,8 @@
 {
   "name": "db-player",
   "displayName": "DB Player",
-  "description": "Database client (Postgres) in webview",
-  "version": "0.0.10",
+  "description": "PostgreSQL client in one webview—browse, query, and edit with less UI fragmentation than multi-panel DB extensions.",
+  "version": "0.0.12",
   "publisher": "lilr",
   "keywords": [
     "dbplayer",

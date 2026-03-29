@@ -52,16 +52,11 @@
       position: relative !important;
     }
     
-    /* 隐藏 Monaco 的其他可能的文本输入元素 */
-    .monaco-editor input[type="text"],
-    .monaco-editor input[type="search"] {
-      position: absolute !important;
-      top: -9999px !important;
-      left: -9999px !important;
-      width: 1px !important;
-      height: 1px !important;
-      opacity: 0 !important;
-    }
+    /*
+     * 不要写「.monaco-editor input[type="text"] { 移出视口 }」：主编辑输入是 textarea.inputarea（已单独处理），
+     * 而 Ctrl+K AI 对话框挂在 Monaco View Zone 里，仍在 .monaco-editor 下，会把指令输入框一并隐藏。
+     * Cursor 内嵌页无此全局样式故正常；VS Code Webview 需避免误伤。
+     */
 
     /* 确保编辑器框架正确 */
     .monaco-editor-background {
