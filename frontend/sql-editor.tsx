@@ -33,9 +33,111 @@ function ensureExecHighlightStyle() {
     .monaco-sql-codelens .sql-codelens-link:hover { color: var(--vscode-textLink-foreground, #3794ff); text-decoration: underline; }
     .monaco-sql-codelens .sql-codelens-link .sql-codelens-icon { font-size: 9px; opacity: 0.9; }
     .monaco-sql-codelens .sql-codelens-sep { color: var(--vscode-editorCodeLens-foreground, #999); opacity: 0.6; padding: 0 6px; user-select: none; }
-    .monaco-sql-ai-panel .sql-ai-diff-host .monaco-editor { outline: none !important; }
     .monaco-sql-ai-panel .sql-ai-diff-host {
       background-color: var(--vscode-editor-background, #1e1e1e);
+    }
+    /* View Zone：删除预览，行高与主编译器一致，无左侧粗条 */
+    .monaco-sql-ai-inline-red-zone {
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      background: color-mix(in srgb, var(--vscode-diffEditor-removedTextBackground, rgba(180, 60, 60, 0.35)) 88%, transparent);
+    }
+    .monaco-sql-ai-inline-red-line {
+      box-sizing: border-box;
+      font-family: var(--monaco-monospace-font, Menlo, Monaco, Consolas, monospace);
+      white-space: pre;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      padding: 0 8px 0 0;
+      margin: 0;
+      color: var(--vscode-editor-foreground, #ccc);
+    }
+    /* 主编辑器内新文行：仅绿底，无 glyph 栏（避免左侧蓝条/方块） */
+    .monaco-sql-ai-inline-add-line {
+      background-color: color-mix(in srgb, var(--vscode-diffEditor-insertedTextBackground, rgba(60, 160, 90, 0.28)) 92%, transparent) !important;
+    }
+    /* 预览：悬停条对齐 Cursor（Undo / Keep，内联快捷键略淡） */
+    .monaco-sql-ai-preview-hover-host {
+      position: absolute;
+      inset: 0;
+      z-index: 45;
+      pointer-events: none;
+    }
+    .monaco-sql-ai-preview-hover-inner {
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0;
+      border-radius: 0;
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      pointer-events: auto;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.12s ease, visibility 0.12s;
+      max-width: calc(100% - 16px);
+      flex-wrap: wrap;
+      filter: drop-shadow(0 2px 10px rgba(0, 0, 0, 0.35));
+    }
+    .monaco-sql-ai-preview-hover-inner.monaco-sql-ai-preview-hover-visible {
+      opacity: 1;
+      visibility: visible;
+    }
+    .monaco-sql-ai-preview-hover-inner button {
+      height: auto;
+      min-height: 28px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0;
+      flex-wrap: nowrap;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+    .monaco-sql-ai-preview-action {
+      color: #ffffff;
+    }
+    .monaco-sql-ai-preview-shortcut {
+      font-weight: 400;
+      letter-spacing: 0.01em;
+    }
+    .monaco-sql-ai-preview-hover-undo {
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: #2c2c2c;
+      color: #ffffff;
+    }
+    .monaco-sql-ai-preview-hover-undo .monaco-sql-ai-preview-shortcut {
+      color: rgba(255, 255, 255, 0.48);
+    }
+    .monaco-sql-ai-preview-hover-undo:hover {
+      background: #353535;
+    }
+    .monaco-sql-ai-preview-hover-keep {
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: #3d8f60;
+      color: #ffffff;
+    }
+    .monaco-sql-ai-preview-hover-keep .monaco-sql-ai-preview-shortcut {
+      color: rgba(255, 255, 255, 0.72);
+    }
+    .monaco-sql-ai-preview-hover-keep:hover {
+      background: #44986a;
+    }
+    /* 真·行内：模型内仍为旧文，整行标红删；gutter 可点接受该 hunk */
+    .monaco-sql-ai-inline-del-line {
+      background-color: color-mix(in srgb, var(--vscode-diffEditor-removedTextBackground, rgba(180, 60, 60, 0.35)) 88%, transparent) !important;
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, var(--vscode-diffEditor-removedTextForeground, #ccc) 55%, transparent);
     }
   `;
   document.head.appendChild(el);
@@ -45,7 +147,13 @@ import "./monaco-environment";
 import { getSqlSegments } from "../shared/src";
 import { registerSqlEditor } from "./monaco-paste-registry";
 import { readClipboardText, writeClipboardText } from "./clipboard";
-import { attachMonacoLayoutOnResize, attachDiffEditorLayoutOnResize } from "./monaco-resize-layout";
+import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
+import {
+  applyCursorStyleHunkToBase,
+  buildCursorStylePreview,
+  type CursorStyleHunk,
+  type RedZonePlan,
+} from "./ai-inline-diff-hunks";
 
 /** 光标所在块的文本及起止偏移（与后端 getStatements 同一套分块规则，前端多「空行」边界）。 */
 function getSqlBlockAtCursor(
@@ -68,6 +176,32 @@ function getSqlBlockAtCursor(
 /** 全文所有块的 [start, end]，与 getSqlBlockAtCursor 一致。 */
 function getAllBlocks(text: string): { start: number; end: number }[] {
   return getSqlSegments(text, { blankLineSeparator: true });
+}
+
+/**
+ * 方案 B（AI 内联预览）：不持久维护会随编辑漂移的 [start,end)，只存 `aiPreviewSnippetAnchor`（块内一点的偏移，随 Monaco change 做几何映射）。
+ * 每次 diff / 绿行 / 悬浮条需要区间时，用当前全文按「空行分块」重算包含锚点的那一段，与 `getSqlBlockAtCursor` / `getAllBlocks` 规则一致。
+ *
+ * 边界：若在预览中插入**空行**把原 SQL 块拆成两块，锚点仍落在**其中一块**内，derive 只会返回**那一块**的 [start,end)，不会自动合并两块；若需跨块需另加第二锚点或改 reject 范围策略。
+ */
+function deriveSqlBlockRangeFromAnchor(text: string, anchorOffset: number): { start: number; end: number } {
+  const len = text.length;
+  const o = Math.min(Math.max(0, anchorOffset), len);
+  const blocks = getAllBlocks(text);
+  const hit =
+    blocks.find((b) => o >= b.start && o < b.end) ?? blocks.find((b) => o >= b.start && o <= b.end);
+  if (hit) return { start: hit.start, end: hit.end };
+  const b = getSqlBlockAtCursor(text, o);
+  return { start: b.start, end: b.end };
+}
+
+/** 单次 Monaco content change 下，将「修改前」偏移映射到修改后（与 undo/redo 栈一致）。 */
+function mapOffsetThroughModelChange(a: number, rStart: number, rangeLength: number, text: string): number {
+  const rEnd = rStart + rangeLength;
+  const tLen = text.length;
+  if (a <= rStart) return a;
+  if (a >= rEnd) return a + (tLen - rangeLength);
+  return rStart + Math.min(a - rStart, tLen);
 }
 
 /** 将选区扩展为所覆盖的完整行，返回 [start,end) 偏移（含行间换行；最后一行在文末则用文档长度） */
@@ -95,17 +229,90 @@ function lineStartOffsetForOffset(model: monaco.editor.ITextModel, offset: numbe
   return model.getOffsetAt({ lineNumber: pos.lineNumber, column: 1 });
 }
 
-/** 面板宽度超过此值时使用并排 diff（与计划一致 ~560px） */
-const AI_DIFF_SIDEBYSIDE_MIN_PX = 560;
+/** 片段内「第 k 行之下」→ Monaco afterLineNumber（k=0 表示片段首行前） */
+function snippetAfterLineToModelAfterLine(snippetStartLine: number, afterSnippetLine: number): number {
+  if (afterSnippetLine <= 0) return Math.max(0, snippetStartLine - 1);
+  return snippetStartLine + afterSnippetLine - 1;
+}
 
-function computeAiDiffHostHeightPx(original: string, modified: string): number {
-  const linesA = original ? original.split("\n").length : 1;
-  const linesB = modified ? modified.split("\n").length : 1;
-  const lineCount = Math.max(linesA, linesB, 1);
-  const cap = Math.min(Math.round(window.innerHeight * 0.55), 400);
-  const minH = 160;
-  const perLine = 18;
-  return Math.min(cap, Math.max(minH, lineCount * perLine + 32));
+function isApplePlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /Mac|iPhone|iPod|iPad/i.test(navigator.platform) || navigator.userAgent.includes("Mac")
+  );
+}
+
+/** 执行 SQL 前去掉遗留 ZWNJ（旧版 accept-hunk 曾写入模型），避免不可见字符进驱动 */
+function stripAiPreviewUndoMarkers(s: string): string {
+  return s.replace(/\u200c/gu, "");
+}
+
+/** 与基线对比前统一换行与空白字符，减少「肉眼看一样」仍出 diff */
+function normalizeAiPreviewText(s: string): string {
+  return s
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/\u200c/gu, "");
+}
+
+/** 片段是否与基线实质相同（严格相等 + 多种宽松比较，应对不可见空白/行尾差异） */
+function aiPreviewSlicesSemanticallyEqual(a: string, b: string): boolean {
+  const x = normalizeAiPreviewText(a);
+  const y = normalizeAiPreviewText(b);
+  if (x === y) return true;
+  if (x.trimEnd() === y.trimEnd()) return true;
+  if (x.replace(/\s+/g, "") === y.replace(/\s+/g, "")) return true;
+  const lx = x.split("\n");
+  const ly = y.split("\n");
+  if (lx.length === ly.length) {
+    for (let i = 0; i < lx.length; i++) {
+      if (lx[i].trim() !== ly[i].trim()) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Myers 仍给出「删+增」但红区每一行与对应绿行语义相同（常见于不可见字符/行尾差异），视为无 diff。
+ */
+function aiPreviewIsSpuriousIdenticalLinesDiff(
+  currentNormalized: string,
+  redZones: RedZonePlan[],
+  hunks: CursorStyleHunk[]
+): boolean {
+  const curLines =
+    currentNormalized.length === 0 ? [] : currentNormalized.split("\n");
+  const redLines: string[] = [];
+  for (const rz of redZones) {
+    for (const line of rz.lines) redLines.push(line);
+  }
+  const greenLines: string[] = [];
+  for (const h of hunks) {
+    for (let sl = h.newStartLine1; sl < h.newEndLineExclusive; sl++) {
+      const idx = sl - 1;
+      if (idx >= 0 && idx < curLines.length) greenLines.push(curLines[idx]);
+    }
+  }
+  if (redLines.length === 0 || greenLines.length === 0) return false;
+  if (redLines.length !== greenLines.length) return false;
+  for (let i = 0; i < redLines.length; i++) {
+    if (!aiPreviewSlicesSemanticallyEqual(redLines[i], greenLines[i])) return false;
+  }
+  return true;
+}
+
+/** AI 预览条上展示的快捷键文案（与 addCommand 一致） */
+function aiPreviewShortcutLabels() {
+  const apple = isApplePlatform();
+  return {
+    reject: apple ? "⌘N" : "Ctrl+N",
+    accept: apple ? "⇧⌘Y" : "Ctrl+Shift+Y",
+    /** 接受当前 hunk；与拒绝 Ctrl+N 错开 */
+    hunk: apple ? "⇧⌘N" : "Ctrl+Shift+N",
+  };
 }
 
 export interface SqlEditorProps {
@@ -148,6 +355,8 @@ export interface SqlEditorProps {
   onAiEditInstructionChange?: (value: string) => void;
   /** Ctrl+K / AI 编辑流程阶段（loading 时父级可显示全局 loading） */
   onAiEditPhaseChange?: (phase: "idle" | "instruct" | "loading" | "preview") => void;
+  /** @deprecated 预览接受/拒绝已改为编辑器内悬停条；传入 null 仅用于兼容父级清理 */
+  onAiPreviewDock?: (payload: null | { onAccept: () => void; onReject: () => void }) => void;
   /** 生成并复制 diff prompt（驱动免费 AI 输出 diff JSON） */
   onAiCopyDiffPrompt?: (sql: string) => void;
   /** 编辑器就绪后回调，可调用 api.format() 触发格式化（供工具栏按钮用） */
@@ -164,6 +373,8 @@ export default function SqlEditor(props: SqlEditorProps) {
   let detachMonacoLayout: (() => void) | undefined;
   /** 刚通过 executeEdits 应用的格式化结果，effect 里若 val 等于它则跳过 setValue，避免清空撤销栈 */
   let lastFormattedValue: string | null = null;
+  /** AI 内联预览期间禁止 props→setValue，否则会替换 model、清空撤销栈，Ctrl+Z 无法回到预览态 */
+  let aiPreviewExternalSyncBlocked = false;
 
   onMount(() => {
     ensureExecHighlightStyle();
@@ -183,6 +394,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       lineNumbers: "on",
       wordWrap: "on",
       automaticLayout: false,
+      glyphMargin: true,
     });
     detachMonacoLayout = attachMonacoLayoutOnResize(container, editor);
 
@@ -200,11 +412,14 @@ export default function SqlEditor(props: SqlEditorProps) {
     const blockRunZoneIds: string[] = [];
     const highlightDecorations = editor.createDecorationsCollection();
     const aiSentRangeDecorations = editor.createDecorationsCollection();
+    const aiInlinePreviewDecorations = editor.createDecorationsCollection();
     let lastAiEditInstruction = "补全";
 
     type AiPanelPhase = "closed" | "instruct" | "loading" | "preview";
     let aiPanelPhase: AiPanelPhase = "closed";
     let aiRangeOffsets: { start: number; end: number } | null = null;
+    /** 预览阶段：仅维护块锚点（随编辑几何映射）；[start,end) 每次用 deriveSqlBlockRangeFromAnchor 从模型推导 */
+    let aiPreviewSnippetAnchor: number | null = null;
     /** 打开面板时主编辑器光标偏移；View Zone 插在「该行的上一行之后」（即对话框在该行上方） */
     let aiAnchorOffset: number | null = null;
     let aiOriginalSnippet = "";
@@ -216,33 +431,19 @@ export default function SqlEditor(props: SqlEditorProps) {
     let aiZoneGutter: HTMLDivElement | null = null;
     let aiInstructionResolve: ((value: string | null) => void) | null = null;
     let aiPreviewResolve: ((accepted: boolean) => void) | null = null;
-    const resolveAiPreview = (accepted: boolean) => {
-      if (!aiPreviewResolve) return;
-      const r = aiPreviewResolve;
-      aiPreviewResolve = null;
-      r(accepted);
-    };
-    let aiDiffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
-    let aiOriginalModel: monaco.editor.ITextModel | null = null;
-    let aiModifiedModel: monaco.editor.ITextModel | null = null;
     let panelResizeObs: ResizeObserver | null = null;
     /** 将 zone 同步移出 RO 回调；在回调里改尺寸会触发 undelivered notifications，用 macrotask 合批 */
     let aiPanelResizeFlushHandle: ReturnType<typeof setTimeout> | null = null;
-    let detachDiffLayout: (() => void) | null = null;
-
+    /** Cursor 式：红 View Zone（基线删除行）、拒绝时恢复的原文、diff 左侧基线（可变，接受 hunk 时更新） */
+    let aiInlineRedZoneIds: string[] = [];
+    let aiPreviewOldTextForRevert: string | null = null;
+    let aiDiffBaseText: string | null = null;
+    let aiRenderedHunks: CursorStyleHunk[] = [];
+    let aiTrueInlineRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+    /** executeEdits 触发的 content 事件：勿与「接受后撤销恢复预览」递归 */
+    let aiPreviewProgrammaticMutation = false;
     const emitAiPhaseToParent = (phase: "idle" | "instruct" | "loading" | "preview") => {
       props.onAiEditPhaseChange?.(phase);
-    };
-
-    const disposeAiDiff = () => {
-      detachDiffLayout?.();
-      detachDiffLayout = null;
-      aiDiffEditor?.dispose();
-      aiDiffEditor = null;
-      aiOriginalModel?.dispose();
-      aiOriginalModel = null;
-      aiModifiedModel?.dispose();
-      aiModifiedModel = null;
     };
 
     const removeAiSpacerZone = () => {
@@ -261,7 +462,6 @@ export default function SqlEditor(props: SqlEditorProps) {
       diffSection.style.display = "none";
       loadingRow.style.display = "none";
       diffHost.style.display = "none";
-      previewRow.style.display = "none";
     };
 
     const setUiForLoading = () => {
@@ -269,18 +469,18 @@ export default function SqlEditor(props: SqlEditorProps) {
       diffSection.style.display = "flex";
       loadingRow.style.display = "block";
       diffHost.style.display = "none";
-      previewRow.style.display = "none";
     };
 
     const setUiForPreview = () => {
       instructionRow.style.display = "none";
       diffSection.style.display = "flex";
       loadingRow.style.display = "none";
-      diffHost.style.display = "block";
-      previewRow.style.display = "flex";
+      diffHost.style.display = "none";
+      diffHost.style.height = "0";
+      diffHost.style.minHeight = "0";
     };
 
-    // Ctrl+K / AI Edit：Cursor 式 View Zone（撑开行距、随文档滚动）+ 内嵌 Diff
+    // Ctrl+K / AI Edit：View Zone 工具条 + 主编译器内 Cursor 式内联红/绿预览
     container.style.position = "relative";
     const aiEditPanel = document.createElement("div");
     aiEditPanel.className = "monaco-sql-ai-panel";
@@ -347,26 +547,6 @@ export default function SqlEditor(props: SqlEditorProps) {
     const diffSection = document.createElement("div");
     // 不用 flex:1：在 View Zone 内父级高度由 Monaco 指派时，子项 flex:1 会与「测高度→改 zone」形成正反馈，导致高度持续上涨
     diffSection.style.cssText = "display:none;flex-direction:column;gap:6px;flex-shrink:0;min-width:0";
-    const previewRow = document.createElement("div");
-    previewRow.style.cssText =
-      "display:none;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;flex-shrink:0;width:100%";
-    const previewHint = document.createElement("span");
-    previewHint.textContent = "Ctrl+Enter 接受 · Esc 拒绝";
-    previewHint.style.cssText =
-      "font-size:11px;color:var(--vscode-descriptionForeground,#858585);margin-right:auto;flex:1;min-width:120px";
-    const rejectPreviewBtn = document.createElement("button");
-    rejectPreviewBtn.type = "button";
-    rejectPreviewBtn.textContent = "拒绝";
-    rejectPreviewBtn.title = "拒绝修改 (Esc)";
-    rejectPreviewBtn.style.cssText =
-      "height:28px;padding:0 10px;border:1px solid var(--vscode-widget-border,#454545);border-radius:6px;background:transparent;color:var(--vscode-foreground,#ddd);cursor:pointer;font-size:12px";
-    const acceptPreviewBtn = document.createElement("button");
-    acceptPreviewBtn.type = "button";
-    acceptPreviewBtn.textContent = "接受";
-    acceptPreviewBtn.title = "接受修改 (Ctrl+Enter)";
-    acceptPreviewBtn.style.cssText =
-      "height:28px;padding:0 10px;border:none;border-radius:6px;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);cursor:pointer;font-size:12px";
-    previewRow.append(previewHint, rejectPreviewBtn, acceptPreviewBtn);
 
     const loadingRow = document.createElement("div");
     loadingRow.textContent = "生成中…";
@@ -376,24 +556,168 @@ export default function SqlEditor(props: SqlEditorProps) {
     diffHost.className = "sql-ai-diff-host";
     diffHost.style.cssText =
       "display:none;min-height:160px;width:100%;overflow:hidden;border:1px solid var(--vscode-widget-border,#454545);border-radius:4px;box-sizing:border-box;background-color:var(--vscode-editor-background,#1e1e1e)";
-    diffSection.append(previewRow, loadingRow, diffHost);
+    diffSection.append(loadingRow, diffHost);
 
-    /** 勿在嵌套 Diff 子编辑器上 addCommand(Ctrl+Enter)：会与主 SQL 编辑器的全局快捷键冲突，dispose 后主编辑器仍可能无法执行查询 */
+    const aiPreviewHoverHost = document.createElement("div");
+    aiPreviewHoverHost.className = "monaco-sql-ai-preview-hover-host";
+    const aiPreviewHoverInner = document.createElement("div");
+    aiPreviewHoverInner.className = "monaco-sql-ai-preview-hover-inner";
+    const hoverRejectPreviewBtn = document.createElement("button");
+    hoverRejectPreviewBtn.type = "button";
+    hoverRejectPreviewBtn.className = "monaco-sql-ai-preview-hover-undo";
+    const hoverAcceptPreviewBtn = document.createElement("button");
+    hoverAcceptPreviewBtn.type = "button";
+    hoverAcceptPreviewBtn.className = "monaco-sql-ai-preview-hover-keep";
+    const fillAiPreviewHoverButtonLabels = () => {
+      const L = aiPreviewShortcutLabels();
+      hoverRejectPreviewBtn.replaceChildren();
+      const undoWord = document.createElement("span");
+      undoWord.className = "monaco-sql-ai-preview-action";
+      undoWord.textContent = "Undo";
+      const undoKeys = document.createElement("span");
+      undoKeys.className = "monaco-sql-ai-preview-shortcut";
+      undoKeys.textContent = ` ${L.reject}`;
+      hoverRejectPreviewBtn.append(undoWord, undoKeys);
+      hoverRejectPreviewBtn.title = `Undo (${L.reject})`;
+
+      hoverAcceptPreviewBtn.replaceChildren();
+      const keepWord = document.createElement("span");
+      keepWord.className = "monaco-sql-ai-preview-action";
+      keepWord.textContent = "Keep";
+      const keepKeys = document.createElement("span");
+      keepKeys.className = "monaco-sql-ai-preview-shortcut";
+      keepKeys.textContent = ` ${L.accept}`;
+      hoverAcceptPreviewBtn.append(keepWord, keepKeys);
+      hoverAcceptPreviewBtn.title = `Keep all (${L.accept}). Accept hunk: ${L.hunk}`;
+    };
+    fillAiPreviewHoverButtonLabels();
+    aiPreviewHoverInner.append(hoverRejectPreviewBtn, hoverAcceptPreviewBtn);
+    aiPreviewHoverHost.appendChild(aiPreviewHoverInner);
+    container.appendChild(aiPreviewHoverHost);
+
+    const hideAiPreviewHoverBar = () => {
+      aiPreviewHoverInner.classList.remove("monaco-sql-ai-preview-hover-visible");
+    };
+
+    const computeAiPreviewHoverAnchorVp = ():
+      | NonNullable<ReturnType<monaco.editor.IStandaloneCodeEditor["getScrolledVisiblePosition"]>>
+      | null => {
+      if (!editor || aiPanelPhase !== "preview") return null;
+      const model = editor.getModel();
+      if (!model) return null;
+      const derived = getPreviewSnippetRangeFromModel();
+      if (!derived) return null;
+      let { start, end } = derived;
+      if (end < start) [start, end] = [end, start];
+      const maxLen = model.getValueLength();
+      const safeStart = Math.min(Math.max(0, start), maxLen);
+      const safeEndOff = Math.max(safeStart, Math.min(end - 1, maxLen));
+      const sPos = model.getPositionAt(safeStart);
+      const ePos = model.getPositionAt(safeEndOff);
+      const startLine = sPos.lineNumber;
+      const endLine = ePos.lineNumber;
+      const visibleRanges = editor.getVisibleRanges();
+      let rangeIntersectsViewport = false;
+      for (const vr of visibleRanges) {
+        if (vr.endLineNumber < startLine || vr.startLineNumber > endLine) continue;
+        rangeIntersectsViewport = true;
+        break;
+      }
+      if (!rangeIntersectsViewport) return null;
+
+      for (let ln = endLine; ln >= startLine; ln--) {
+        const v = editor.getScrolledVisiblePosition({ lineNumber: ln, column: 1 });
+        if (v) return v;
+      }
+      return null;
+    };
+
+    const positionAiPreviewHoverBar = () => {
+      if (!editor || aiPanelPhase !== "preview" || !getPreviewSnippetRangeFromModel()) return;
+      const model = editor.getModel();
+      if (!model) return;
+      const ed = editor.getDomNode();
+      if (!ed) return;
+      const inner = aiPreviewHoverInner;
+      const vp = computeAiPreviewHoverAnchorVp();
+      const layout = editor.getLayoutInfo();
+      const edRect = ed.getBoundingClientRect();
+      const contRect = container.getBoundingClientRect();
+      inner.style.bottom = "auto";
+      inner.style.right = "auto";
+      if (!vp) {
+        inner.classList.remove("monaco-sql-ai-preview-hover-visible");
+        return;
+      }
+      const barH = inner.offsetHeight || 36;
+      const barW = inner.offsetWidth || 240;
+      let top = edRect.top - contRect.top + vp.top + vp.height + 4;
+      if (top + barH > container.clientHeight - 4) {
+        top = edRect.top - contRect.top + vp.top - barH - 4;
+      }
+      top = Math.max(4, Math.min(top, container.clientHeight - barH - 4));
+      const left = edRect.left - contRect.left + layout.contentLeft + layout.contentWidth - barW - 6;
+      inner.style.top = `${top}px`;
+      inner.style.left = `${Math.max(4, left)}px`;
+    };
+
+    /** 无红区且无绿行时预览条不应出现；否则 mousemove 会反复 bump 出条 */
+    const hasAiTrueInlinePreviewDiffUi = () =>
+      aiInlineRedZoneIds.length > 0 ||
+      aiRenderedHunks.some((h) => h.newStartLine1 < h.newEndLineExclusive);
+
+    const bumpAiPreviewHoverBar = () => {
+      if (aiPanelPhase !== "preview" || !aiPreviewResolve) return;
+      if (!hasAiTrueInlinePreviewDiffUi()) {
+        hideAiPreviewHoverBar();
+        return;
+      }
+      /* diff 滚出视口时必须隐藏，仅 return 会留下 visible 类，条一直不消失 */
+      if (!computeAiPreviewHoverAnchorVp()) {
+        hideAiPreviewHoverBar();
+        return;
+      }
+      aiPreviewHoverInner.classList.add("monaco-sql-ai-preview-hover-visible");
+      positionAiPreviewHoverBar();
+    };
+
+    hoverRejectPreviewBtn.addEventListener("click", () => resolveAiPreview(false));
+    hoverAcceptPreviewBtn.addEventListener("click", () => resolveAiPreview(true));
+    const onEditorSurfacePointerMove = () => bumpAiPreviewHoverBar();
+    container.addEventListener("mousemove", onEditorSurfacePointerMove);
+
+    /** 预览区捕获键盘（无嵌套 Monaco）：Ctrl+N 拒绝，⇧⌘Y 全部接受，⇧⌘N 接受当前 hunk */
     diffHost.addEventListener(
       "keydown",
       (e) => {
         if (aiPanelPhase !== "preview" || !aiPreviewResolve) return;
-        if (e.key === "Escape") {
+        if (
+          (e.key === "n" || e.key === "N") &&
+          (e.ctrlKey || e.metaKey) &&
+          e.shiftKey &&
+          !e.altKey
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          acceptFirstAiPreviewHunk();
+          return;
+        }
+        if (
+          (e.key === "n" || e.key === "N") &&
+          (e.ctrlKey || e.metaKey) &&
+          !e.altKey &&
+          !e.shiftKey
+        ) {
           e.preventDefault();
           e.stopPropagation();
           resolveAiPreview(false);
           return;
         }
         if (
-          e.key === "Enter" &&
+          (e.key === "y" || e.key === "Y") &&
           (e.ctrlKey || e.metaKey) &&
-          !e.altKey &&
-          !e.shiftKey
+          e.shiftKey &&
+          !e.altKey
         ) {
           e.preventDefault();
           e.stopPropagation();
@@ -406,20 +730,198 @@ export default function SqlEditor(props: SqlEditorProps) {
     aiEditPanel.append(instructionRow, diffSection);
     container.appendChild(aiEditPanel);
 
-    const applyDiffSideBySideFromWidth = () => {
-      if (!aiDiffEditor) return;
-      const w = diffHost.getBoundingClientRect().width;
-      try {
-        const sideBySide = w >= AI_DIFF_SIDEBYSIDE_MIN_PX;
-        aiDiffEditor.updateOptions({ renderSideBySide: sideBySide, compactMode: !sideBySide });
-      } catch {
-        /* disposed */
+    const disposeAiDiff = () => {
+      diffHost.innerHTML = "";
+    };
+
+    const clearAiInlineRedZonesOnly = () => {
+      if (editor && aiInlineRedZoneIds.length > 0) {
+        const ids = [...aiInlineRedZoneIds];
+        aiInlineRedZoneIds = [];
+        editor.changeViewZones((accessor) => {
+          for (const id of ids) accessor.removeZone(id);
+        });
+      } else {
+        aiInlineRedZoneIds = [];
       }
-      try {
-        aiDiffEditor.layout();
-      } catch {
-        /* disposed */
+    };
+
+    const clearAiInlineMonacoPreview = () => {
+      if (aiTrueInlineRebuildTimer != null) {
+        clearTimeout(aiTrueInlineRebuildTimer);
+        aiTrueInlineRebuildTimer = null;
       }
+      hideAiPreviewHoverBar();
+      aiInlinePreviewDecorations.clear();
+      clearAiInlineRedZonesOnly();
+      aiPreviewOldTextForRevert = null;
+      aiDiffBaseText = null;
+      aiRenderedHunks = [];
+      aiPreviewSnippetAnchor = null;
+    };
+
+    /** 预览内当前 SQL 块在模型中的 [start,end)；非预览返回 null */
+    const getPreviewSnippetRangeFromModel = (): { start: number; end: number } | null => {
+      if (aiPanelPhase !== "preview" || aiPreviewSnippetAnchor == null || !editor) return null;
+      const model = editor.getModel();
+      if (!model) return null;
+      return deriveSqlBlockRangeFromAnchor(model.getValue(), aiPreviewSnippetAnchor);
+    };
+
+    const syncAiTrueInlinePreview = () => {
+      if (aiPanelPhase !== "preview" || !editor || aiDiffBaseText == null) return;
+      const model = editor.getModel();
+      if (!model || aiPreviewSnippetAnchor == null) return;
+
+      const derived = deriveSqlBlockRangeFromAnchor(model.getValue(), aiPreviewSnippetAnchor);
+      let { start, end } = derived;
+      if (end < start) [start, end] = [end, start];
+      const maxLen = model.getValueLength();
+      start = Math.min(Math.max(0, start), maxLen);
+      end = Math.min(Math.max(0, end), maxLen);
+      if (start > end) [start, end] = [end, start];
+
+      const current = model.getValue().slice(start, end);
+      const base = aiDiffBaseText;
+      const currentN = normalizeAiPreviewText(current);
+      const baseN = normalizeAiPreviewText(base);
+
+      const clearPreviewDiffUi = () => {
+        aiInlinePreviewDecorations.clear();
+        clearAiInlineRedZonesOnly();
+        aiRenderedHunks = [];
+      };
+
+      /* 无可见 diff：立即结束预览。preview 阶段不在 Monaco 撤销栈里，只有文档编辑会进栈；Z/Shift+Z 只改文本，若仍卡在 preview，敲字又会画出 diff。 */
+      const exitPreviewWhenNoDiffUi = () => {
+        clearPreviewDiffUi();
+        hideAiPreviewHoverBar();
+        if (aiPreviewResolve) resolveAiPreview(true);
+      };
+
+      if (aiPreviewSlicesSemanticallyEqual(base, current)) {
+        exitPreviewWhenNoDiffUi();
+        return;
+      }
+
+      const { redZones, hunks } = buildCursorStylePreview(baseN, currentN);
+      const hasRed = redZones.some((rz) => rz.lines.length > 0);
+      const hasGreen = hunks.some((h) => h.newStartLine1 < h.newEndLineExclusive);
+      if (!hasRed && !hasGreen) {
+        exitPreviewWhenNoDiffUi();
+        return;
+      }
+      if (hasRed && hasGreen && aiPreviewIsSpuriousIdenticalLinesDiff(currentN, redZones, hunks)) {
+        exitPreviewWhenNoDiffUi();
+        return;
+      }
+
+      const snippetStartLine = model.getPositionAt(start).lineNumber;
+
+      aiInlinePreviewDecorations.clear();
+      clearAiInlineRedZonesOnly();
+      aiRenderedHunks = hunks.slice();
+
+      const decos: monaco.editor.IModelDeltaDecoration[] = [];
+      const lh = Math.max(8, editor.getOption(monaco.editor.EditorOption.lineHeight));
+      const fontSize = editor.getOption(monaco.editor.EditorOption.fontSize);
+      const zoneSpecs: Array<{
+        afterLineNumber: number;
+        heightInPx: number;
+        domNode: HTMLDivElement;
+      }> = [];
+
+      for (const rz of redZones) {
+        const afterLine = snippetAfterLineToModelAfterLine(snippetStartLine, rz.afterSnippetLine);
+        const redRoot = document.createElement("div");
+        redRoot.className = "monaco-sql-ai-inline-red-zone";
+        redRoot.style.display = "flex";
+        redRoot.style.flexDirection = "column";
+        redRoot.style.gap = "0";
+        for (const line of rz.lines) {
+          const row = document.createElement("div");
+          row.className = "monaco-sql-ai-inline-red-line";
+          row.textContent = line;
+          row.style.height = `${lh}px`;
+          row.style.lineHeight = `${lh}px`;
+          row.style.fontSize = `${fontSize}px`;
+          redRoot.appendChild(row);
+        }
+        const zoneHeight = Math.ceil(rz.lines.length * lh);
+        redRoot.style.height = `${zoneHeight}px`;
+        redRoot.style.minHeight = `${zoneHeight}px`;
+        zoneSpecs.push({ afterLineNumber: afterLine, heightInPx: zoneHeight, domNode: redRoot });
+      }
+
+      for (const h of hunks) {
+        const g0 = h.newStartLine1;
+        const g1 = h.newEndLineExclusive;
+        if (g0 < g1) {
+          for (let sl = g0; sl < g1; sl++) {
+            const modelLine = snippetStartLine + sl - 1;
+            if (modelLine < 1 || modelLine > model.getLineCount()) continue;
+            decos.push({
+              range: new monaco.Range(modelLine, 1, modelLine, model.getLineMaxColumn(modelLine)),
+              options: {
+                isWholeLine: true,
+                className: "monaco-sql-ai-inline-add-line",
+              },
+            });
+          }
+        }
+      }
+
+      aiInlinePreviewDecorations.set(decos);
+      if (zoneSpecs.length > 0 && editor) {
+        editor.changeViewZones((accessor) => {
+          for (const z of zoneSpecs) {
+            aiInlineRedZoneIds.push(
+              accessor.addZone({
+                afterLineNumber: z.afterLineNumber,
+                heightInPx: z.heightInPx,
+                domNode: z.domNode,
+                suppressMouseDown: true,
+              })
+            );
+          }
+        });
+      }
+      bumpAiPreviewHoverBar();
+    };
+
+    function resolveAiPreview(accepted: boolean): void {
+      if (!aiPreviewResolve) return;
+      const r = aiPreviewResolve;
+      aiPreviewResolve = null;
+      r(accepted);
+    }
+
+    const scheduleRefreshAiTrueInlinePreview = () => {
+      if (aiTrueInlineRebuildTimer != null) clearTimeout(aiTrueInlineRebuildTimer);
+      aiTrueInlineRebuildTimer = setTimeout(() => {
+        aiTrueInlineRebuildTimer = null;
+        syncAiTrueInlinePreview();
+      }, 0);
+    };
+
+    const acceptAiPreviewHunk = (hunkIndex: number) => {
+      if (!editor || aiPanelPhase !== "preview" || aiPreviewSnippetAnchor == null || aiDiffBaseText == null) return;
+      const model = editor.getModel();
+      if (!model) return;
+      const h = aiRenderedHunks[hunkIndex];
+      if (!h) return;
+      let { start, end } = deriveSqlBlockRangeFromAnchor(model.getValue(), aiPreviewSnippetAnchor);
+      if (end < start) [start, end] = [end, start];
+      const maxLen = model.getValueLength();
+      start = Math.min(Math.max(0, start), maxLen);
+      end = Math.min(Math.max(0, end), maxLen);
+      const current = model.getValue().slice(start, end);
+      aiDiffBaseText = applyCursorStyleHunkToBase(aiDiffBaseText, current, h);
+      syncAiTrueInlinePreview();
+    };
+
+    const acceptFirstAiPreviewHunk = () => {
+      if (aiRenderedHunks.length > 0) acceptAiPreviewHunk(0);
     };
 
     const applyAiPanelStylesDockedHidden = () => {
@@ -501,6 +1003,8 @@ export default function SqlEditor(props: SqlEditorProps) {
     };
 
     const syncAiPanelViewZone = () => {
+      /* 预览阶段 AI 面板已移出 View Zone；再 sync 会用隐藏的 aiZoneOuter 误 addZone，出现空白条 */
+      if (aiPanelPhase === "preview") return;
       const zoneRoot = aiZoneOuter;
       if (!editor || aiPanelPhase === "closed" || aiAnchorOffset == null || !zoneRoot) return;
       const model = editor.getModel();
@@ -556,7 +1060,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
     };
 
-    /** 当前焦点是否在 AI 面板 DOM 内（含内嵌 Diff 的 Monaco） */
+    /** 当前焦点是否在 AI 面板 DOM 内 */
     const isFocusInsideAiPanel = (): boolean => {
       const ae = document.activeElement;
       return !!(ae && aiEditPanel.contains(ae));
@@ -574,10 +1078,6 @@ export default function SqlEditor(props: SqlEditorProps) {
         aiEditInput.focus({ preventScroll: true });
         aiEditInput.select();
       };
-      const focusPreview = () => {
-        acceptPreviewBtn.focus({ preventScroll: true });
-      };
-
       if (aiPanelPhase === "instruct") {
         if (aggressive) {
           requestAnimationFrame(() => {
@@ -609,20 +1109,8 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
 
       if (aiPanelPhase === "preview") {
-        focusPreview();
-        requestAnimationFrame(() => {
-          syncAiPanelViewZone();
-          if (document.activeElement !== acceptPreviewBtn) {
-            blurMonacoTextInput();
-            focusPreview();
-          }
-        });
-        setTimeout(() => {
-          if (document.activeElement !== acceptPreviewBtn) {
-            blurMonacoTextInput();
-            focusPreview();
-          }
-        }, 40);
+        blurMonacoTextInput();
+        editor?.focus();
         return;
       }
 
@@ -632,12 +1120,15 @@ export default function SqlEditor(props: SqlEditorProps) {
     };
 
     const closeAiPanel = () => {
+      aiPreviewExternalSyncBlocked = false;
       if (aiPanelResizeFlushHandle != null) {
         clearTimeout(aiPanelResizeFlushHandle);
         aiPanelResizeFlushHandle = null;
       }
       panelResizeObs?.disconnect();
       panelResizeObs = null;
+      props.onAiPreviewDock?.(null);
+      clearAiInlineMonacoPreview();
       disposeAiDiff();
       removeAiSpacerZone();
       if (aiEditPanel.parentNode !== container) {
@@ -661,6 +1152,10 @@ export default function SqlEditor(props: SqlEditorProps) {
     /** 将要发给 AI 的 [start,end) 范围高亮（与 editor 选区风格接近） */
     const refreshAiSentRangeHighlight = () => {
       if (!editor || aiPanelPhase === "closed" || !aiRangeOffsets) {
+        aiSentRangeDecorations.clear();
+        return;
+      }
+      if (aiPanelPhase === "preview") {
         aiSentRangeDecorations.clear();
         return;
       }
@@ -752,9 +1247,6 @@ export default function SqlEditor(props: SqlEditorProps) {
       closeAiPanel();
     });
 
-    acceptPreviewBtn.addEventListener("click", () => resolveAiPreview(true));
-    rejectPreviewBtn.addEventListener("click", () => resolveAiPreview(false));
-
     const isCtrlCmdK = (e: KeyboardEvent) =>
       (e.key === "k" || e.key === "K") &&
       (e.ctrlKey || e.metaKey) &&
@@ -765,19 +1257,40 @@ export default function SqlEditor(props: SqlEditorProps) {
       if (
         aiPanelPhase === "preview" &&
         aiPreviewResolve &&
-        e.key === "Enter" &&
+        (e.key === "n" || e.key === "N") &&
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        acceptFirstAiPreviewHunk();
+        return;
+      }
+      if (
+        aiPanelPhase === "preview" &&
+        aiPreviewResolve &&
+        (e.key === "n" || e.key === "N") &&
         (e.ctrlKey || e.metaKey) &&
         !e.altKey &&
         !e.shiftKey
       ) {
         e.preventDefault();
         e.stopPropagation();
-        resolveAiPreview(true);
+        resolveAiPreview(false);
         return;
       }
-      if (e.key === "Escape" && aiPanelPhase === "preview" && aiPreviewResolve) {
+      if (
+        aiPanelPhase === "preview" &&
+        aiPreviewResolve &&
+        (e.key === "y" || e.key === "Y") &&
+        (e.ctrlKey || e.metaKey) &&
+        e.shiftKey &&
+        !e.altKey
+      ) {
         e.preventDefault();
-        resolveAiPreview(false);
+        e.stopPropagation();
+        resolveAiPreview(true);
         return;
       }
       if (isCtrlCmdK(e) && aiPanelPhase !== "closed" && editor) {
@@ -796,59 +1309,66 @@ export default function SqlEditor(props: SqlEditorProps) {
           aiPanelResizeFlushHandle = null;
           if (aiPanelPhase === "closed" || !panelResizeObs) return;
           syncAiPanelViewZone();
-          applyDiffSideBySideFromWidth();
         }, 0);
       });
       panelResizeObs.observe(aiEditPanel);
     };
 
     const showDiffPreview = (original: string, modified: string): Promise<boolean> => {
+      clearAiInlineMonacoPreview();
       disposeAiDiff();
-      diffHost.innerHTML = "";
-      const currentTheme = getTheme()?.monacoTheme ?? "vs-dark";
 
+      if (!editor) return Promise.resolve(false);
+      const model = editor.getModel();
+      if (!model || !aiRangeOffsets) return Promise.resolve(false);
+
+      let { start, end } = aiRangeOffsets;
+      if (end < start) [start, end] = [end, start];
+      const maxLen = model.getValueLength();
+      if (start > maxLen) return Promise.resolve(false);
+      end = Math.min(end, maxLen);
+      aiPreviewExternalSyncBlocked = true;
+
+      const startPos = model.getPositionAt(start);
+      const endPos = model.getPositionAt(end);
+      const replaceRange = monaco.Range.fromPositions(startPos, endPos);
+      model.pushStackElement();
+      editor.executeEdits("ai-inline-preview-apply", [{ range: replaceRange, text: modified }]);
+      model.pushStackElement();
+      const insertEndOffset = Math.min(start + modified.length, model.getValueLength());
+
+      aiPreviewOldTextForRevert = original;
+      aiDiffBaseText = original;
+      aiPreviewSnippetAnchor = start;
+
+      removeAiSpacerZone();
+      if (aiEditPanel.parentNode !== container) {
+        container.appendChild(aiEditPanel);
+      }
+      applyAiPanelStylesDockedHidden();
+      aiEditPanel.style.display = "none";
+      if (aiPanelResizeFlushHandle != null) {
+        clearTimeout(aiPanelResizeFlushHandle);
+        aiPanelResizeFlushHandle = null;
+      }
+      panelResizeObs?.disconnect();
+      panelResizeObs = null;
+      props.onAiPreviewDock?.(null);
       setUiForPreview();
-      const h = computeAiDiffHostHeightPx(original, modified);
-      diffHost.style.height = `${h}px`;
-
-      const sideBySide = diffHost.getBoundingClientRect().width >= AI_DIFF_SIDEBYSIDE_MIN_PX;
-
-      aiOriginalModel = monaco.editor.createModel(original, "sql");
-      aiModifiedModel = monaco.editor.createModel(modified, "sql");
-      aiDiffEditor = monaco.editor.createDiffEditor(diffHost, {
-        originalEditable: false,
-        readOnly: true,
-        minimap: { enabled: false },
-        renderSideBySide: sideBySide,
-        diffWordWrap: "on",
-        compactMode: !sideBySide,
-        renderOverviewRuler: false,
-        renderMarginRevertIcon: false,
-        ignoreTrimWhitespace: false,
-        isInEmbeddedEditor: true,
-        fontSize: 12,
-        scrollBeyondLastLine: false,
-        automaticLayout: false,
-        lineNumbers: "on",
-        wordWrap: "on",
-      });
-      aiDiffEditor.setModel({ original: aiOriginalModel, modified: aiModifiedModel });
-      monaco.editor.setTheme(currentTheme);
-
-      detachDiffLayout = attachDiffEditorLayoutOnResize(diffHost, aiDiffEditor);
-
-      applyDiffSideBySideFromWidth();
 
       aiPanelPhase = "preview";
       emitAiPhaseToParent("preview");
+
+      const revealStart = model.getPositionAt(start);
+      const revealEnd = model.getPositionAt(insertEndOffset);
+      editor.revealRangeInCenter(monaco.Range.fromPositions(revealStart, revealEnd));
       requestAnimationFrame(() => {
-        applyDiffSideBySideFromWidth();
-        aiDiffEditor?.layout();
-        syncAiPanelViewZone();
-        focusAiDialogPrimary();
+        editor?.focus();
       });
       return new Promise<boolean>((resolve) => {
         aiPreviewResolve = resolve;
+        syncAiTrueInlinePreview();
+        bumpAiPreviewHoverBar();
       });
     };
 
@@ -936,36 +1456,44 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
 
       const accepted = await showDiffPreview(aiOriginalSnippet, output);
-      if (accepted && editor) {
-        disposeAiDiff();
+      const revertText = aiPreviewOldTextForRevert;
+      const anchorForReject = aiPreviewSnippetAnchor;
+
+      if (!accepted && editor && revertText != null && anchorForReject != null) {
+        clearAiInlineMonacoPreview();
         const m = editor.getModel();
-        if (m && aiRangeOffsets) {
-          const s = Math.min(aiRangeOffsets.start, m.getValue().length);
-          const en = Math.min(aiRangeOffsets.end, m.getValue().length);
-          const startPos = m.getPositionAt(s);
-          const endPos = m.getPositionAt(en);
-          m.pushStackElement();
-          editor.executeEdits("ai-edit-accept", [
-            {
-              range: {
-                startLineNumber: startPos.lineNumber,
-                startColumn: startPos.column,
-                endLineNumber: endPos.lineNumber,
-                endColumn: endPos.column,
-              },
-              text: output,
-            },
-          ]);
-          m.pushStackElement();
+        if (m) {
+          const { start: rs, end: re } = deriveSqlBlockRangeFromAnchor(m.getValue(), anchorForReject);
+          let a = rs;
+          let b = re;
+          if (b < a) [a, b] = [b, a];
+          const len = m.getValueLength();
+          a = Math.min(Math.max(0, a), len);
+          b = Math.min(Math.max(0, b), len);
+          if (a < b) {
+            const p0 = m.getPositionAt(a);
+            const p1 = m.getPositionAt(b);
+            const revertRange = monaco.Range.fromPositions(p0, p1);
+            m.pushStackElement();
+            editor.executeEdits("ai-inline-reject", [{ range: revertRange, text: revertText }]);
+            m.pushStackElement();
+          }
         }
+        closeAiPanel();
+        return;
+      } else if (accepted) {
+        clearAiInlineMonacoPreview();
+        closeAiPanel();
+        return;
       }
+
       closeAiPanel();
     }
 
     const runBlockWithHighlight = (startOffset: number, endOffset: number) => {
       const model = editor?.getModel();
       if (!model || startOffset >= endOffset) return;
-      const sql = model.getValue().slice(startOffset, endOffset).trim();
+      const sql = stripAiPreviewUndoMarkers(model.getValue().slice(startOffset, endOffset)).trim();
       if (!sql) return;
       const startPos = model.getPositionAt(startOffset);
       const endPos = model.getPositionAt(endOffset);
@@ -1143,7 +1671,15 @@ export default function SqlEditor(props: SqlEditorProps) {
       if (aiPanelPhase === "closed") return;
       updateAiZoneGutterWidth();
       syncAiPanelViewZone();
-      aiDiffEditor?.layout();
+      if (aiPanelPhase === "preview") {
+        positionAiPreviewHoverBar();
+      }
+    });
+
+    const aiPreviewScrollDisposable = editor.onDidScrollChange(() => {
+      if (aiPanelPhase === "preview") {
+        positionAiPreviewHoverBar();
+      }
     });
 
     /**
@@ -1174,10 +1710,25 @@ export default function SqlEditor(props: SqlEditorProps) {
       aiAnchorOffset = Math.min(Math.max(0, a), model.getValueLength());
     };
 
+    const shiftAiPreviewSnippetAnchorForModelContent = (e: monaco.editor.IModelContentChangedEvent) => {
+      if (aiPreviewSnippetAnchor == null || !editor || aiPanelPhase !== "preview") return;
+      const model = editor.getModel();
+      if (!model) return;
+      if (e.isFlush) {
+        aiPreviewSnippetAnchor = Math.min(aiPreviewSnippetAnchor, model.getValueLength());
+        return;
+      }
+      let a = aiPreviewSnippetAnchor;
+      for (const c of e.changes) {
+        a = mapOffsetThroughModelChange(a, c.rangeOffset, c.rangeLength, c.text);
+      }
+      aiPreviewSnippetAnchor = Math.min(Math.max(0, a), model.getValueLength());
+    };
+
+    /** instruct/loading 仍维护选区 [start,end)；preview 改由锚点 + derive，不再平移 aiRangeOffsets */
     const shiftAiRangeOffsetsForModelContent = (e: monaco.editor.IModelContentChangedEvent) => {
-      if (!aiRangeOffsets || !editor) return;
-      const ed = editor;
-      const model = ed.getModel();
+      if (aiPanelPhase === "preview" || !aiRangeOffsets || !editor) return;
+      const model = editor.getModel();
       if (!model) return;
       if (e.isFlush) {
         const len = model.getValueLength();
@@ -1190,19 +1741,8 @@ export default function SqlEditor(props: SqlEditorProps) {
       let s = aiRangeOffsets.start;
       let en = aiRangeOffsets.end;
       for (const c of e.changes) {
-        const rStart = c.rangeOffset;
-        const rEnd = c.rangeOffset + c.rangeLength;
-        const net = c.text.length - c.rangeLength;
-        const adj = (a: number) => {
-          if (rEnd <= a) return a + net;
-          if (rStart < a && a < rEnd) {
-            const pos = ed.getPosition();
-            return pos ? model.getOffsetAt(pos) : Math.min(rStart, model.getValueLength());
-          }
-          return a;
-        };
-        s = adj(s);
-        en = adj(en);
+        s = mapOffsetThroughModelChange(s, c.rangeOffset, c.rangeLength, c.text);
+        en = mapOffsetThroughModelChange(en, c.rangeOffset, c.rangeLength, c.text);
       }
       const len = model.getValueLength();
       s = Math.min(Math.max(0, s), len);
@@ -1211,11 +1751,28 @@ export default function SqlEditor(props: SqlEditorProps) {
       aiRangeOffsets = { start: s, end: en };
     };
 
+    const refreshAiInlineGreenDecorations = () => {
+      if (aiPanelPhase !== "preview" || !editor || aiPreviewSnippetAnchor == null || aiDiffBaseText == null) return;
+      scheduleRefreshAiTrueInlinePreview();
+    };
+
     editor.onDidChangeModelContent((e) => {
       if (aiPanelPhase !== "closed") {
         shiftAiAnchorForModelContent(e);
+        shiftAiPreviewSnippetAnchorForModelContent(e);
         shiftAiRangeOffsetsForModelContent(e);
         refreshAiSentRangeHighlight();
+        if (aiPanelPhase === "preview") {
+          if (e.isUndoing || e.isRedoing) {
+            if (aiTrueInlineRebuildTimer != null) {
+              clearTimeout(aiTrueInlineRebuildTimer);
+              aiTrueInlineRebuildTimer = null;
+            }
+            syncAiTrueInlinePreview();
+          } else {
+            refreshAiInlineGreenDecorations();
+          }
+        }
       }
       const val = editor!.getValue();
       if (props.onChange && val !== props.value) {
@@ -1225,7 +1782,6 @@ export default function SqlEditor(props: SqlEditorProps) {
       if (aiPanelPhase !== "closed") {
         requestAnimationFrame(() => {
           syncAiPanelViewZone();
-          aiDiffEditor?.layout();
         });
       }
     });
@@ -1238,7 +1794,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       const hasSelection = selection && !selection.isEmpty();
 
       if (hasSelection && model) {
-        const sqlToRun = model.getValueInRange(selection!).trim();
+        const sqlToRun = stripAiPreviewUndoMarkers(model.getValueInRange(selection!)).trim();
         if (sqlToRun) {
           const start = model.getOffsetAt(selection!.getStartPosition());
           const end = model.getOffsetAt(selection!.getEndPosition());
@@ -1261,15 +1817,68 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
     });
 
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyN, () => {
+      if (aiPanelPhase === "preview" && aiPreviewResolve) resolveAiPreview(false);
+    });
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyN, () => {
+      if (aiPanelPhase === "preview" && aiPreviewResolve) acceptFirstAiPreviewHunk();
+    });
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyY, () => {
+      if (aiPanelPhase === "preview" && aiPreviewResolve) resolveAiPreview(true);
+    });
+
+    /** 浏览器会抢占 Ctrl+N（新窗口）等快捷键；预览阶段在 window 捕获阶段 preventDefault */
+    const onPreviewGlobalKeydownCapture = (e: KeyboardEvent) => {
+      if (aiPanelPhase !== "preview" || !aiPreviewResolve) return;
+      if (e.key === "y" || e.key === "Y") {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          resolveAiPreview(true);
+          return;
+        }
+      }
+      if (e.key === "n" || e.key === "N") {
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          acceptFirstAiPreviewHunk();
+          return;
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          resolveAiPreview(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", onPreviewGlobalKeydownCapture, true);
+
     /**
      * Ctrl/Cmd+K（主编辑器侧，由 addCommand 触发）：
      * - 面板关 → 打开 AI 流程；
+     * - 预览中但已无红/绿 diff（如撤销/重做中间态）：视为可结束预览，Keep 并允许再次打开对话框；
      * - 面板开且焦点在面板内 → 焦点回主编辑器（与面板内 keydown 行为一致）；
      * - 面板开且焦点不在面板内（主 SQL 编辑区等）→ 焦点回面板当前阶段主控件。
      * 勿用 async 回调，否则 Monaco 会在命令结束后立刻抢回 textarea 焦点。
      */
     const handleAiCtrlCmdK = () => {
       if (!editor || !props.onAiEdit) return;
+
+      if (aiPanelPhase === "preview" && aiPreviewResolve) {
+        syncAiTrueInlinePreview();
+        if (!hasAiTrueInlinePreviewDiffUi()) {
+          const hadPromise = !!aiPreviewResolve;
+          resolveAiPreview(true);
+          /* 有未完成 showDiffPreview Promise 时，resolve 只结束 await；关面板在 runAiEditWorkflow 的微任务里，须下一轮再判断 phase */
+          if (hadPromise) {
+            queueMicrotask(() => handleAiCtrlCmdK());
+            return;
+          }
+        }
+      }
 
       if (aiPanelPhase !== "closed") {
         if (isFocusInsideAiPanel()) {
@@ -1431,12 +2040,16 @@ export default function SqlEditor(props: SqlEditorProps) {
     props.onEditorReady?.({ format: doFormat });
 
     onCleanup(() => {
+      window.removeEventListener("keydown", onPreviewGlobalKeydownCapture, true);
+      container.removeEventListener("mousemove", onEditorSurfacePointerMove);
       aiLayoutDisposable.dispose();
+      aiPreviewScrollDisposable.dispose();
       if (aiPanelResizeFlushHandle != null) {
         clearTimeout(aiPanelResizeFlushHandle);
         aiPanelResizeFlushHandle = null;
       }
       aiSentRangeDecorations.clear();
+      aiInlinePreviewDecorations.clear();
       panelResizeObs?.disconnect();
       panelResizeObs = null;
       disposeAiDiff();
@@ -1447,10 +2060,12 @@ export default function SqlEditor(props: SqlEditorProps) {
       applyAiPanelStylesDockedHidden();
       aiEditPanel.style.display = "none";
       aiPanelPhase = "closed";
+      props.onAiPreviewDock?.(null);
       props.onAiEditPhaseChange?.("idle");
       aiInstructionResolve = null;
       aiPreviewResolve = null;
       aiRangeOffsets = null;
+      aiPreviewSnippetAnchor = null;
       aiAnchorOffset = null;
       if (pasteDom) {
         pasteDom.removeEventListener("paste", onPaste, true);
@@ -1466,6 +2081,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   createEffect(() => {
     const val = props.value;
     if (!editor) return;
+    if (aiPreviewExternalSyncBlocked) return;
     if (val === lastFormattedValue) {
       lastFormattedValue = null;
       return;

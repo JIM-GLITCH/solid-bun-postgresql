@@ -1990,27 +1990,40 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
               display: "flex",
               gap: "8px",
             }}>
-              <div style={{ flex: 1, "min-width": 0, overflow: "hidden" }}>
-                <SqlEditor
-                  value={sql()}
-                  onChange={setSql}
-                  onRun={runUserQuery}
-                  onExplain={runExplain}
-                  onFormat={(s) => formatSql(s)}
-                  onAiEdit={(blockSql, instruction) => {
-                    return handleAiEdit(blockSql, instruction);
-                  }}
-                  onAiCopyPrompt={(blockSql, instruction) => {
-                    void handleAiCopyPrompt(blockSql, instruction);
-                  }}
-                  onAiCopyDiffPrompt={(blockSql) => {
-                    void handleAiCopyDiffPrompt(blockSql);
-                  }}
-                  onAiEditInstructionChange={setAiEditInstruction}
-                  onAiEditPhaseChange={(phase) => setAiLoading(phase === "loading")}
-                  onEditorReady={(api) => { sqlEditorFormatApi = api; }}
-                  style={{ height: "100%" }}
-                />
+              <div
+                style={{
+                  flex: 1,
+                  "min-width": 0,
+                  overflow: "hidden",
+                  display: "flex",
+                  "flex-direction": "column",
+                  "min-height": 0,
+                }}
+              >
+                <div style={{ flex: 1, "min-height": 0, overflow: "hidden" }}>
+                  <SqlEditor
+                    value={sql()}
+                    onChange={setSql}
+                    onRun={runUserQuery}
+                    onExplain={runExplain}
+                    onFormat={(s) => formatSql(s)}
+                    onAiEdit={(blockSql, instruction) => {
+                      return handleAiEdit(blockSql, instruction);
+                    }}
+                    onAiCopyPrompt={(blockSql, instruction) => {
+                      void handleAiCopyPrompt(blockSql, instruction);
+                    }}
+                    onAiCopyDiffPrompt={(blockSql) => {
+                      void handleAiCopyDiffPrompt(blockSql);
+                    }}
+                    onAiEditInstructionChange={setAiEditInstruction}
+                    onAiEditPhaseChange={(phase) => setAiLoading(phase === "loading")}
+                    onEditorReady={(api) => {
+                      sqlEditorFormatApi = api;
+                    }}
+                    style={{ height: "100%" }}
+                  />
+                </div>
               </div>
               <Show when={showHistoryPanel()}>
                 <div style={{ width: "300px", "flex-shrink": 0, overflow: "hidden" }}>
