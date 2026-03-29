@@ -1672,13 +1672,14 @@ export default function SqlEditor(props: SqlEditorProps) {
       updateAiZoneGutterWidth();
       syncAiPanelViewZone();
       if (aiPanelPhase === "preview") {
-        positionAiPreviewHoverBar();
+        /* 须 bump：仅 position 不会加 hover-visible，滚回视口后条一直隐藏直到 mousemove */
+        bumpAiPreviewHoverBar();
       }
     });
 
     const aiPreviewScrollDisposable = editor.onDidScrollChange(() => {
       if (aiPanelPhase === "preview") {
-        positionAiPreviewHoverBar();
+        bumpAiPreviewHoverBar();
       }
     });
 
