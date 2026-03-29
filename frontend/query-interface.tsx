@@ -108,7 +108,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
   const [explainPlan, setExplainPlan] = createSignal<Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }> | null>(null);
   const [explainLoading, setExplainLoading] = createSignal(false);
-  const [aiProvider, setAiProvider] = createSignal<"openai" | "anthropic" | "aliyun">("aliyun");
+  /** 与后端路由一致：决定 chat/completions vs Anthropic messages */
+  const [aiApiMode, setAiApiMode] = createSignal<"openai-compatible" | "anthropic">("openai-compatible");
   const [aiBaseUrl, setAiBaseUrl] = createSignal("https://dashscope.aliyuncs.com/compatible-mode/v1");
   const [aiModel, setAiModel] = createSignal("qwen-plus");
   const [aiKeyRef, setAiKeyRef] = createSignal("default");
@@ -214,7 +215,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     });
     getAiConfig()
       .then((cfg) => {
-        setAiProvider(cfg.provider);
+        setAiApiMode(cfg.apiMode);
         setAiBaseUrl(cfg.baseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1");
         setAiModel(cfg.model);
         setAiKeyRef(cfg.keyRef || "default");
@@ -632,10 +633,22 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const keyRef = aiKeyRef().trim() || "default";
       const normalizedBaseUrl = normalizeBaseUrl(aiBaseUrl());
       setAiBaseUrl(normalizedBaseUrl);
+      const presetForModel =
+        aiApiMode() === "anthropic"
+          ? "anthropic"
+          : normalizedBaseUrl.toLowerCase().includes("dashscope") || normalizedBaseUrl.includes("compatible-mode")
+            ? "aliyun"
+            : "openai";
       const payload = {
-        provider: aiProvider(),
+        apiMode: aiApiMode(),
         baseUrl: normalizedBaseUrl,
-        model: aiModel().trim() || (aiProvider() === "openai" ? "gpt-4o-mini" : aiProvider() === "anthropic" ? "claude-3-5-sonnet-latest" : "qwen-plus"),
+        model:
+          aiModel().trim() ||
+          (presetForModel === "openai"
+            ? "gpt-4o-mini"
+            : presetForModel === "anthropic"
+              ? "claude-3-5-sonnet-latest"
+              : "qwen-plus"),
         keyRef,
         temperature: Number(aiTemperature()),
         topP: Number(aiTopP()),
@@ -650,7 +663,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       }
       await testAiConnection({
         keyRef,
-        provider: payload.provider,
+        apiMode: payload.apiMode,
         baseUrl: payload.baseUrl,
         model: payload.model,
         temperature: payload.temperature,
@@ -691,18 +704,18 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   function applyAiPreset(preset: "openai" | "anthropic" | "aliyun") {
     if (preset === "openai") {
-      setAiProvider("openai");
+      setAiApiMode("openai-compatible");
       setAiBaseUrl("https://api.openai.com/v1");
       if (!aiModel().trim()) setAiModel("gpt-4o-mini");
       return;
     }
     if (preset === "anthropic") {
-      setAiProvider("anthropic");
+      setAiApiMode("anthropic");
       setAiBaseUrl("https://api.anthropic.com/v1");
       if (!aiModel().trim()) setAiModel("claude-3-5-sonnet-latest");
       return;
     }
-    setAiProvider("aliyun");
+    setAiApiMode("openai-compatible");
     setAiBaseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1");
     if (!aiModel().trim()) setAiModel("qwen-plus");
   }
@@ -2337,11 +2350,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 <div style={{ display: "flex", "align-items": "center", gap: "10px" }}>
                   <div style={{ width: "120px", "font-size": "12px", color: vscode.foregroundDim }}>接口格式</div>
                   <select
-                    value={aiProvider() === "anthropic" ? "anthropic" : "openai-compatible"}
+                    value={aiApiMode()}
                     onChange={(e) => {
-                      const mode = e.currentTarget.value;
-                      if (mode === "anthropic") setAiProvider("anthropic");
-                      else setAiProvider("openai");
+                      const mode = e.currentTarget.value as "anthropic" | "openai-compatible";
+                      setAiApiMode(mode);
                     }}
                     style={{ padding: "8px", "background-color": vscode.inputBg, color: vscode.foreground, border: `1px solid ${vscode.border}`, "border-radius": "6px", width: "100%" }}
                   >

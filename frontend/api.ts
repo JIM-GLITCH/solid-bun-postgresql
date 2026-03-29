@@ -303,7 +303,7 @@ export async function readFileViaVscode(options?: { accept?: string[] }): Promis
 
 export async function getAiConfig() {
   return api().request("ai/config/get", {}) as Promise<{
-    provider: "openai" | "anthropic" | "aliyun";
+    apiMode: "openai-compatible" | "anthropic";
     baseUrl?: string;
     model: string;
     keyRef: string;
@@ -316,7 +316,7 @@ export async function getAiConfig() {
 }
 
 export async function setAiConfig(payload: {
-  provider?: "openai" | "anthropic" | "aliyun";
+  apiMode: "openai-compatible" | "anthropic";
   baseUrl?: string;
   model: string;
   keyRef?: string;
@@ -334,7 +334,7 @@ export async function deleteAiKey(payload?: { keyRef?: string }) {
 }
 
 export async function testAiConnection(payload?: {
-  provider?: "openai" | "anthropic" | "aliyun";
+  apiMode?: "openai-compatible" | "anthropic";
   baseUrl?: string;
   model?: string;
   keyRef?: string;

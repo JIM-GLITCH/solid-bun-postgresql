@@ -20,7 +20,7 @@ import { calculateColumnEditable } from "./column-editable";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
-import { runAiSqlTask, type AiProvider } from "./ai-service";
+import { runAiSqlTask, type AiApiMode } from "./ai-service";
 import { Client, Pool, type PoolClient } from "pg";
 import Cursor from "pg-cursor";
 
@@ -149,7 +149,8 @@ export function setAiKeyResolver(resolver: ((keyRef: string) => Promise<string |
 }
 
 interface AiRuntimeConfig {
-  provider: AiProvider;
+  /** 与前端「接口格式」一致 */
+  apiMode: AiApiMode;
   baseUrl?: string;
   model: string;
   keyRef: string;
@@ -160,7 +161,7 @@ interface AiRuntimeConfig {
 }
 
 let aiConfig: AiRuntimeConfig = {
-  provider: "aliyun",
+  apiMode: "openai-compatible",
   baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   model: "qwen-plus",
   keyRef: "default",
@@ -169,13 +170,6 @@ let aiConfig: AiRuntimeConfig = {
   stream: true,
   maxTokens: 700,
 };
-
-function inferProviderFromBaseUrl(baseUrl?: string): AiProvider {
-  const u = (baseUrl || "").toLowerCase();
-  if (u.includes("anthropic.com")) return "anthropic";
-  if (u.includes("dashscope.aliyuncs.com") || u.includes("aliyun")) return "aliyun";
-  return "openai";
-}
 
 async function resolveAiApiKey(keyRef: string): Promise<string | undefined> {
   const inMemory = aiKeyStore.get(keyRef);
@@ -370,7 +364,7 @@ async function executeAiSqlEdit(params: {
   if (!apiKey) throw new Error("未配置 AI API Key");
   const result = await runAiSqlTask(
     {
-      provider: aiConfig.provider,
+      apiMode: aiConfig.apiMode,
       baseUrl: aiConfig.baseUrl,
       model: aiConfig.model,
       apiKey,
@@ -545,7 +539,7 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     case "ai/config/get": {
       return {
-        provider: aiConfig.provider,
+        apiMode: aiConfig.apiMode,
         baseUrl: aiConfig.baseUrl,
         model: aiConfig.model,
         keyRef: aiConfig.keyRef,
@@ -559,7 +553,7 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     case "ai/config/set": {
       const {
-        provider,
+        apiMode,
         baseUrl,
         model,
         keyRef = "default",
@@ -569,7 +563,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         stream,
         maxTokens,
       } = payload as {
-        provider?: AiProvider;
+        apiMode: AiApiMode;
         baseUrl?: string;
         model: string;
         keyRef?: string;
@@ -579,10 +573,14 @@ export async function handleApiRequest<M extends ApiMethod>(
         stream?: boolean;
         maxTokens?: number;
       };
-      const resolvedProvider = provider ?? inferProviderFromBaseUrl(baseUrl);
+      if (apiMode !== "anthropic" && apiMode !== "openai-compatible") {
+        throw new Error("apiMode 须为 openai-compatible 或 anthropic");
+      }
+      const resolvedBase = (baseUrl?.trim() || aiConfig.baseUrl || "").replace(/\/+$/, "");
+      if (!resolvedBase) throw new Error("缺少 Base URL");
       aiConfig = {
-        provider: resolvedProvider,
-        baseUrl: baseUrl?.trim() || aiConfig.baseUrl,
+        apiMode,
+        baseUrl: resolvedBase,
         model: model?.trim() || aiConfig.model,
         keyRef: keyRef.trim() || "default",
         temperature: typeof temperature === "number" ? Math.max(0, Math.min(1, temperature)) : aiConfig.temperature,
@@ -609,7 +607,7 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     case "ai/test-connection": {
       const {
-        provider = aiConfig.provider,
+        apiMode = aiConfig.apiMode,
         baseUrl = aiConfig.baseUrl,
         model = aiConfig.model,
         keyRef = aiConfig.keyRef,
@@ -618,7 +616,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         stream = aiConfig.stream,
         maxTokens = aiConfig.maxTokens,
       } = payload as {
-        provider?: AiProvider;
+        apiMode?: AiApiMode;
         baseUrl?: string;
         model?: string;
         keyRef?: string;
@@ -629,8 +627,10 @@ export async function handleApiRequest<M extends ApiMethod>(
       };
       const apiKey = await resolveAiApiKey(keyRef);
       if (!apiKey) throw new Error("未配置 AI API Key");
+      const mode = apiMode ?? aiConfig.apiMode;
+      const bu = baseUrl ?? aiConfig.baseUrl;
       await runAiSqlTask(
-        { provider, baseUrl, model, apiKey, temperature, topP, stream, maxTokens },
+        { apiMode: mode, baseUrl: bu, model, apiKey, temperature, topP, stream, maxTokens },
         {
           systemPrompt: AI_JSON_SYSTEM_PROMPT,
           userPrompt: "请输出 JSON，其中 sql 字段为 select 1;",

@@ -1,7 +1,8 @@
-export type AiProvider = "openai" | "anthropic" | "aliyun";
+/** 与前端「接口格式」一致：openai-compatible → /v1/chat/completions；anthropic → Anthropic messages */
+export type AiApiMode = "openai-compatible" | "anthropic";
 
 export interface AiServiceConfig {
-  provider: AiProvider;
+  apiMode: AiApiMode;
   baseUrl?: string;
   model: string;
   apiKey: string;
@@ -218,11 +219,35 @@ function detectSqlRisks(sql: string): string[] {
   return risks;
 }
 
-async function callOpenAI(config: AiServiceConfig, req: AiServiceRequest): Promise<ProviderCallResult> {
-  const base = (config.baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/+$/, "");
+/** OpenAI /v1/chat/completions 或同类兼容接口的完整 POST URL（尊重用户配置的 baseUrl）。 */
+function resolveOpenAiCompatibleChatCompletionsUrl(baseUrl: string | undefined, fallbackBase: string): string {
+  const fb = fallbackBase.replace(/\/+$/, "");
+  const defaultFull = `${fb}/chat/completions`;
+  const raw = baseUrl?.trim();
+  if (!raw) return defaultFull;
+  const b = raw.replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(b)) return b;
+  return `${b}/chat/completions`;
+}
+
+/** Anthropic /v1/messages 的完整 POST URL（尊重 baseUrl：官方、代理、区域端点）。 */
+function resolveAnthropicMessagesUrl(baseUrl?: string): string {
+  const fallback = "https://api.anthropic.com/v1/messages";
+  const raw = baseUrl?.trim();
+  if (!raw) return fallback;
+  const b = raw.replace(/\/+$/, "");
+  if (/\/messages$/i.test(b)) return b;
+  if (b.endsWith("/v1")) return `${b}/messages`;
+  return `${b}/v1/messages`;
+}
+
+/** OpenAI /v1/chat/completions 兼容网关（凡填写 baseUrl 即直连该地址，无则回退 OpenAI 官方根路径） */
+async function callOpenAiCompatible(config: AiServiceConfig, req: AiServiceRequest): Promise<ProviderCallResult> {
+  const fallbackBase = "https://api.openai.com/v1";
+  const url = resolveOpenAiCompatibleChatCompletionsUrl(config.baseUrl, fallbackBase);
   const useStream = !!config.stream;
   const topP = clampTopP(config.topP);
-  const response = await fetch(`${base}/chat/completions`, {
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -247,7 +272,7 @@ async function callOpenAI(config: AiServiceConfig, req: AiServiceRequest): Promi
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenAI 请求失败: ${response.status} ${text}`);
+    throw new Error(`OpenAI 兼容接口请求失败: ${response.status} ${text}`);
   }
   if (useStream) {
     return await readOpenAICompatStream(response);
@@ -264,8 +289,9 @@ async function callOpenAI(config: AiServiceConfig, req: AiServiceRequest): Promi
 }
 
 async function callAnthropic(config: AiServiceConfig, req: AiServiceRequest): Promise<ProviderCallResult> {
+  const url = resolveAnthropicMessagesUrl(config.baseUrl);
   const topP = clampTopP(config.topP);
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -303,55 +329,6 @@ async function callAnthropic(config: AiServiceConfig, req: AiServiceRequest): Pr
   return { content: String(first?.text ?? ""), usage };
 }
 
-async function callAliyun(config: AiServiceConfig, req: AiServiceRequest): Promise<ProviderCallResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
-  const base = (config.baseUrl?.trim() || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/+$/, "");
-  const useStream = config.stream !== false;
-  const topP = clampTopP(config.topP);
-  const response = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    signal: controller.signal,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: clampTemperature(config.temperature),
-      top_p: topP,
-      stream: useStream,
-      stream_options: useStream ? { include_usage: true } : undefined,
-      max_tokens: clampMaxTokens(config.maxTokens),
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: req.systemPrompt },
-        {
-          role: "user",
-          content: req.userPrompt,
-        },
-      ],
-    }),
-  });
-  clearTimeout(timeout);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Aliyun 请求失败: ${response.status} ${text}`);
-  }
-  if (useStream) {
-    return await readOpenAICompatStream(response);
-  }
-  const json = (await response.json()) as any;
-  const usage = json?.usage
-    ? {
-        inputTokens: Number(json.usage.prompt_tokens ?? 0) || undefined,
-        outputTokens: Number(json.usage.completion_tokens ?? 0) || undefined,
-        totalTokens: Number(json.usage.total_tokens ?? 0) || undefined,
-      }
-    : undefined;
-  return { content: String(json?.choices?.[0]?.message?.content ?? ""), usage };
-}
-
 export async function runAiSqlTask(config: AiServiceConfig, req: AiServiceRequest): Promise<AiServiceResponse> {
   if (!config.apiKey?.trim()) throw new Error("缺少 AI API Key");
   // Avoid low-level ByteString errors from fetch headers (e.g. key contains Chinese/full-width chars)
@@ -361,13 +338,8 @@ export async function runAiSqlTask(config: AiServiceConfig, req: AiServiceReques
   if (/[\r\n]/.test(config.apiKey)) {
     throw new Error("AI API Key 包含换行符，请去掉首尾空白后重试");
   }
-  const call = () => (
-    config.provider === "anthropic"
-      ? callAnthropic(config, req)
-      : config.provider === "aliyun"
-        ? callAliyun(config, req)
-        : callOpenAI(config, req)
-  );
+  const call = () =>
+    config.apiMode === "anthropic" ? callAnthropic(config, req) : callOpenAiCompatible(config, req);
   let callResult: ProviderCallResult = { content: "" };
   const startedAt = Date.now();
   try {
@@ -375,11 +347,9 @@ export async function runAiSqlTask(config: AiServiceConfig, req: AiServiceReques
   } catch (e) {
     // one retry with deterministic decoding for flaky providers
     callResult = await (
-      config.provider === "anthropic"
+      config.apiMode === "anthropic"
         ? callAnthropic({ ...config, temperature: 0 }, req)
-        : config.provider === "aliyun"
-          ? callAliyun({ ...config, temperature: 0 }, req)
-          : callOpenAI({ ...config, temperature: 0 }, req)
+        : callOpenAiCompatible({ ...config, temperature: 0 }, req)
     );
   }
   const elapsedMs = Date.now() - startedAt;

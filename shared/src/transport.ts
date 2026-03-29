@@ -126,7 +126,7 @@ export type ApiRequestPayload = {
   "ai/config/get": Record<string, never>;
   /** 设置 AI 配置（Web 可附带 apiKey 用于会话缓存） */
   "ai/config/set": {
-    provider?: "openai" | "anthropic" | "aliyun";
+    apiMode: "openai-compatible" | "anthropic";
     baseUrl?: string;
     model: string;
     keyRef?: string;
@@ -142,7 +142,7 @@ export type ApiRequestPayload = {
   };
   /** 校验 AI Provider 连接可用性 */
   "ai/test-connection": {
-    provider?: "openai" | "anthropic" | "aliyun";
+    apiMode?: "openai-compatible" | "anthropic";
     baseUrl?: string;
     model?: string;
     keyRef?: string;
