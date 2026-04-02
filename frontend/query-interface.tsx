@@ -32,11 +32,14 @@ import { writeClipboardText } from "./clipboard";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
 import ExplainPlanViewer from "./explain-plan-viewer";
+import { convertMysqlExplainJsonToPlanNode, isMysqlExplainJsonRoot } from "./mysql-explain-json";
 import { useDialog } from "./dialog-context";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
   activeConnectionId?: Accessor<string | null>;
+  /** MySQL：侧栏选中的库名，随 db/query-stream 等传给后端 USE */
+  mysqlDefaultSchemaFor?: (connectionId: string) => string | null | undefined;
   /** 外部触发的查询（如侧边栏点击表），处理后应清空 */
   externalQuery?: Accessor<{ connectionId: string; sql: string } | null>;
   onExternalQueryHandled?: () => void;
@@ -81,6 +84,11 @@ function cellValueToJsonbInitial(raw: unknown): string | null {
 }
 
 export default function QueryInterface(props: QueryInterfaceProps = {}) {
+  function mysqlDefaultSchemaForConn(cid: string): string | undefined {
+    const s = props.mysqlDefaultSchemaFor?.(cid)?.trim();
+    return s || undefined;
+  }
+
   const AI_MODEL_PREF_KEY = "dbplayer.ai.model";
   const { openJsonbEditor } = useDialog();
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
@@ -106,7 +114,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
   const [showExportMenu, setShowExportMenu] = createSignal(false);  // 导出下拉
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
-  const [explainPlan, setExplainPlan] = createSignal<Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }> | null>(null);
+  const [explainPlan, setExplainPlan] = createSignal<Array<{
+    Plan: any;
+    "Planning Time"?: number;
+    "Execution Time"?: number;
+    Format?: string;
+  }> | null>(null);
   const [explainLoading, setExplainLoading] = createSignal(false);
   /** 与后端路由一致：决定 chat/completions vs Anthropic messages */
   const [aiApiMode, setAiApiMode] = createSignal<"openai-compatible" | "anthropic">("openai-compatible");
@@ -482,7 +495,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      const data = await queryStream(cid, statements, 100);
+      const data = await queryStream(cid, statements, 100, mysqlDefaultSchemaForConn(cid));
 
       if (data.error) {
         throw new Error(data.error);
@@ -527,7 +540,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
     setLoadingMore(true);
     try {
-      const data = await queryStreamMore(cid, 100);
+      const data = await queryStreamMore(cid, 100, mysqlDefaultSchemaForConn(cid));
 
       if (data.error) {
         throw new Error(data.error);
@@ -572,6 +585,40 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (el) el.scrollTop = 0;
   }
 
+  /** 统一 PG / MySQL 返回形状：MySQL FORMAT=JSON 为 query_block 根，需转成 PlanNode；字符串计划（EXPLAIN ANALYZE 文本）原样展示 */
+  function normalizeExplainPlan(
+    raw: unknown
+  ): Array<{ Plan: unknown; "Planning Time"?: number; "Execution Time"?: number; Format?: string }> {
+    const arr: unknown[] = Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === "object" && "Plan" in (raw as object)
+        ? [raw]
+        : [];
+    return arr.map((item) => {
+      if (!item || typeof item !== "object") {
+        return { Plan: { "Node Type": "(无效计划)" } };
+      }
+      const obj = item as Record<string, unknown>;
+      const planVal = obj.Plan;
+      if (typeof planVal === "string") {
+        return obj as { Plan: string; Format?: string; "Planning Time"?: number; "Execution Time"?: number };
+      }
+      if (planVal && typeof planVal === "object" && isMysqlExplainJsonRoot(planVal)) {
+        return {
+          ...obj,
+          Plan: convertMysqlExplainJsonToPlanNode(planVal),
+        } as { Plan: unknown; Format?: string; "Planning Time"?: number; "Execution Time"?: number };
+      }
+      if (planVal != null) {
+        return obj as { Plan: unknown; Format?: string; "Planning Time"?: number; "Execution Time"?: number };
+      }
+      if (isMysqlExplainJsonRoot(obj)) {
+        return { Plan: convertMysqlExplainJsonToPlanNode(obj) };
+      }
+      return obj as { Plan: unknown; Format?: string; "Planning Time"?: number; "Execution Time"?: number };
+    });
+  }
+
   // 执行 EXPLAIN ANALYZE（可选传入 sql，否则用编辑器内第一个语句）
   async function runExplain(overrideSql?: string) {
     const cid = props.activeConnectionId?.();
@@ -584,11 +631,16 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setExplainLoading(true);
     setExplainPlan(null);
     try {
-      const res = await explainQuery(cid, firstStmt);
+      const res = await explainQuery(cid, firstStmt, mysqlDefaultSchemaForConn(cid));
       if (res.error) throw new Error(res.error);
-      const raw = res.plan;
-      const plan = Array.isArray(raw) ? raw : (raw && typeof raw === "object" && "Plan" in raw ? [raw] : []);
-      setExplainPlan(plan);
+      setExplainPlan(
+        normalizeExplainPlan(res.plan) as Array<{
+          Plan: any;
+          "Planning Time"?: number;
+          "Execution Time"?: number;
+          Format?: string;
+        }>
+      );
     } catch (e: any) {
       setError(e.message || "EXPLAIN 失败");
     } finally {
@@ -795,24 +847,30 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   }
 
   // 生成 WHERE 条件片段：NULL 须用 IS NULL，不能用 = NULL
-  function formatWhereCondition(colName: string, value: unknown, dataTypeOid?: number): string {
+  function formatWhereCondition(
+    colName: string,
+    value: unknown,
+    dataTypeOid: number | undefined,
+    dialect: "postgres" | "mysql"
+  ): string {
     if (value === null || value === undefined) return `${colName} IS NULL`;
-    return `${colName} = ${formatSqlValueShared(value, dataTypeOid)}`;
+    return `${colName} = ${formatSqlValueShared(value, dataTypeOid, dialect)}`;
   }
 
   // 生成 UPDATE SQL（使用共享的 formatSqlValue 以兼容 timestamp 精度等）
   function generateUpdateSql(rowIndex: number, colIndex: number, newValue: string | null): string {
     const colInfo = columns()[colIndex];
     const row = getRowForWhere(rowIndex);
+    const dialect = colInfo.sqlDialect ?? "postgres";
 
     const whereConditions = colInfo.uniqueKeyColumns!.map((keyColName, i) => {
       const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
       const keyValue = row[keyColIndex];
       const keyOid = columns()[keyColIndex]?.dataTypeOid;
-      return formatWhereCondition(keyColName, keyValue, keyOid);
+      return formatWhereCondition(keyColName, keyValue, keyOid, dialect);
     });
 
-    return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid)} WHERE ${whereConditions.join(" AND ")}`;
+    return `UPDATE ${colInfo.tableName} SET ${colInfo.columnName} = ${formatSqlValueShared(newValue, colInfo.dataTypeOid, dialect)} WHERE ${whereConditions.join(" AND ")}`;
   }
 
   // 生成 DELETE SQL（使用第一个有 uniqueKeyColumns 的列）
@@ -821,11 +879,12 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const colInfo = cols.find(c => c.uniqueKeyColumns?.length && c.tableName);
     if (!colInfo?.uniqueKeyColumns || !colInfo.uniqueKeyFieldIndices) return null;
     const row = getRowForWhere(rowIndex);
+    const dialect = colInfo.sqlDialect ?? "postgres";
     const whereConditions = colInfo.uniqueKeyColumns.map((keyColName, i) => {
       const keyColIndex = colInfo.uniqueKeyFieldIndices![i];
       const keyValue = row[keyColIndex];
       const keyOid = cols[keyColIndex]?.dataTypeOid;
-      return formatWhereCondition(keyColName, keyValue, keyOid);
+      return formatWhereCondition(keyColName, keyValue, keyOid, dialect);
     });
     return `DELETE FROM ${colInfo.tableName} WHERE ${whereConditions.join(" AND ")}`;
   }
@@ -876,8 +935,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       .map((c, i) => ({ ...c, colIndex: i }))
       .filter(c => c.tableName === firstTable && c.columnName);
     if (tableCols.length === 0) return null;
+    const dialect = tableCols[0]?.sqlDialect ?? "postgres";
     const colNames = tableCols.map(c => c.columnName!);
-    const values = tableCols.map(c => formatSqlValueShared(row[c.colIndex], c.dataTypeOid));
+    const values = tableCols.map(c => formatSqlValueShared(row[c.colIndex], c.dataTypeOid, dialect));
     return `INSERT INTO ${firstTable} (${colNames.join(", ")}) VALUES (${values.join(", ")})`;
   }
 
@@ -1416,10 +1476,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       >
                         <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
                           <span>{col.name}</span>
-                          {(getDataTypeName(col.dataTypeOid) || col.nullable !== undefined) && (
+                          {((getDataTypeName(col.dataTypeOid) || col.dataTypeLabel) || col.nullable !== undefined) && (
                             <span style={{ "font-size": "11px", color: vscode.foregroundDim, "font-weight": "400" }}>
                               {[
-                                getDataTypeName(col.dataTypeOid),
+                                getDataTypeName(col.dataTypeOid) || col.dataTypeLabel,
                                 col.nullable === true ? "nullable" : col.nullable === false ? "NOT NULL" : undefined
                               ]
                                 .filter(Boolean)
@@ -1761,7 +1821,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     
     const startTime = performance.now();
     try {
-      const data = await queryReadonly(connectionId, querySql, 1000);
+      const data = await queryReadonly(connectionId, querySql, 1000, mysqlDefaultSchemaForConn(connectionId));
       if (data.error) {
         throw new Error(data.error);
       }

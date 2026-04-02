@@ -22,6 +22,20 @@ export interface TableColumn {
 
 export type FKAction = "NO ACTION" | "RESTRICT" | "CASCADE" | "SET NULL" | "SET DEFAULT";
 
+/** MySQL information_schema.REFERENTIAL_CONSTRAINTS 的 DELETE_RULE / UPDATE_RULE → 设计器枚举 */
+export function normalizeMysqlReferentialAction(rule: unknown): FKAction {
+  const s = String(rule ?? "NO ACTION")
+    .trim()
+    .toUpperCase()
+    .replace(/_/g, " ");
+  if (s === "SET NULL") return "SET NULL";
+  if (s === "SET DEFAULT") return "SET DEFAULT";
+  if (s === "CASCADE") return "CASCADE";
+  if (s === "RESTRICT") return "RESTRICT";
+  if (s === "NO ACTION" || s === "NOACTION") return "NO ACTION";
+  return "NO ACTION";
+}
+
 export interface IndexDef {
   name: string;
   originalName?: string;
@@ -94,8 +108,58 @@ export interface ForeignKeyConstraint {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TYPES_NEEDING_LENGTH = ["varchar", "char", "bit", "varbit", "character varying", "character"];
+const TYPES_NEEDING_LENGTH = [
+  "varchar", "char", "bit", "varbit", "character varying", "character",
+  "binary", "varbinary",
+];
 const TYPES_NEEDING_PRECISION = ["numeric", "decimal"];
+
+export type SqlDialect = "postgres" | "mysql";
+
+export function quoteIdent(dialect: SqlDialect, id: string): string {
+  if (dialect === "mysql") {
+    return "`" + id.replace(/`/g, "``") + "`";
+  }
+  return '"' + id.replace(/"/g, '""') + '"';
+}
+
+export function qualifiedTableName(dialect: SqlDialect, schema: string, table: string): string {
+  return `${quoteIdent(dialect, schema)}.${quoteIdent(dialect, table)}`;
+}
+
+function mysqlStringLiteral(s: string): string {
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
+function mysqlBaseType(dataType: string): string {
+  const t = dataType.toLowerCase().trim();
+  const paren = t.indexOf("(");
+  return paren >= 0 ? t.slice(0, paren).trim() : t;
+}
+
+function mysqlSupportsAutoIncrement(dataType: string): boolean {
+  const base = mysqlBaseType(dataType);
+  return (
+    base === "tinyint" ||
+    base === "smallint" ||
+    base === "mediumint" ||
+    base === "int" ||
+    base === "integer" ||
+    base === "bigint"
+  );
+}
+
+/** CREATE / ALTER 中列定义里类型之后的部分（不含列名） */
+function mysqlColumnTail(col: TableColumn): string {
+  let tail = buildColumnTypeSql(col);
+  if (!col.nullable) tail += " NOT NULL";
+  if (col.autoIncrement && mysqlSupportsAutoIncrement(col.dataType)) tail += " AUTO_INCREMENT";
+  if (!col.autoIncrement && col.defaultValue.trim()) {
+    tail += ` DEFAULT ${formatDefaultValue(col.defaultValue.trim())}`;
+  }
+  if (col.comment?.trim()) tail += ` COMMENT ${mysqlStringLiteral(col.comment)}`;
+  return tail;
+}
 
 const DEFAULT_VALUE_RAW_RE = /^[0-9]+(\.[0-9]+)?$|^true$|^false$|^null$|^now\(\)$|^current_timestamp$/i;
 
@@ -186,14 +250,6 @@ export function validateDesignerState(state: {
 
 // ─── DDL Builder ──────────────────────────────────────────────────────────────
 
-function q(identifier: string): string {
-  return `"${identifier}"`;
-}
-
-function qualifiedTable(schema: string, tableName: string): string {
-  return `${q(schema)}.${q(tableName)}`;
-}
-
 function buildColumnTypeSql(col: TableColumn): string {
   let typeStr = col.dataType;
   if (needsPrecision(col.dataType)) {
@@ -210,7 +266,8 @@ function buildColumnTypeSql(col: TableColumn): string {
   return typeStr;
 }
 
-function buildColumnInlineSql(col: TableColumn): string {
+function buildPgColumnInlineSql(col: TableColumn): string {
+  const q = (id: string) => quoteIdent("postgres", id);
   let sql = `  ${q(col.name)} ${buildColumnTypeSql(col)}`;
   if (col.autoIncrement) {
     sql += " GENERATED ALWAYS AS IDENTITY";
@@ -221,6 +278,332 @@ function buildColumnInlineSql(col: TableColumn): string {
     sql += ` DEFAULT ${formatDefaultValue(col.defaultValue.trim())}`;
   }
   return sql;
+}
+
+type DesignerDdlCurrent = {
+  tableName: string;
+  tableComment: string;
+  columns: TableColumn[];
+  indexes: IndexDef[];
+  foreignKeys: ForeignKeyDef[];
+  uniqueConstraints: UniqueConstraintDef[];
+  checkConstraints: CheckConstraintDef[];
+};
+
+function mysqlBuildCreateDdl(schema: string, tableName: string, current: DesignerDdlCurrent): string[] {
+  const qi = (id: string) => quoteIdent("mysql", id);
+  const qualifiedTbl = qualifiedTableName("mysql", schema, tableName);
+  const sqls: string[] = [];
+
+  const pkCols = current.columns.filter((c) => c.primaryKey);
+  const lines = current.columns.map((col) => `  ${qi(col.name)} ${mysqlColumnTail(col)}`);
+  if (pkCols.length > 0) {
+    lines.push(`  PRIMARY KEY (${pkCols.map((c) => qi(c.name)).join(", ")})`);
+  }
+
+  let createSql = `CREATE TABLE ${qualifiedTbl} (\n${lines.join(",\n")}\n)`;
+  if (current.tableComment.trim()) {
+    createSql += ` COMMENT=${mysqlStringLiteral(current.tableComment)}`;
+  }
+  sqls.push(createSql);
+
+  for (const idx of current.indexes) {
+    if (idx.toDelete) continue;
+    const idxName = resolveIndexName(current.tableName, idx);
+    const unique = idx.unique ? "UNIQUE " : "";
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    sqls.push(`CREATE ${unique}INDEX ${qi(idxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+
+  for (const fk of current.foreignKeys) {
+    if (fk.toDelete) continue;
+    const constraintName = resolveFkConstraintName(current.tableName, fk);
+    const ref = qualifiedTableName("mysql", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
+    );
+  }
+
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (uq.toDelete) continue;
+    const constraintName = resolveUqConstraintName(current.tableName, uq, i);
+    const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} UNIQUE (${cols})`);
+  }
+
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (chk.toDelete) continue;
+    const constraintName = resolveChkConstraintName(current.tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} CHECK (${chk.expression})`);
+  }
+
+  return sqls;
+}
+
+function mysqlBuildEditDdl(
+  schema: string,
+  tableName: string,
+  original: OriginalState,
+  current: DesignerDdlCurrent
+): string[] {
+  const qi = (id: string) => quoteIdent("mysql", id);
+  const qualifiedTbl = qualifiedTableName("mysql", schema, tableName);
+  const sqls: string[] = [];
+
+  const origColMap = new Map<string, TableColumn>(
+    original.columns.map((c) => [c.name.toLowerCase(), c])
+  );
+  const origFkMap = new Map<string, ForeignKeyDef>(
+    original.foreignKeys.map((fk) => [(fk.constraintName ?? "").toLowerCase(), fk])
+  );
+  const origUqMap = new Map<string, UniqueConstraintDef>(
+    original.uniqueConstraints.map((uq) => [(uq.constraintName ?? "").toLowerCase(), uq])
+  );
+  const origChkMap = new Map<string, CheckConstraintDef>(
+    original.checkConstraints.map((chk) => [(chk.constraintName ?? "").toLowerCase(), chk])
+  );
+  const origIdxMap = new Map<string, IndexDef>(
+    original.indexes.map((idx) => [idx.name.toLowerCase(), idx])
+  );
+
+  // Phase A：先删外键 / 唯一与检查约束 / 索引（MySQL 要求先 DROP FOREIGN KEY 再 DROP COLUMN 等）
+  for (const fk of current.foreignKeys) {
+    if (!fk.toDelete) continue;
+    const constraintName = fk.originalConstraintName || resolveFkConstraintName(tableName, fk);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP FOREIGN KEY ${qi(constraintName)}`);
+  }
+  for (const fk of current.foreignKeys) {
+    if (fk.isNew || fk.toDelete) continue;
+    const lookupKey = (fk.originalConstraintName || fk.constraintName || "").toLowerCase();
+    const orig = origFkMap.get(lookupKey);
+    if (!orig) continue;
+    const changed =
+      orig.constraintName !== fk.constraintName ||
+      orig.column !== fk.column ||
+      orig.refSchema !== fk.refSchema ||
+      orig.refTable !== fk.refTable ||
+      orig.refColumn !== fk.refColumn ||
+      orig.onDelete !== fk.onDelete ||
+      orig.onUpdate !== fk.onUpdate;
+    if (changed) {
+      const oldName = fk.originalConstraintName || orig.constraintName || resolveFkConstraintName(tableName, orig);
+      sqls.push(`ALTER TABLE ${qualifiedTbl} DROP FOREIGN KEY ${qi(oldName)}`);
+    }
+  }
+
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (!uq.toDelete) continue;
+    const constraintName = uq.originalConstraintName || resolveUqConstraintName(tableName, uq, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP INDEX ${qi(constraintName)}`);
+  }
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (!chk.toDelete) continue;
+    const constraintName = chk.originalConstraintName || resolveChkConstraintName(tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CHECK ${qi(constraintName)}`);
+  }
+
+  for (const idx of current.indexes) {
+    if (!idx.toDelete) continue;
+    const idxName = resolveIndexName(tableName, idx);
+    sqls.push(`DROP INDEX ${qi(idxName)} ON ${qualifiedTbl}`);
+  }
+  for (const idx of current.indexes) {
+    if (idx.isNew || idx.toDelete) continue;
+    const lookupKey = (idx.originalName || idx.name).toLowerCase();
+    const orig = origIdxMap.get(lookupKey);
+    if (!orig) continue;
+    const nameChanged = orig.name !== idx.name;
+    const typeChanged = orig.indexType !== idx.indexType;
+    const uniqueChanged = orig.unique !== idx.unique;
+    const colsChanged = JSON.stringify([...orig.columns].sort()) !== JSON.stringify([...idx.columns].sort());
+    if (nameChanged || typeChanged || uniqueChanged || colsChanged) {
+      sqls.push(`DROP INDEX ${qi(orig.name)} ON ${qualifiedTbl}`);
+    }
+  }
+
+  for (const uq of current.uniqueConstraints) {
+    if (uq.isNew || uq.toDelete) continue;
+    const lookupKey = (uq.originalConstraintName || uq.constraintName || "").toLowerCase();
+    const orig = origUqMap.get(lookupKey);
+    if (!orig) continue;
+    const origCols = orig.columns.split(",").map((c) => c.trim()).sort().join(",");
+    const newCols = uq.columns.split(",").map((c) => c.trim()).sort().join(",");
+    if (orig.constraintName !== uq.constraintName || origCols !== newCols) {
+      const oldName = uq.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualifiedTbl} DROP INDEX ${qi(oldName)}`);
+    }
+  }
+  for (const chk of current.checkConstraints) {
+    if (chk.isNew || chk.toDelete) continue;
+    const lookupKey = (chk.originalConstraintName || chk.constraintName || "").toLowerCase();
+    const orig = origChkMap.get(lookupKey);
+    if (!orig) continue;
+    if (orig.constraintName !== chk.constraintName || orig.expression !== chk.expression) {
+      const oldName = chk.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CHECK ${qi(oldName)}`);
+    }
+  }
+
+  // Phase B：列结构（ADD / DROP / MODIFY / PK / RENAME）
+  for (const col of current.columns) {
+    if (!col.isNew) continue;
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD COLUMN ${qi(col.name)} ${mysqlColumnTail(col)}`);
+  }
+
+  const currentOriginalNames = new Set(
+    current.columns.map((c) => (c.originalName || c.name).toLowerCase())
+  );
+  for (const origCol of original.columns) {
+    if (!currentOriginalNames.has(origCol.name.toLowerCase())) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} DROP COLUMN ${qi(origCol.name)}`);
+    }
+  }
+
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    const origKey = (col.originalName || col.name).toLowerCase();
+    const orig = origColMap.get(origKey);
+    if (!orig) continue;
+
+    const typeChanged = buildColumnTypeSql(orig) !== buildColumnTypeSql(col);
+    const nullChanged = orig.nullable !== col.nullable;
+    const defaultChanged = orig.defaultValue !== col.defaultValue;
+    const aiChanged = !!orig.autoIncrement !== !!col.autoIncrement;
+    const commentChanged = (orig.comment ?? "") !== (col.comment ?? "");
+
+    if (typeChanged || nullChanged || defaultChanged || aiChanged || commentChanged) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} MODIFY COLUMN ${qi(col.name)} ${mysqlColumnTail(col)}`);
+    }
+  }
+
+  const origPkSet = new Set(original.columns.filter((c) => c.primaryKey).map((c) => c.name.toLowerCase()));
+  const newPkCols = current.columns.filter((c) => c.primaryKey).map((c) => c.name);
+  const newPkSet = new Set(newPkCols.map((n) => n.toLowerCase()));
+  const pkChanged =
+    origPkSet.size !== newPkSet.size ||
+    [...origPkSet].some((col) => !newPkSet.has(col)) ||
+    [...newPkSet].some((col) => !origPkSet.has(col));
+  if (pkChanged) {
+    if (origPkSet.size > 0) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} DROP PRIMARY KEY`);
+    }
+    if (newPkCols.length > 0) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} ADD PRIMARY KEY (${newPkCols.map(qi).join(", ")})`);
+    }
+  }
+
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    if (col.originalName && col.originalName !== col.name) {
+      sqls.push(
+        `ALTER TABLE ${qualifiedTbl} RENAME COLUMN ${qi(col.originalName)} TO ${qi(col.name)}`
+      );
+    }
+  }
+
+  // Phase C：新建 / 重建外键、唯一、检查、索引
+  for (const fk of current.foreignKeys) {
+    if (!fk.isNew) continue;
+    const constraintName = resolveFkConstraintName(tableName, fk);
+    const ref = qualifiedTableName("mysql", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
+    );
+  }
+  for (const fk of current.foreignKeys) {
+    if (fk.isNew || fk.toDelete) continue;
+    const lookupKey = (fk.originalConstraintName || fk.constraintName || "").toLowerCase();
+    const orig = origFkMap.get(lookupKey);
+    if (!orig) continue;
+    const changed =
+      orig.constraintName !== fk.constraintName ||
+      orig.column !== fk.column ||
+      orig.refSchema !== fk.refSchema ||
+      orig.refTable !== fk.refTable ||
+      orig.refColumn !== fk.refColumn ||
+      orig.onDelete !== fk.onDelete ||
+      orig.onUpdate !== fk.onUpdate;
+    if (!changed) continue;
+    const newName = resolveFkConstraintName(tableName, fk);
+    const ref = qualifiedTableName("mysql", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${fk.onDelete} ON UPDATE ${fk.onUpdate}`
+    );
+  }
+
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (!uq.isNew) continue;
+    const constraintName = resolveUqConstraintName(tableName, uq, i);
+    const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} UNIQUE (${cols})`);
+  }
+  for (const uq of current.uniqueConstraints) {
+    if (uq.isNew || uq.toDelete) continue;
+    const lookupKey = (uq.originalConstraintName || uq.constraintName || "").toLowerCase();
+    const orig = origUqMap.get(lookupKey);
+    if (!orig) continue;
+    const origCols = orig.columns.split(",").map((c) => c.trim()).sort().join(",");
+    const newCols = uq.columns.split(",").map((c) => c.trim()).sort().join(",");
+    if (orig.constraintName !== uq.constraintName || origCols !== newCols) {
+      const newName = resolveUqConstraintName(tableName, uq, 0);
+      const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+      sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} UNIQUE (${cols})`);
+    }
+  }
+
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (!chk.isNew) continue;
+    const constraintName = resolveChkConstraintName(tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} CHECK (${chk.expression})`);
+  }
+  for (const chk of current.checkConstraints) {
+    if (chk.isNew || chk.toDelete) continue;
+    const lookupKey = (chk.originalConstraintName || chk.constraintName || "").toLowerCase();
+    const orig = origChkMap.get(lookupKey);
+    if (!orig) continue;
+    if (orig.constraintName === chk.constraintName && orig.expression === chk.expression) continue;
+    const newName = resolveChkConstraintName(tableName, chk, 0);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} CHECK (${chk.expression})`);
+  }
+
+  for (const idx of current.indexes) {
+    if (!idx.isNew) continue;
+    const idxName = resolveIndexName(tableName, idx);
+    const unique = idx.unique ? "UNIQUE " : "";
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    sqls.push(`CREATE ${unique}INDEX ${qi(idxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+  for (const idx of current.indexes) {
+    if (idx.isNew || idx.toDelete) continue;
+    const lookupKey = (idx.originalName || idx.name).toLowerCase();
+    const orig = origIdxMap.get(lookupKey);
+    if (!orig) continue;
+    const nameChanged = orig.name !== idx.name;
+    const typeChanged = orig.indexType !== idx.indexType;
+    const uniqueChanged = orig.unique !== idx.unique;
+    const colsChanged = JSON.stringify([...orig.columns].sort()) !== JSON.stringify([...idx.columns].sort());
+    if (!nameChanged && !typeChanged && !uniqueChanged && !colsChanged) continue;
+    const unique = idx.unique ? "UNIQUE " : "";
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    const newIdxName = resolveIndexName(tableName, idx);
+    sqls.push(`CREATE ${unique}INDEX ${qi(newIdxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+
+  if (current.tableComment !== original.tableComment) {
+    if (current.tableComment.trim()) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} COMMENT = ${mysqlStringLiteral(current.tableComment)}`);
+    } else {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} COMMENT = ''`);
+    }
+  }
+
+  return sqls;
 }
 
 function resolveFkConstraintName(tableName: string, fk: ForeignKeyDef): string {
@@ -244,22 +627,30 @@ export function buildDdlStatements(
   tableName: string,
   mode: "create" | "edit",
   original: OriginalState,
-  current: {
-    tableName: string;
-    tableComment: string;
-    columns: TableColumn[];
-    indexes: IndexDef[];
-    foreignKeys: ForeignKeyDef[];
-    uniqueConstraints: UniqueConstraintDef[];
-    checkConstraints: CheckConstraintDef[];
+  current: DesignerDdlCurrent,
+  dialect: SqlDialect = "postgres"
+): string[] {
+  if (dialect === "mysql") {
+    if (mode === "create") return mysqlBuildCreateDdl(schema, tableName, current);
+    return mysqlBuildEditDdl(schema, tableName, original, current);
   }
+  return buildPostgresDdlStatements(schema, tableName, mode, original, current);
+}
+
+function buildPostgresDdlStatements(
+  schema: string,
+  tableName: string,
+  mode: "create" | "edit",
+  original: OriginalState,
+  current: DesignerDdlCurrent
 ): string[] {
   const sqls: string[] = [];
-  const qualified = qualifiedTable(schema, tableName);
+  const q = (id: string) => quoteIdent("postgres", id);
+  const qualified = qualifiedTableName("postgres", schema, tableName);
 
   if (mode === "create") {
     // ── CREATE TABLE ──────────────────────────────────────────────────────────
-    const colDefs = current.columns.map(buildColumnInlineSql);
+    const colDefs = current.columns.map(buildPgColumnInlineSql);
     sqls.push(`CREATE TABLE ${qualified} (\n${colDefs.join(",\n")}\n)`);
 
     // Indexes
@@ -586,7 +977,8 @@ export function buildCreateTableSql(
   columns: TableColumn[],
   uniqueConstraints: UniqueConstraint[],
   checkConstraints: CheckConstraint[],
-  foreignKeys: ForeignKeyConstraint[]
+  foreignKeys: ForeignKeyConstraint[],
+  dialect: SqlDialect = "postgres"
 ): string[] {
   const emptyOriginal: OriginalState = {
     tableName,
@@ -612,7 +1004,9 @@ export function buildCreateTableSql(
     })),
     uniqueConstraints: uniqueConstraints.map((uq) => ({ columns: uq.columns })),
     checkConstraints: checkConstraints.map((chk) => ({ expression: chk.expression })),
-  });
+  },
+    dialect
+  );
 }
 
 /** @deprecated Use buildDdlStatements instead */
@@ -620,7 +1014,8 @@ export function buildAlterTableSql(
   schema: string,
   tableName: string,
   originalColumns: TableColumn[],
-  newColumns: TableColumn[]
+  newColumns: TableColumn[],
+  dialect: SqlDialect = "postgres"
 ): string[] {
   const emptyOriginal: OriginalState = {
     tableName,
@@ -639,7 +1034,9 @@ export function buildAlterTableSql(
     foreignKeys: [],
     uniqueConstraints: [],
     checkConstraints: [],
-  });
+  },
+    dialect
+  );
 }
 
 /** @deprecated Common PostgreSQL types list */
@@ -648,4 +1045,14 @@ export const COMMON_TYPES: string[] = [
   "date", "decimal", "double precision", "integer", "json", "jsonb",
   "numeric", "real", "serial", "smallint", "text", "time", "timestamp",
   "timestamptz", "uuid", "varchar",
+];
+
+/** 表设计器下拉：MySQL 常用类型（与 PG 列表分离） */
+export const COMMON_TYPES_MYSQL: string[] = [
+  "bigint", "int", "integer", "smallint", "tinyint", "mediumint",
+  "decimal", "numeric", "float", "double",
+  "char", "varchar", "text", "tinytext", "mediumtext", "longtext",
+  "binary", "varbinary", "blob", "tinyblob", "mediumblob", "longblob",
+  "date", "time", "datetime", "timestamp", "year",
+  "json", "boolean",
 ];

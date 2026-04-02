@@ -112,7 +112,9 @@ function IndexColumnPicker(pickerProps: {
       </Show>
     </div>
   );
-}import {
+}
+
+import {
   getColumns,
   getIndexes,
   getForeignKeys,
@@ -128,17 +130,19 @@ import {
   type TableColumn,
   type IndexDef,
   type ForeignKeyDef,
-  type FKAction,
   type UniqueConstraintDef,
   type CheckConstraintDef,
   type OriginalState,
   needsLength,
   needsPrecision,
   COMMON_TYPES,
+  COMMON_TYPES_MYSQL,
   autoIndexName,
   validateDesignerState,
   buildDdlStatements,
+  normalizeMysqlReferentialAction,
 } from "./table-designer-shared";
+import { getRegisteredDbType } from "./db-session-meta";
 import { vscode } from "./theme";
 
 export interface TableDesignerUnifiedProps {
@@ -159,6 +163,32 @@ function emptyOriginalState(): OriginalState {
     foreignKeys: [],
     uniqueConstraints: [],
     checkConstraints: [],
+  };
+}
+
+function designerDialect(connectionId: string): "postgres" | "mysql" {
+  return getRegisteredDbType(connectionId) === "mysql" ? "mysql" : "postgres";
+}
+
+function emptyDesignerColumn(connectionId: string): TableColumn {
+  if (getRegisteredDbType(connectionId) === "mysql") {
+    return {
+      name: "",
+      dataType: "varchar",
+      length: "255",
+      nullable: true,
+      primaryKey: false,
+      defaultValue: "",
+      isNew: true,
+    };
+  }
+  return {
+    name: "",
+    dataType: "text",
+    nullable: true,
+    primaryKey: false,
+    defaultValue: "",
+    isNew: true,
   };
 }
 
@@ -252,6 +282,24 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
       const pkSet = new Set<string>((data.pkRes.columns ?? []).map((c: string) => c.toLowerCase()));
 
+      const isMysql = designerDialect(props.connectionId) === "mysql";
+      const uqOnlyList = (data.uqRes.constraints ?? []).filter((c: any) => c.type === "UNIQUE");
+      const mysqlUniqueConstraintNames = new Set(
+        uqOnlyList.map((u: any) => String(u.name ?? "").toLowerCase()).filter(Boolean)
+      );
+      const colSig = (cols: string[]) => JSON.stringify([...cols].map((c) => c.toLowerCase()).sort());
+      const mysqlUniqueColSigs = new Set(
+        uqOnlyList.map((u: any) => {
+          const arr = Array.isArray(u.columns)
+            ? u.columns.map(String)
+            : String(u.columns ?? "")
+                .split(",")
+                .map((s: string) => s.trim())
+                .filter(Boolean);
+          return colSig(arr);
+        })
+      );
+
       const loadedColumns: TableColumn[] = (data.colsRes.columns ?? []).map((c: any) => ({
         name: c.column_name,
         originalName: c.column_name,
@@ -270,6 +318,14 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
       const loadedIndexes: IndexDef[] = (data.idxRes.indexes ?? [])
         .filter((idx: any) => !idx.is_primary)
+        .filter((idx: any) => {
+          if (!isMysql || !idx.is_unique) return true;
+          const iname = String(idx.index_name ?? "").toLowerCase();
+          if (mysqlUniqueConstraintNames.has(iname)) return false;
+          const icols = Array.isArray(idx.columns) ? idx.columns.map(String) : [];
+          if (mysqlUniqueColSigs.has(colSig(icols))) return false;
+          return true;
+        })
         .map((idx: any) => ({
           name: idx.index_name ?? "",
           originalName: idx.index_name ?? "",
@@ -288,8 +344,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         refSchema: fk.target_schema ?? props.schema,
         refTable: fk.target_table ?? "",
         refColumn: fk.target_column ?? "",
-        onDelete: (fk.delete_rule ?? "NO ACTION") as ForeignKeyDef["onDelete"],
-        onUpdate: (fk.update_rule ?? "NO ACTION") as ForeignKeyDef["onUpdate"],
+        onDelete: (isMysql ? normalizeMysqlReferentialAction(fk.delete_rule) : (fk.delete_rule ?? "NO ACTION")) as ForeignKeyDef["onDelete"],
+        onUpdate: (isMysql ? normalizeMysqlReferentialAction(fk.update_rule) : (fk.update_rule ?? "NO ACTION")) as ForeignKeyDef["onUpdate"],
         isNew: false,
         isExisting: true,
         toDelete: false,
@@ -323,6 +379,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
       const loadedComment = data.commentRes.comment ?? "";
 
+      setTableName(props.table ?? "");
       setColumns(reconcile(loadedColumns));
       setIndexes(reconcile(loadedIndexes));
       setForeignKeys(reconcile(loadedForeignKeys));
@@ -362,9 +419,13 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
   // ── Create mode: initialize with one empty column ─────────────────────────
   if (props.mode === "create") {
-    setColumns([{ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true }]);
+    setColumns([emptyDesignerColumn(props.connectionId)]);
     setOriginalState(emptyOriginalState());
   }
+
+  const columnTypeOptions = createMemo(() =>
+    designerDialect(props.connectionId) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES
+  );
 
   // ── Tab button style helper ────────────────────────────────────────────────
   const tabStyle = (tab: typeof activeTab extends () => infer T ? T : never) => ({
@@ -442,7 +503,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     foreignKeys: [...foreignKeys],
                     uniqueConstraints: [...uniqueConstraints],
                     checkConstraints: [...checkConstraints],
-                  }
+                  },
+                  designerDialect(props.connectionId)
                 );
 
                 if (stmts.length === 0) {
@@ -540,10 +602,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
             <button
               data-testid="btn-add-column"
               onClick={() => {
-                setColumns((cols) => [
-                  ...cols,
-                  { name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true },
-                ]);
+                setColumns((cols) => [...cols, emptyDesignerColumn(props.connectionId)]);
               }}
               style={{
                 "background-color": "transparent",
@@ -718,7 +777,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                                 onChange={(e) => setColumns(i(), "dataType", e.currentTarget.value)}
                                 style={{ ...inputStyle, width: "auto", "min-width": "120px" }}
                               >
-                                <For each={COMMON_TYPES}>
+                                <For each={columnTypeOptions()}>
                                   {(t) => <option value={t}>{t}</option>}
                                 </For>
                               </select>
@@ -1477,7 +1536,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     foreignKeys: [...foreignKeys],
                     uniqueConstraints: [...uniqueConstraints],
                     checkConstraints: [...checkConstraints],
-                  }
+                  },
+                  designerDialect(props.connectionId)
                 );
                 if (stmts.length === 0) {
                   return <p style={{ color: vscode.foregroundDim, "font-size": "12px", margin: "0" }}>没有修改需要保存</p>;

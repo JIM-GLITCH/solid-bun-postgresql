@@ -39,10 +39,12 @@ export interface GetDbConfigResult {
  * 若启用 SSH 隧道则建立隧道，并将 host/port 替换为本地隧道端口，确保所有连接都走隧道
  */
 export async function getDbConfig(params: PostgresLoginParams): Promise<GetDbConfigResult> {
+  const dbName = String(params.database ?? "").trim();
   const baseConfig: DbConfig = {
     host: params.host ?? "localhost",
     port: Number(params.port ?? 5432),
-    database: params.database,
+    // 未填 database 时与 libpq 一致：默认库名为当前用户名
+    database: dbName || params.username || "postgres",
     user: params.username,
     password: params.password ?? "",
     connectionTimeoutMillis: getConnectionTimeoutMs(params),

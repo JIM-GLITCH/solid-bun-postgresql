@@ -4,6 +4,8 @@
 
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
+import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
 import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
 
 export interface RenameTableModalProps {
@@ -29,10 +31,18 @@ export default function RenameTableModal(props: RenameTableModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const schema = props.schema.replace(/"/g, '""');
-      const oldTable = props.table.replace(/"/g, '""');
-      const newTable = name.replace(/"/g, '""');
-      await executeDdl(props.connectionId, `ALTER TABLE "${schema}"."${oldTable}" RENAME TO "${newTable}";`);
+      const kind = getRegisteredDbType(props.connectionId);
+      if (kind === "mysql") {
+        const db = mysqlBacktickIdent(props.schema);
+        const oldT = mysqlBacktickIdent(props.table);
+        const newT = mysqlBacktickIdent(name);
+        await executeDdl(props.connectionId, `RENAME TABLE ${db}.${oldT} TO ${db}.${newT};`);
+      } else {
+        await executeDdl(
+          props.connectionId,
+          `ALTER TABLE ${pgQuoteIdent(props.schema)}.${pgQuoteIdent(props.table)} RENAME TO ${pgQuoteIdent(name)};`
+        );
+      }
       props.onSuccess(props.connectionId, props.schema);
       props.onClose();
     } catch (e) {

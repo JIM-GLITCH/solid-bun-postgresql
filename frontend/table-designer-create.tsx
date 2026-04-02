@@ -14,7 +14,9 @@ import {
   needsLength,
   buildCreateTableSql,
   COMMON_TYPES,
+  COMMON_TYPES_MYSQL,
 } from "./table-designer-shared";
+import { getRegisteredDbType } from "./db-session-meta";
 import { vscode } from "./theme";
 
 export interface TableDesignerCreateProps {
@@ -24,11 +26,24 @@ export interface TableDesignerCreateProps {
   onSuccess?: (connectionId: string, schema: string) => void;
 }
 
+function defaultCreateColumn(connectionId: string): TableColumn {
+  if (getRegisteredDbType(connectionId) === "mysql") {
+    return {
+      name: "",
+      dataType: "varchar",
+      length: "255",
+      nullable: true,
+      primaryKey: false,
+      defaultValue: "",
+      isNew: true,
+    };
+  }
+  return { name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true };
+}
+
 export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const [tableName, setTableName] = createSignal("");
-  const [columns, setColumns] = createStore<TableColumn[]>([
-    { name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true },
-  ]);
+  const [columns, setColumns] = createStore<TableColumn[]>([defaultCreateColumn(props.connectionId)]);
   const [uniqueConstraints, setUniqueConstraints] = createStore<UniqueConstraint[]>([]);
   const [checkConstraints, setCheckConstraints] = createStore<CheckConstraint[]>([]);
   const [fkConstraints, setFkConstraints] = createStore<ForeignKeyConstraint[]>([]);
@@ -39,8 +54,10 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
 
   onMount(() => {
     if (props.connectionId) {
+      const fallback =
+        getRegisteredDbType(props.connectionId) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES;
       getDataTypes(props.connectionId)
-        .then(({ types }) => setDataTypes(types?.length ? types : COMMON_TYPES))
+        .then(({ types }) => setDataTypes(types?.length ? types : fallback))
         .catch(() => {});
     }
   });
@@ -48,7 +65,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const addColumn = () => {
     setColumns(
       produce((draft) => {
-        draft.push({ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true });
+        draft.push(defaultCreateColumn(props.connectionId));
       })
     );
   };
@@ -58,7 +75,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
       produce((draft) => {
         draft.splice(index, 1);
         if (draft.length === 0) {
-          draft.push({ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true });
+          draft.push(defaultCreateColumn(props.connectionId));
         }
       })
     );
@@ -71,14 +88,19 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const addFk = () => setFkConstraints((prev) => [...prev, { column: "", refSchema: props.schema, refTable: "", refColumn: "" }]);
   const removeFk = (i: number) => setFkConstraints((prev) => prev.filter((_, idx) => idx !== i));
 
-  const getStmts = () => buildCreateTableSql(
-    props.schema,
-    tableName(),
-    columns as unknown as TableColumn[],
-    uniqueConstraints.length ? [...uniqueConstraints] : [],
-    checkConstraints.filter((c) => c.expression.trim()),
-    fkConstraints.filter((f) => f.column && f.refTable && f.refColumn),
-  );
+  const designerDialect = () =>
+    (getRegisteredDbType(props.connectionId) === "mysql" ? "mysql" : "postgres") as const;
+
+  const getStmts = () =>
+    buildCreateTableSql(
+      props.schema,
+      tableName(),
+      columns as unknown as TableColumn[],
+      uniqueConstraints.length ? [...uniqueConstraints] : [],
+      checkConstraints.filter((c) => c.expression.trim()),
+      fkConstraints.filter((f) => f.column && f.refTable && f.refColumn),
+      designerDialect()
+    );
 
   const previewSql = () => getStmts().map(s => s + ";").join("\n\n");
 
@@ -96,7 +118,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
       }
       setShowPreview(false);
       setTableName("");
-      setColumns([{ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true }]);
+      setColumns([defaultCreateColumn(props.connectionId)]);
       setUniqueConstraints([]);
       setCheckConstraints([]);
       setFkConstraints([]);

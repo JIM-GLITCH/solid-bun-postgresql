@@ -4,7 +4,7 @@
 
 import { createSignal, createEffect, Show, For } from "solid-js";
 import { getColumns, getPrimaryKeys, getUniqueConstraints, importRows } from "./api";
-import { generateFakeData, type TableColumn } from "./fake-data-generator";
+import { generateFakeData, isGeneratedStoredColumn, type TableColumn } from "./fake-data-generator";
 import { vscode } from "./theme";
 
 interface FakeDataModalProps {
@@ -37,7 +37,9 @@ export default function FakeDataModal(props: FakeDataModalProps) {
     ])
       .then(([colRes, pkRes, uqRes]) => {
         if (colRes.error) throw new Error(colRes.error);
-        setColumns((colRes.columns || []) as TableColumn[]);
+        const raw = (colRes.columns || []) as TableColumn[];
+        // MySQL 生成列 / PG 等不可写入列：跳过，否则 INSERT 失败
+        setColumns(raw.filter((c) => !isGeneratedStoredColumn(c)));
         const set = new Set<string>();
         (pkRes.columns || []).forEach((c: string) => set.add(c));
         (uqRes.constraints || []).forEach((c: { columns: string[] }) => (c.columns || []).forEach((col: string) => set.add(col)));

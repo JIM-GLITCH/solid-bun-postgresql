@@ -8,7 +8,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { PostgresLoginParams } from "../shared/src";
+import type { StoredConnectionParams, DbKind } from "../shared/src";
 
 const ALG = "aes-256-gcm";
 const KEY_LEN = 32;
@@ -75,8 +75,13 @@ function decrypt(encrypted: string): string {
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 }
 
-function makeLabel(params: PostgresLoginParams): string {
+function makeLabel(params: StoredConnectionParams): string {
   return `${params.username}@${params.host}:${params.port}/${params.database}`;
+}
+
+function normalizeStoredParams(params: StoredConnectionParams): StoredConnectionParams {
+  const dbType: DbKind = params.dbType ?? "postgres";
+  return { ...params, dbType };
 }
 
 function normalizeItem(raw: unknown): StoredConnectionItem | null {
@@ -134,10 +139,10 @@ export function listConnections(): ConnectionList {
 /** 保存连接（加密存储） */
 export function saveConnection(
   id: string,
-  params: PostgresLoginParams,
+  params: StoredConnectionParams,
   meta?: { name?: string }
 ): void {
-  const enc = encrypt(JSON.stringify(params));
+  const enc = encrypt(JSON.stringify(normalizeStoredParams(params)));
   const label = meta?.name?.trim() || makeLabel(params);
   const list = loadRaw();
   const idx = list.findIndex((c) => c.id === id);
@@ -162,7 +167,7 @@ export function updateConnectionMeta(id: string, meta: { name?: string }): void 
   if (idx === -1) return;
   const item = list[idx];
   if (meta.name !== undefined) {
-    item.label = meta.name.trim() || makeLabel(JSON.parse(decrypt(item.enc)) as PostgresLoginParams);
+    item.label = meta.name.trim() || makeLabel(JSON.parse(decrypt(item.enc)) as StoredConnectionParams);
     item.name = meta.name.trim() || undefined;
   }
   saveRaw(list);
@@ -187,13 +192,13 @@ export function reorderConnections(rawList: unknown[]): void {
 }
 
 /** 解密并返回连接参数（供服务端连接使用，不暴露给前端） */
-export function getConnectionParams(id: string): (PostgresLoginParams & { id: string }) | null {
+export function getConnectionParams(id: string): (StoredConnectionParams & { id: string }) | null {
   const list = loadRaw();
   const item = list.find((c) => c.id === id);
   if (!item) return null;
   try {
-    const params = JSON.parse(decrypt(item.enc)) as PostgresLoginParams;
-    return { ...params, id: item.id };
+    const parsed = JSON.parse(decrypt(item.enc)) as StoredConnectionParams;
+    return { ...normalizeStoredParams(parsed), id: item.id };
   } catch {
     return null;
   }

@@ -244,6 +244,30 @@ describe("buildDdlStatements (create mode)", () => {
     expect(stmts[0]).toMatch(/"id" integer NOT NULL PRIMARY KEY/);
   });
 
+  test("MySQL dialect: backticks, AUTO_INCREMENT, PRIMARY KEY clause", () => {
+    const stmts = buildDdlStatements("mydb", "users", "create", emptyOriginal(), {
+      tableName: "users",
+      tableComment: "",
+      columns: [
+        makeColumn({
+          name: "id",
+          dataType: "bigint",
+          nullable: false,
+          primaryKey: true,
+          autoIncrement: true,
+        }),
+      ],
+      indexes: [],
+      foreignKeys: [],
+      uniqueConstraints: [],
+      checkConstraints: [],
+    }, "mysql");
+    expect(stmts[0]).toContain("CREATE TABLE `mydb`.`users`");
+    expect(stmts[0]).toContain("`id` bigint NOT NULL AUTO_INCREMENT");
+    expect(stmts[0]).toContain("PRIMARY KEY (`id`)");
+    expect(stmts[0]).not.toContain("GENERATED ALWAYS AS IDENTITY");
+  });
+
   test("generates COMMENT ON TABLE when tableComment is set", () => {
     const stmts = buildDdlStatements("public", "users", "create", emptyOriginal(), {
       tableName: "users",

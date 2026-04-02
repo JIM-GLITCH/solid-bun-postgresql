@@ -28,7 +28,13 @@ export interface PlanNode {
 }
 
 export interface ExplainPlanViewerProps {
-  plan: Array<{ Plan: PlanNode; "Planning Time"?: number; "Execution Time"?: number }>;
+  plan: Array<{
+    Plan: PlanNode | string;
+    "Planning Time"?: number;
+    "Execution Time"?: number;
+    /** mysql-analyze-text / text 等 */
+    Format?: string;
+  }>;
   onClose?: () => void;
 }
 
@@ -142,15 +148,34 @@ function PlanNodeRow(props: { node: PlanNode; depth: number; totalTime?: number 
 
 export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
   const root = () => props.plan?.[0];
-  const planNode = () => root()?.Plan;
+  const planBody = () => root()?.Plan;
+  const planFormat = () => root()?.Format;
   const planningTime = () => root()?.["Planning Time"];
   const executionTime = () => root()?.["Execution Time"];
 
   const totalTime = () => {
     const t = executionTime();
     if (t != null && t > 0) return t;
-    const p = planNode();
-    return p?.["Actual Total Time"] ?? 0;
+    const p = planBody();
+    if (p && typeof p === "object") {
+      return (p as PlanNode)["Actual Total Time"] ?? 0;
+    }
+    return 0;
+  };
+
+  const subtitle = () => {
+    const pt = planningTime();
+    const et = executionTime();
+    const fmt = planFormat();
+    if (typeof planBody() === "string") {
+      return fmt === "mysql-analyze-text"
+        ? "MySQL EXPLAIN ANALYZE（真实执行采样）"
+        : "文本执行计划";
+    }
+    if (pt == null && et == null) {
+      return fmt ? `格式: ${fmt}` : "估算成本 / 行数（无实际耗时）";
+    }
+    return `规划: ${formatTime(pt)} · 执行: ${formatTime(et)}`;
   };
 
   return (
@@ -176,9 +201,7 @@ export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
         <span style={{ "font-size": "16px", "font-weight": "600", color: vscode.foreground }}>
           📊 解释分析
         </span>
-        <span style={{ color: vscode.foregroundDim, "font-size": "13px" }}>
-          规划: {formatTime(planningTime())} · 执行: {formatTime(executionTime())}
-        </span>
+        <span style={{ color: vscode.foregroundDim, "font-size": "13px" }}>{subtitle()}</span>
         <Show when={props.onClose}>
           <button
             onClick={props.onClose}
@@ -198,9 +221,33 @@ export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
         </Show>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: "8px 0" }}>
-        <Show when={planNode()} fallback={<div style={{ padding: "16px", color: vscode.foregroundDim }}>无解释分析结果</div>}>
-          {(p) => <PlanNodeRow node={p()} depth={0} totalTime={totalTime()} />}
-        </Show>
+        {(() => {
+          const p = planBody();
+          if (typeof p === "string" && p.trim()) {
+            return (
+              <pre
+                style={{
+                  margin: "0 16px",
+                  padding: "12px",
+                  "font-size": "12px",
+                  "font-family": "'JetBrains Mono', monospace",
+                  color: vscode.foreground,
+                  "white-space": "pre-wrap",
+                  "word-break": "break-word",
+                  "background-color": vscode.inputBg,
+                  "border-radius": "4px",
+                  border: `1px solid ${vscode.border}`,
+                }}
+              >
+                {p}
+              </pre>
+            );
+          }
+          if (p && typeof p === "object") {
+            return <PlanNodeRow node={p as PlanNode} depth={0} totalTime={totalTime()} />;
+          }
+          return <div style={{ padding: "16px", color: vscode.foregroundDim }}>无解释分析结果</div>;
+        })()}
       </div>
     </div>
   );

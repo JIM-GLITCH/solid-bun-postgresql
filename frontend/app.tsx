@@ -1,5 +1,5 @@
 import { createSignal, Show, For, onMount, createEffect, onCleanup, createMemo } from 'solid-js';
-import { createStore } from 'solid-js/store';
+import { createStore, produce } from 'solid-js/store';
 import Resizable from '@corvu/resizable';
 import ConnectionForm from './connection-form';
 import QueryInterface from './query-interface';
@@ -82,6 +82,8 @@ export default function App() {
   const [tabs, setTabs] = createSignal<Tab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [refreshSidebarRequest, setRefreshSidebarRequest] = createSignal<{ connectionId: string; schema: string } | null>(null);
+  /** MySQL：侧栏单击 schema 后作为查询/EXPLAIN 的默认库（USE） */
+  const [mysqlDefaultSchemaByConn, setMysqlDefaultSchemaByConn] = createStore<Record<string, string>>({});
   const [connectionSwitcherOpen, setConnectionSwitcherOpen] = createSignal(false);
   const [sessionId] = createSignal(crypto.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
@@ -176,6 +178,9 @@ export default function App() {
       setActiveTabId(remainingTabs[0]?.id ?? null);
     }
     setConnections(connections.filter((c) => c.id !== connectionId));
+    setMysqlDefaultSchemaByConn(produce((m) => {
+      delete m[connectionId];
+    }));
   };
 
   const addOrFocusQueryTab = (connectionId: string, connectionInfo: string, initialSql?: string) => {
@@ -377,6 +382,14 @@ export default function App() {
             onRemoveSaved={handleRemoveSaved}
             onOpenEditConnection={handleOpenEditConnection}
             onRefreshSavedConnections={() => loadStoredConnections().then(setSavedConnections)}
+            onMysqlDefaultSchema={(connectionId, schema) => setMysqlDefaultSchemaByConn(connectionId, schema)}
+            onMysqlSchemaRemoved={(connectionId, schema) =>
+              setMysqlDefaultSchemaByConn(
+                produce((m) => {
+                  if (m[connectionId] === schema) delete m[connectionId];
+                })
+              )
+            }
           />
           </div>
         </Resizable.Panel>
@@ -621,6 +634,7 @@ export default function App() {
                         ) : tab.type === 'query' ? (
                           <QueryInterface
                             activeConnectionId={() => tab.connectionId}
+                            mysqlDefaultSchemaFor={(cid) => mysqlDefaultSchemaByConn[cid] ?? null}
                             isActiveTab={() => activeTabId() === tab.id}
                             externalQuery={() => {
                               const ext = externalQuery();

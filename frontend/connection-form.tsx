@@ -1,8 +1,8 @@
 import { For, createSignal, Show, createEffect, createResource } from 'solid-js';
-import { connectPostgres } from './api';
+import { connectPostgres, disconnectPostgres } from './api';
 import { saveConnection, getStoredConnectionParams } from './connection-storage';
 import { vscode } from './theme';
-import type { PostgresLoginParams } from '../shared/src';
+import type { PostgresLoginParams, DbKind } from '../shared/src';
 import type { StoredConnection } from './connection-storage';
 
 function generateConnectionId(): string {
@@ -19,7 +19,7 @@ function generateConnectionId(): string {
 const fields: Array<{ key: keyof PostgresLoginParams; label: string; desc: string; example: string }> = [
   { key: 'host', label: 'host', desc: '数据库主机名或 IP', example: 'localhost' },
   { key: 'port', label: 'port', desc: '数据库端口', example: '5432' },
-  { key: 'database', label: 'database', desc: '数据库名称', example: 'mydb' },
+  { key: 'database', label: 'database', desc: '数据库名（可空）。PostgreSQL 未填时默认同名库；MySQL 未填时请在侧栏单击要用的库作默认库，或在此填写库名', example: 'mydb' },
   { key: 'username', label: 'username', desc: '数据库用户', example: 'postgres' },
   { key: 'password', label: 'password', desc: '数据库密码', example: 'secret' },
 ];
@@ -58,7 +58,8 @@ const sshFields: Array<{ key: keyof PostgresLoginParams; label: string; desc: st
 ];
 
 interface ConnectionFormProps {
-  onConnected: (connectionId: string, info: string) => void;
+  /** 保留供宿主挂载；当前表单仅「测试连接 + 保存」，建立会话请从侧栏已保存连接进入 */
+  onConnected?: (connectionId: string, info: string) => void;
   onSaved?: () => void;
   compact?: boolean;
   connectionInfo?: string;
@@ -70,15 +71,17 @@ interface ConnectionFormProps {
 
 export default function ConnectionForm(props: ConnectionFormProps) {
   const [form, setForm] = createSignal<PostgresLoginParams>(initForm());
+  const [dbType, setDbType] = createSignal<DbKind>('postgres');
   const [connecting, setConnecting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [rememberPassword, setRememberPassword] = createSignal(false);
+  const [successHint, setSuccessHint] = createSignal<string | null>(null);
   const [connectionName, setConnectionName] = createSignal(props.editStored?.name ?? props.editStored?.label ?? '');
   const [connectionGroup, setConnectionGroup] = createSignal(props.editStored?.group ?? '');
 
   const onChange = (key: keyof PostgresLoginParams, value: string) => {
     setError(null);
+    setSuccessHint(null);
     if (key === 'connectionTimeoutSec') {
       const n = parseInt(value, 10);
       setForm((prev) => ({ ...prev, connectionTimeoutSec: n > 0 ? n : 30 }));
@@ -90,41 +93,44 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const setSshEnabled = (enabled: boolean) => {
     setForm((prev) => ({ ...prev, sshEnabled: enabled }));
     setError(null);
+    setSuccessHint(null);
+  };
+
+  const setDbKind = (k: DbKind) => {
+    setSuccessHint(null);
+    setDbType(k);
+    setForm((prev) => {
+      const next = { ...prev };
+      if (k === 'mysql' && (prev.port === '' || prev.port === '5432')) next.port = '3306';
+      if (k === 'postgres' && (prev.port === '' || prev.port === '3306')) next.port = '5432';
+      return next;
+    });
+    setError(null);
   };
 
   const buildPayload = (): PostgresLoginParams => form();
 
-  const getDisplayLabel = () => {
-    const p = form();
-    return connectionName().trim() || `${p.username}@${p.host}:${p.port}/${p.database}`;
-  };
-
-  const connect = async () => {
+  /** 临时建连校验账号密码，成功后立即断开，不在侧栏建立会话 */
+  const testConnection = async () => {
+    setSuccessHint(null);
     setConnecting(true);
     setError(null);
     try {
-      const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
+      const testId = `__test_${generateConnectionId()}`;
       const payload = buildPayload();
-      const { sucess, error: err } = await connectPostgres(connectionId, payload);
+      const { sucess, error: err } = await connectPostgres(testId, payload, dbType());
       if (sucess) {
-        const p = buildPayload();
-        if (rememberPassword()) {
-          try {
-            await saveConnection(connectionId, p, {
-              name: connectionName().trim() || undefined,
-              group: connectionGroup().trim() || undefined,
-            });
-            props.onSaved?.();
-          } catch (e) {
-            console.warn('保存连接失败:', e);
-          }
+        try {
+          await disconnectPostgres(testId);
+        } catch {
+          /* ignore */
         }
-        props.onConnected(connectionId, getDisplayLabel());
+        setSuccessHint('测试连接成功');
       } else {
         setError(String(err ?? '连接失败'));
       }
-    } catch (e: any) {
-      setError(e?.message ?? '连接失败');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '连接失败');
     } finally {
       setConnecting(false);
     }
@@ -133,10 +139,11 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const saveOnly = async () => {
     setSaving(true);
     setError(null);
+    setSuccessHint(null);
     try {
       const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
       const payload = buildPayload();
-      await saveConnection(connectionId, payload, {
+      await saveConnection(connectionId, { ...payload, dbType: dbType() }, {
         name: connectionName().trim() || undefined,
         group: connectionGroup().trim() || undefined,
       });
@@ -152,9 +159,10 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     if (!props.editStored) return;
     setSaving(true);
     setError(null);
+    setSuccessHint(null);
     try {
       const payload = buildPayload();
-      await saveConnection(props.editStored.id, payload, {
+      await saveConnection(props.editStored.id, { ...payload, dbType: dbType() }, {
         name: connectionName().trim() || undefined,
         group: connectionGroup().trim() || undefined,
       });
@@ -175,6 +183,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     const p = paramsResource();
     if (p) {
       setForm(normalizeParamsForForm(p));
+      setDbType(p.dbType ?? 'postgres');
     }
   });
 
@@ -182,7 +191,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     return (
       <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
         <span style={{ color: vscode.foreground, 'font-size': '13px' }}>
-          {props.connectionInfo || 'PostgreSQL 已连接'}
+          {props.connectionInfo || '数据库已连接'}
         </span>
         {props.onDisconnect && (
           <button
@@ -212,7 +221,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
       'border': `1px solid ${vscode.border}`,
     }}>
       <h2 style={{ 'margin': '0 0 16px 0', 'font-size': '16px', color: vscode.foreground }}>
-        {props.editStored ? '编辑连接配置' : 'PostgreSQL 连接'}
+        {props.editStored ? '编辑连接配置' : '数据库连接'}
       </h2>
       <Show when={props.editStored && paramsResource.loading}>
         <div style={{ color: vscode.foregroundDim, 'margin-bottom': '12px', 'font-size': '13px' }}>加载连接配置中...</div>
@@ -225,6 +234,28 @@ export default function ConnectionForm(props: ConnectionFormProps) {
             {error()}
           </div>
         </Show>
+        <Show when={successHint()}>
+          <div style={{ color: vscode.success, 'margin-bottom': '12px', 'font-size': '13px' }}>
+            {successHint()}
+          </div>
+        </Show>
+      <div style={{ 'margin-bottom': '14px', display: 'flex', 'align-items': 'center', gap: '10px', 'flex-wrap': 'wrap' }}>
+        <label style={{ color: vscode.foreground, 'font-size': '13px' }}>数据库类型</label>
+        <select
+          value={dbType()}
+          onChange={(e) => setDbKind(e.currentTarget.value as DbKind)}
+          style={{
+            padding: '6px 10px',
+            border: `1px solid ${vscode.border}`,
+            'background-color': vscode.inputBg,
+            color: vscode.inputFg,
+            'font-size': '13px',
+          }}
+        >
+          <option value="postgres">PostgreSQL</option>
+          <option value="mysql">MySQL</option>
+        </select>
+      </div>
       <table style={{ 'border-collapse': 'collapse', width: '100%', 'max-width': '600px' }}>
         <thead>
           <tr>
@@ -369,69 +400,41 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </div>
         </div>
       </div>
-      <Show when={!props.editStored}>
-        <label style={{ display: 'flex', 'align-items': 'center', gap: '8px', 'margin-top': '12px', cursor: 'pointer', 'font-size': '13px', color: vscode.foregroundDim }}>
-          <input
-            type="checkbox"
-            checked={rememberPassword()}
-            onInput={(e) => setRememberPassword(e.currentTarget.checked)}
-          />
-          记住密码（加密存储）
-        </label>
-      </Show>
-      <div style={{ display: 'flex', gap: '8px', 'margin-top': '12px' }}>
+      <div style={{ display: 'flex', gap: '8px', 'margin-top': '12px', 'flex-wrap': 'wrap' }}>
         <button
-          onClick={props.editStored ? saveEdit : connect}
-          disabled={props.editStored ? saving() : connecting()}
+          type="button"
+          onClick={() => void testConnection()}
+          disabled={connecting() || saving()}
           style={{
             padding: '8px 20px',
             'font-size': '13px',
-            'background-color': (props.editStored ? saving() : connecting()) ? vscode.buttonSecondary : vscode.buttonBg,
+            'background-color': connecting() || saving() ? vscode.buttonSecondary : vscode.buttonBg,
             color: '#fff',
             border: 'none',
-            cursor: (props.editStored ? saving() : connecting()) ? 'not-allowed' : 'pointer',
+            cursor: connecting() || saving() ? 'not-allowed' : 'pointer',
           }}
-          onMouseEnter={(e) => !(props.editStored ? saving() : connecting()) && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
+          onMouseEnter={(e) => !(connecting() || saving()) && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
         >
-          {props.editStored ? (saving() ? '保存中...' : '保存') : (connecting() ? '连接中...' : '连接')}
+          {connecting() ? '测试中...' : '测试连接'}
         </button>
-        <Show when={props.editStored}>
-          <button
-            onClick={connect}
-            disabled={connecting()}
-            style={{
-              padding: '8px 20px',
-              'font-size': '13px',
-              'background-color': vscode.buttonSecondary,
-              color: vscode.foreground,
-              border: 'none',
-              cursor: connecting() ? 'not-allowed' : 'pointer',
-            }}
-            onMouseEnter={(e) => !connecting() && (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
-          >
-            {connecting() ? '连接中...' : '连接'}
-          </button>
-        </Show>
-        <Show when={!props.editStored}>
-          <button
-            onClick={saveOnly}
-            disabled={saving()}
-            style={{
-              padding: '8px 20px',
-              'font-size': '13px',
-              'background-color': vscode.buttonSecondary,
-              color: vscode.foreground,
-              border: 'none',
-              cursor: saving() ? 'not-allowed' : 'pointer',
-            }}
-            onMouseEnter={(e) => !saving() && (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
-          >
-            {saving() ? '保存中...' : '仅保存配置'}
-          </button>
-        </Show>
+        <button
+          type="button"
+          onClick={() => void (props.editStored ? saveEdit() : saveOnly())}
+          disabled={saving() || connecting()}
+          style={{
+            padding: '8px 20px',
+            'font-size': '13px',
+            'background-color': saving() || connecting() ? vscode.buttonSecondary : vscode.buttonSecondary,
+            color: vscode.foreground,
+            border: 'none',
+            cursor: saving() || connecting() ? 'not-allowed' : 'pointer',
+          }}
+          onMouseEnter={(e) => !(saving() || connecting()) && (e.currentTarget.style.backgroundColor = vscode.buttonSecondaryHover)}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonSecondary)}
+        >
+          {saving() ? '保存中...' : '保存'}
+        </button>
       </div>
     </div>
   );

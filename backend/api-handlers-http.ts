@@ -3,8 +3,8 @@
  * 用于 standalone (Node + Hono) 构建
  */
 
-import type { ApiMethod, ApiRequestPayload } from "../shared/src";
-import { handleApiRequest, getSession, subscribeSessionEvents, type SSEMessage } from "./api-core";
+import type { ApiMethod, ApiRequestPayload, SSEMessage } from "../shared/src";
+import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
@@ -40,36 +40,37 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/query-history/search", method: "query-history/search" },
   { path: "/api/query-history/delete", method: "query-history/delete" },
   { path: "/api/query-history/clear", method: "query-history/clear" },
-  { path: "/api/connect-postgres", method: "connect-postgres", useSucess: true, status200: true },
-  { path: "/api/disconnect-postgres", method: "disconnect-postgres" },
-  { path: "/api/postgres/query-stream", method: "postgres/query-stream" },
-  { path: "/api/postgres/query-stream-more", method: "postgres/query-stream-more" },
-  { path: "/api/postgres/save-changes", method: "postgres/save-changes" },
-  { path: "/api/postgres/cancel-query", method: "postgres/cancel-query" },
-  { path: "/api/postgres/query-readonly", method: "postgres/query-readonly" },
-  { path: "/api/postgres/explain", method: "postgres/explain" },
-  { path: "/api/postgres/schemas", method: "postgres/schemas" },
-  { path: "/api/postgres/tables", method: "postgres/tables" },
-  { path: "/api/postgres/columns", method: "postgres/columns" },
-  { path: "/api/postgres/indexes", method: "postgres/indexes" },
-  { path: "/api/postgres/primary-keys", method: "postgres/primary-keys" },
-  { path: "/api/postgres/unique-constraints", method: "postgres/unique-constraints" },
-  { path: "/api/postgres/foreign-keys", method: "postgres/foreign-keys" },
-  { path: "/api/postgres/data-types", method: "postgres/data-types" },
-  { path: "/api/postgres/execute-ddl", method: "postgres/execute-ddl" },
-  { path: "/api/postgres/table-ddl", method: "postgres/table-ddl" },
-  { path: "/api/postgres/function-ddl", method: "postgres/function-ddl" },
-  { path: "/api/postgres/schema-dump", method: "postgres/schema-dump" },
-  { path: "/api/postgres/database-dump", method: "postgres/database-dump" },
-  { path: "/api/postgres/import-rows", method: "postgres/import-rows" },
-  { path: "/api/postgres/query", method: "postgres/query", useSucess: true },
-  { path: "/api/postgres/table-comment", method: "postgres/table-comment" },
-  { path: "/api/postgres/check-constraints", method: "postgres/check-constraints" },
-  { path: "/api/postgres/partition-info", method: "postgres/partition-info" },
-  { path: "/api/postgres/explain-text", method: "postgres/explain-text" },
-  { path: "/api/postgres/pg-stat-overview", method: "postgres/pg-stat-overview" },
-  { path: "/api/postgres/manage-backend", method: "postgres/manage-backend" },
-  { path: "/api/postgres/installed-extensions", method: "postgres/installed-extensions" },
+  { path: "/api/db/connect", method: "db/connect", useSucess: true, status200: true },
+  { path: "/api/db/disconnect", method: "db/disconnect" },
+  { path: "/api/db/query", method: "db/query", useSucess: true },
+  { path: "/api/db/capabilities", method: "db/capabilities" },
+  { path: "/api/db/query-stream", method: "db/query-stream" },
+  { path: "/api/db/query-stream-more", method: "db/query-stream-more" },
+  { path: "/api/db/save-changes", method: "db/save-changes" },
+  { path: "/api/db/cancel-query", method: "db/cancel-query" },
+  { path: "/api/db/query-readonly", method: "db/query-readonly" },
+  { path: "/api/db/explain", method: "db/explain" },
+  { path: "/api/db/schemas", method: "db/schemas" },
+  { path: "/api/db/tables", method: "db/tables" },
+  { path: "/api/db/columns", method: "db/columns" },
+  { path: "/api/db/indexes", method: "db/indexes" },
+  { path: "/api/db/primary-keys", method: "db/primary-keys" },
+  { path: "/api/db/unique-constraints", method: "db/unique-constraints" },
+  { path: "/api/db/foreign-keys", method: "db/foreign-keys" },
+  { path: "/api/db/data-types", method: "db/data-types" },
+  { path: "/api/db/execute-ddl", method: "db/execute-ddl" },
+  { path: "/api/db/table-ddl", method: "db/table-ddl" },
+  { path: "/api/db/function-ddl", method: "db/function-ddl" },
+  { path: "/api/db/schema-dump", method: "db/schema-dump" },
+  { path: "/api/db/database-dump", method: "db/database-dump" },
+  { path: "/api/db/import-rows", method: "db/import-rows" },
+  { path: "/api/db/table-comment", method: "db/table-comment" },
+  { path: "/api/db/check-constraints", method: "db/check-constraints" },
+  { path: "/api/db/partition-info", method: "db/partition-info" },
+  { path: "/api/db/explain-text", method: "db/explain-text" },
+  { path: "/api/db/pg-stat-overview", method: "db/pg-stat-overview" },
+  { path: "/api/db/manage-backend", method: "db/manage-backend" },
+  { path: "/api/db/installed-extensions", method: "db/installed-extensions" },
   { path: "/api/ai/config/get", method: "ai/config/get" },
   { path: "/api/ai/config/set", method: "ai/config/set" },
   { path: "/api/ai/key/delete", method: "ai/key/delete" },
@@ -78,9 +79,9 @@ const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean;
   { path: "/api/ai/prompt-build", method: "ai/prompt-build" },
   { path: "/api/ai/prompt-build-diff", method: "ai/prompt-build-diff" },
   // backward-compat aliases (older/cached frontend typo or underscore variant)
-  { path: "/api/postgres/pg_stat-overview", method: "postgres/pg-stat-overview" },
-  { path: "/api/postgres/pg_stat-overciew", method: "postgres/pg-stat-overview" },
-  { path: "/api/postgres/pg-stat-overciew", method: "postgres/pg-stat-overview" },
+  { path: "/api/db/pg_stat-overview", method: "db/pg-stat-overview" },
+  { path: "/api/db/pg_stat-overciew", method: "db/pg-stat-overview" },
+  { path: "/api/db/pg-stat-overciew", method: "db/pg-stat-overview" },
 ];
 
 /** 创建 HTTP 格式的 API 路由（供 Hono 使用） */
@@ -131,7 +132,7 @@ export function createApiRoutes(): Record<
           },
           cancel() {
             cleanup?.();
-            // 不在此断开 DB：SSE 可能因网络/代理短暂断开，断会话会导致误杀。释放连接由前端 pagehide → disconnect-postgres。
+            // 不在此断开 DB：SSE 可能因网络/代理短暂断开，断会话会导致误杀。释放连接由前端 pagehide → db/disconnect。
           },
         });
 

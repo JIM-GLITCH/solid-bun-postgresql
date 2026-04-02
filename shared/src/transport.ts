@@ -1,9 +1,14 @@
 /**
  * 前后端消息通信抽象层
  * 支持不同运行环境：Web (fetch+SSE) / VSCode (postMessage)
+ *
+ * 数据库相关 RPC 统一为 db/*，载荷中须带 dbType（postgres / mysql 等）。
  */
 
-import type { PostgresLoginParams, SSEMessage, ConnectPostgresRequest } from "./types";
+import type { PostgresLoginParams, SSEMessage, ConnectDbRequest, DbKind, StoredConnectionParams } from "./types";
+
+/** 需已有会话的 db 请求公共字段 */
+export type DbRpcBase = { connectionId: string; dbType: DbKind };
 
 /** API 方法名 */
 export type ApiMethod =
@@ -18,36 +23,37 @@ export type ApiMethod =
   | "query-history/search"
   | "query-history/delete"
   | "query-history/clear"
-  | "connect-postgres"
-  | "disconnect-postgres"
-  | "postgres/query"
-  | "postgres/query-stream"
-  | "postgres/query-stream-more"
-  | "postgres/save-changes"
-  | "postgres/cancel-query"
-  | "postgres/query-readonly"
-  | "postgres/explain"
-  | "postgres/schemas"
-  | "postgres/tables"
-  | "postgres/columns"
-  | "postgres/indexes"
-  | "postgres/foreign-keys"
-  | "postgres/data-types"
-  | "postgres/execute-ddl"
-  | "postgres/table-ddl"
-  | "postgres/function-ddl"
-  | "postgres/schema-dump"
-  | "postgres/database-dump"
-  | "postgres/primary-keys"
-  | "postgres/unique-constraints"
-  | "postgres/import-rows"
-  | "postgres/table-comment"
-  | "postgres/check-constraints"
-  | "postgres/partition-info"
-  | "postgres/explain-text"
-  | "postgres/pg-stat-overview"
-  | "postgres/manage-backend"
-  | "postgres/installed-extensions"
+  | "db/connect"
+  | "db/disconnect"
+  | "db/query"
+  | "db/capabilities"
+  | "db/query-stream"
+  | "db/query-stream-more"
+  | "db/save-changes"
+  | "db/cancel-query"
+  | "db/query-readonly"
+  | "db/explain"
+  | "db/schemas"
+  | "db/tables"
+  | "db/columns"
+  | "db/indexes"
+  | "db/foreign-keys"
+  | "db/data-types"
+  | "db/execute-ddl"
+  | "db/table-ddl"
+  | "db/function-ddl"
+  | "db/schema-dump"
+  | "db/database-dump"
+  | "db/primary-keys"
+  | "db/unique-constraints"
+  | "db/import-rows"
+  | "db/table-comment"
+  | "db/check-constraints"
+  | "db/partition-info"
+  | "db/explain-text"
+  | "db/pg-stat-overview"
+  | "db/manage-backend"
+  | "db/installed-extensions"
   | "ai/config/get"
   | "ai/config/set"
   | "ai/key/delete"
@@ -65,7 +71,7 @@ export type ApiMethod =
 /** 请求载荷 */
 export type ApiRequestPayload = {
   "connections/list": {};
-  "connections/save": { id: string; name?: string } & PostgresLoginParams;
+  "connections/save": { id: string; name?: string } & StoredConnectionParams;
   "connections/delete": { id: string };
   "connections/update-meta": { id: string; name?: string };
   "connections/reorder": { list: unknown[] };
@@ -75,56 +81,51 @@ export type ApiRequestPayload = {
   "query-history/search": { keyword?: string; since?: number; until?: number };
   "query-history/delete": { id: string };
   "query-history/clear": {};
-  "connect-postgres": ConnectPostgresRequest;
-  "disconnect-postgres": { connectionId: string };
-  "postgres/query": { query: string; connectionId: string };
-  "postgres/query-stream": { connectionId: string; query?: string; statements?: string[]; batchSize?: number };
-  "postgres/query-stream-more": { batchSize?: number; connectionId: string };
-  "postgres/save-changes": { sql: string; connectionId: string };
-  "postgres/cancel-query": { connectionId: string };
-  "postgres/query-readonly": { query: string; limit?: number; connectionId: string };
-  "postgres/explain": { query: string; connectionId: string };
-  "postgres/schemas": { connectionId: string };
-  "postgres/tables": { schema: string; connectionId: string };
-  "postgres/columns": { schema: string; table: string; connectionId: string };
-  "postgres/indexes": { schema: string; table: string; connectionId: string };
-  "postgres/foreign-keys": { schema: string; table: string; connectionId: string };
-  "postgres/data-types": { connectionId: string };
-  "postgres/execute-ddl": { connectionId: string; sql: string };
-  "postgres/table-ddl": { connectionId: string; schema: string; table: string };
-  "postgres/function-ddl": { connectionId: string; schema: string; function: string; oid?: number };
-  "postgres/schema-dump": { connectionId: string; schema: string; includeData?: boolean };
-  "postgres/database-dump": { connectionId: string; includeData?: boolean };
-  "postgres/primary-keys": { connectionId: string; schema: string; table: string };
-  "postgres/unique-constraints": { connectionId: string; schema: string; table: string };
-  "postgres/import-rows": {
-    connectionId: string;
+  "db/connect": ConnectDbRequest;
+  "db/disconnect": DbRpcBase;
+  "db/query": DbRpcBase & { query: string; defaultSchema?: string };
+  "db/capabilities": DbRpcBase;
+  "db/query-stream": DbRpcBase & {
+    query?: string;
+    statements?: string[];
+    batchSize?: number;
+    /** MySQL：执行前 USE 该库（与侧栏「当前库」一致）；PostgreSQL忽略 */
+    defaultSchema?: string;
+  };
+  "db/query-stream-more": DbRpcBase & { batchSize?: number; defaultSchema?: string };
+  "db/save-changes": DbRpcBase & { sql: string };
+  "db/cancel-query": DbRpcBase;
+  "db/query-readonly": DbRpcBase & { query: string; limit?: number; defaultSchema?: string };
+  "db/explain": DbRpcBase & { query: string; defaultSchema?: string };
+  "db/schemas": DbRpcBase;
+  "db/tables": DbRpcBase & { schema: string };
+  "db/columns": DbRpcBase & { schema: string; table: string };
+  "db/indexes": DbRpcBase & { schema: string; table: string };
+  "db/foreign-keys": DbRpcBase & { schema: string; table: string };
+  "db/data-types": DbRpcBase;
+  "db/execute-ddl": DbRpcBase & { sql: string };
+  "db/table-ddl": DbRpcBase & { schema: string; table: string };
+  "db/function-ddl": DbRpcBase & { schema: string; function: string; oid?: number };
+  "db/schema-dump": DbRpcBase & { schema: string; includeData?: boolean };
+  "db/database-dump": DbRpcBase & { includeData?: boolean };
+  "db/primary-keys": DbRpcBase & { schema: string; table: string };
+  "db/unique-constraints": DbRpcBase & { schema: string; table: string };
+  "db/import-rows": DbRpcBase & {
     schema: string;
     table: string;
     columns: string[];
     rows: any[][];
-    /** 作为冲突检测的列（来自列映射中勾选“主键”的目标列），空则纯插入 */
     conflictColumns?: string[];
-    /** 唯一约束冲突时：nothing=保留旧数据，update=更新为新数据 */
     onConflict?: "nothing" | "update";
-    /** 插入报错时：rollback=整体回退，discard=丢弃该行继续 */
     onError?: "rollback" | "discard";
   };
-  /** VSCode 插件内：保存文件到用户选择路径（Extension Host 弹窗 + 写盘） */
   "vscode/save-file": { content: string; filename: string; isBase64?: boolean };
-  /** VSCode 插件内：打开文件选择器并返回文件内容（Extension Host 弹窗 + 读盘） */
   "vscode/read-file": { accept?: string[] };
-  /** VSCode 插件内：写入剪贴板（webview 中 navigator.clipboard 受限） */
   "vscode/clipboard-write": { text: string };
-  /** VSCode 插件内：读取剪贴板 */
   "vscode/clipboard-read": Record<string, never>;
-  /** VSCode 插件内：保存 AI key 到 SecretStorage */
   "vscode/ai-key-set": { keyRef: string; apiKey: string };
-  /** VSCode 插件内：删除 AI key */
   "vscode/ai-key-delete": { keyRef: string };
-  /** 获取 AI 配置（不含密钥） */
   "ai/config/get": Record<string, never>;
-  /** 设置 AI 配置（Web 可附带 apiKey 用于会话缓存） */
   "ai/config/set": {
     apiMode: "openai-compatible" | "anthropic";
     baseUrl?: string;
@@ -136,11 +137,9 @@ export type ApiRequestPayload = {
     stream?: boolean;
     maxTokens?: number;
   };
-  /** 删除已保存 AI key（Web 持久化存储） */
   "ai/key/delete": {
     keyRef?: string;
   };
-  /** 校验 AI Provider 连接可用性 */
   "ai/test-connection": {
     apiMode?: "openai-compatible" | "anthropic";
     baseUrl?: string;
@@ -151,7 +150,6 @@ export type ApiRequestPayload = {
     stream?: boolean;
     maxTokens?: number;
   };
-  /** 自然语言 -> SQL */
   "ai/sql-edit": {
     connectionId: string;
     sql: string;
@@ -159,40 +157,29 @@ export type ApiRequestPayload = {
     keyRef?: string;
     schema?: string;
   };
-  /** 构建可复制到免费 AI 的 prompt（含 schema 注入） */
   "ai/prompt-build": {
     connectionId: string;
     sql: string;
     schema?: string;
     instructions?: string;
   };
-  /** 构建 diff prompt（含 schema 注入） */
   "ai/prompt-build-diff": {
     connectionId: string;
     sql: string;
     schema?: string;
   };
-  "postgres/table-comment": { connectionId: string; schema: string; table: string };
-  "postgres/check-constraints": { connectionId: string; schema: string; table: string };
-  "postgres/partition-info": { connectionId: string; schema: string; table: string };
-  /** EXPLAIN (FORMAT TEXT)，不写库、不 ANALYZE，用于分区裁剪等计划预览 */
-  "postgres/explain-text": { connectionId: string; query: string };
-  /** pg_stat 监控概览：慢查询、锁等待、连接统计 */
-  "postgres/pg-stat-overview": { connectionId: string; limit?: number };
-  /** pg_stat 中对会话执行 cancel/terminate */
-  "postgres/manage-backend": { connectionId: string; pid: number; action: "cancel" | "terminate" };
-  /** 当前库已安装的 PostgreSQL 扩展（名称、版本、说明等） */
-  "postgres/installed-extensions": { connectionId: string };
+  "db/table-comment": DbRpcBase & { schema: string; table: string };
+  "db/check-constraints": DbRpcBase & { schema: string; table: string };
+  "db/partition-info": DbRpcBase & { schema: string; table: string };
+  "db/explain-text": DbRpcBase & { query: string };
+  "db/pg-stat-overview": DbRpcBase & { limit?: number };
+  "db/manage-backend": DbRpcBase & { pid: number; action: "cancel" | "terminate" };
+  "db/installed-extensions": DbRpcBase;
 };
 
 /** 传输层接口：前端通过此接口与后端通信 */
 export interface IApiTransport {
-  /** 发送 RPC 请求 */
-  request<M extends ApiMethod>(
-    method: M,
-    payload: ApiRequestPayload[M]
-  ): Promise<unknown>;
+  request<M extends ApiMethod>(method: M, payload: ApiRequestPayload[M]): Promise<unknown>;
 
-  /** 订阅服务端推送（数据库 NOTICE/ERROR 等） */
   subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void;
 }

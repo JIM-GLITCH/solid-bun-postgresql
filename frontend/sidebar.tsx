@@ -11,6 +11,8 @@ import BackupModal from "./backup-modal";
 import ErDiagramModal from "./er-diagram-modal";
 import ErDiagramPickerModal from "./er-diagram-picker-modal";
 import PartitionTableModal from "./partition-table-modal";
+import CreateSchemaModal from "./create-schema-modal";
+import DeleteSchemaModal, { isSystemSchema } from "./delete-schema-modal";
 import PgStatModal from "./pg-stat-modal";
 import ExtensionsModal from "./extensions-modal";
 import type { ErDiagramSelection } from "./er-diagram-modal";
@@ -18,6 +20,7 @@ import type { ConnectionInfo } from "./app";
 import { findStoredConnection, hasStoredConnection, updateStoredConnectionMeta, reorderConnectionList, type ConnectionList, type StoredConnection } from "./connection-storage";
 import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
+import { getRegisteredDbType } from "./db-session-meta";
 
 // 数据库对象类型
 type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
@@ -65,6 +68,10 @@ interface SidebarProps {
   onOpenEditConnection?: (stored: StoredConnection) => void;
   onRefreshSavedConnections?: () => void;
   connectingSavedId?: string | null;
+  /** MySQL：单击侧栏某库时登记为查询默认库（解决未填连接 database 时的 No database selected） */
+  onMysqlDefaultSchema?: (connectionId: string, schema: string) => void;
+  /** 删除 schema/库成功后，父级可清除该连接的默认库登记 */
+  onMysqlSchemaRemoved?: (connectionId: string, schema: string) => void;
 }
 
 // 图标组件
@@ -165,6 +172,8 @@ export default function Sidebar(props: SidebarProps) {
   } | null>(null);
   const [pgStatModal, setPgStatModal] = createSignal<{ connectionId: string } | null>(null);
   const [extensionsModal, setExtensionsModal] = createSignal<{ connectionId: string } | null>(null);
+  const [createSchemaModalCid, setCreateSchemaModalCid] = createSignal<string | null>(null);
+  const [deleteSchemaModal, setDeleteSchemaModal] = createSignal<{ connectionId: string; schema: string } | null>(null);
   const [dragOverZone, setDragOverZone] = createSignal<string | null>(null);
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
@@ -179,13 +188,68 @@ export default function Sidebar(props: SidebarProps) {
     });
   });
 
-  // 刷新所有连接
-  function refreshAll() {
-    for (const n of state.nodes) {
-      if (n.type === "connection" && n.connectionId) {
-        setState("loadedIds", (prev) => { const s = new Set(prev); s.delete(n.id); return s; });
-        loadSchemas(n.connectionId, n.id);
+  /** 从树节点 id 解析 connectionId（schema:/table:/connection: 等格式统一为第 2 段） */
+  function connectionIdFromNodeId(nodeId: string): string | undefined {
+    const parts = nodeId.split(":");
+    return parts.length >= 2 ? parts[1] : undefined;
+  }
+
+  /** 某连接刷新 schema 列表后，对已展开的 schema / 表重新拉取数据 */
+  function reloadExpandedDescendants(connectionId: string) {
+    const expanded = [...state.expandedIds];
+    const schemaJobs: Promise<unknown>[] = [];
+    for (const expId of expanded) {
+      const n = findNode(state.nodes, expId);
+      if (n?.type === "schema" && n.connectionId === connectionId && n.schema) {
+        schemaJobs.push(
+          loadTables(connectionId, n.schema).finally(() => {
+            setState("loadedIds", (p) => new Set(p).add(expId));
+          })
+        );
       }
+    }
+    void Promise.all(schemaJobs).then(() => {
+      for (const expId of expanded) {
+        const n = findNode(state.nodes, expId);
+        if (
+          (n?.type === "table" || n?.type === "view") &&
+          n.connectionId === connectionId &&
+          n.schema &&
+          n.table
+        ) {
+          void Promise.all([
+            loadColumns(connectionId, n.schema, n.table),
+            n.type === "table" ? loadIndexes(connectionId, n.schema, n.table) : Promise.resolve(),
+          ]).finally(() => {
+            setState("loadedIds", (p) => new Set(p).add(expId));
+          });
+        }
+      }
+    });
+  }
+
+  /** 清除该连接下所有已缓存的加载标记（含子节点） */
+  function clearLoadedIdsForConnection(connectionId: string) {
+    setState("loadedIds", (prev) =>
+      new Set([...prev].filter((id) => connectionIdFromNodeId(id) !== connectionId))
+    );
+  }
+
+  // 刷新所有连接：必须丢弃 schema 下缓存的表/视图，否则仅重拉 schema 列表时界面看起来「没反应」
+  function refreshAll(e?: MouseEvent) {
+    e?.stopPropagation();
+    const connNodes = state.nodes.filter((n) => n.type === "connection" && n.connectionId);
+    if (connNodes.length === 0) return;
+    const cids = new Set(connNodes.map((n) => n.connectionId!));
+    setState("loadedIds", (prev) =>
+      new Set([...prev].filter((id) => {
+        const cid = connectionIdFromNodeId(id);
+        return !cid || !cids.has(cid);
+      }))
+    );
+    for (const n of connNodes) {
+      const cid = n.connectionId!;
+      void loadSchemas(cid, n.id, false).then(() => reloadExpandedDescendants(cid));
     }
   }
 
@@ -256,8 +320,8 @@ export default function Sidebar(props: SidebarProps) {
     return null;
   }
 
-  // 加载 schemas，挂到指定连接节点下（刷新时保留已加载的 tables/views）
-  async function loadSchemas(connectionId: string, connectionNodeId: string) {
+  // 加载 schemas，挂到指定连接节点下。reuseChildren=true 时保留已展开的 tables/views（普通展开）；false 用于全局/连接刷新，避免旧列表不更新
+  async function loadSchemas(connectionId: string, connectionNodeId: string, reuseChildren = true) {
     try {
       const data = await getSchemas(connectionId);
       if (data.schemas) {
@@ -266,9 +330,18 @@ export default function Sidebar(props: SidebarProps) {
         const schemaNodes: TreeNode[] = data.schemas.map((schema: string) => {
           const schemaId = `schema:${connectionId}:${schema}`;
           const existing = existingSchemas.find((s) => s.id === schemaId);
-          const tablesNode = existing?.children?.find((c) => c.type === "tables") ?? { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] };
-          const viewsNode = existing?.children?.find((c) => c.type === "views") ?? { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] };
-          const functionsNode = existing?.children?.find((c) => c.type === "functions") ?? { id: `functions:${connectionId}:${schema}`, name: "Functions", type: "functions" as NodeType, schema, connectionId, children: [] };
+          const emptyTables = { id: `tables:${connectionId}:${schema}`, name: "Tables", type: "tables" as NodeType, schema, connectionId, children: [] };
+          const emptyViews = { id: `views:${connectionId}:${schema}`, name: "Views", type: "views" as NodeType, schema, connectionId, children: [] };
+          const emptyFunctions = { id: `functions:${connectionId}:${schema}`, name: "Functions", type: "functions" as NodeType, schema, connectionId, children: [] };
+          const tablesNode = reuseChildren
+            ? (existing?.children?.find((c) => c.type === "tables") ?? emptyTables)
+            : emptyTables;
+          const viewsNode = reuseChildren
+            ? (existing?.children?.find((c) => c.type === "views") ?? emptyViews)
+            : emptyViews;
+          const functionsNode = reuseChildren
+            ? (existing?.children?.find((c) => c.type === "functions") ?? emptyFunctions)
+            : emptyFunctions;
           const baseChildren: TreeNode[] = [tablesNode, viewsNode, functionsNode];
           return {
             id: schemaId,
@@ -285,6 +358,12 @@ export default function Sidebar(props: SidebarProps) {
     } catch (e) {
       console.error("加载 schemas 失败:", e);
     }
+  }
+
+  function reloadConnectionSchemaList(connectionId: string) {
+    const nodeId = `connection:${connectionId}`;
+    clearLoadedIdsForConnection(connectionId);
+    void loadSchemas(connectionId, nodeId, false).then(() => reloadExpandedDescendants(connectionId));
   }
 
   // 加载表和视图
@@ -475,6 +554,11 @@ export default function Sidebar(props: SidebarProps) {
     e.stopPropagation();
     setState("selectedId", node.id);
 
+    const schemaCid = node.connectionId;
+    if (node.type === "schema" && node.schema && schemaCid && getRegisteredDbType(schemaCid) === "mysql") {
+      props.onMysqlDefaultSchema?.(schemaCid, node.schema);
+    }
+
     if (node.type === "savedConnection" && node.storedId && e.detail === 1) {
       const stored = node.storedId ? findStoredConnection(props.savedConnections?.() ?? [], node.storedId) : undefined;
       if (stored && !props.connectingSavedId) {
@@ -561,12 +645,8 @@ export default function Sidebar(props: SidebarProps) {
         break;
       case "refreshConnection":
         if (node.type === "connection" && cid) {
-          setState("loadedIds", (prev) => {
-            const s = new Set(prev);
-            s.delete(node.id);
-            return s;
-          });
-          loadSchemas(cid, node.id);
+          clearLoadedIdsForConnection(cid);
+          void loadSchemas(cid, node.id, false).then(() => reloadExpandedDescendants(cid));
         }
         break;
       case "openQuery":
@@ -653,6 +733,16 @@ export default function Sidebar(props: SidebarProps) {
       case "backupDatabase":
         if (node.type === "connection" && cid) {
           setBackupModal({ connectionId: cid, schema: null });
+        }
+        break;
+      case "newSchema":
+        if (node.type === "connection" && cid) {
+          setCreateSchemaModalCid(cid);
+        }
+        break;
+      case "deleteSchema":
+        if (node.type === "schema" && node.schema && cid && !isSystemSchema(cid, node.schema)) {
+          setDeleteSchemaModal({ connectionId: cid, schema: node.schema });
         }
         break;
       case "openPgStat":
@@ -975,7 +1065,8 @@ export default function Sidebar(props: SidebarProps) {
             >➕</button>
             <Show when={(props.connections ?? []).length > 0}>
               <button
-                onClick={refreshAll}
+                type="button"
+                onClick={(e) => refreshAll(e)}
                 style={{ background: "none", border: "none", color: vscode.foregroundDim, cursor: "pointer", padding: "4px", "font-size": "14px" }}
                 title="刷新"
                 onMouseEnter={(e) => (e.currentTarget.style.color = vscode.foreground)}
@@ -1311,6 +1402,22 @@ export default function Sidebar(props: SidebarProps) {
             </Show>
             <Show when={menu().node.type === "connection"}>
               <div
+                onClick={() => handleMenuAction("newSchema")}
+                style={{
+                  padding: "8px 16px",
+                  color: vscode.foreground,
+                  cursor: "pointer",
+                  "font-size": "13px",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "8px",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span>➕</span> 新增 Schema
+              </div>
+              <div
                 onClick={() => handleMenuAction("viewErDiagramFromConnection")}
                 style={{
                   padding: "8px 16px",
@@ -1342,38 +1449,45 @@ export default function Sidebar(props: SidebarProps) {
               >
                 <span>📦</span> 备份全库
               </div>
-              <div
-                onClick={() => handleMenuAction("openPgStat")}
-                style={{
-                  padding: "8px 16px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+              <Show
+                when={
+                  menu().node.connectionId &&
+                  getRegisteredDbType(menu().node.connectionId) === "postgres"
+                }
               >
-                <span>📈</span> pg_stat 监控
-              </div>
-              <div
-                onClick={() => handleMenuAction("openExtensions")}
-                style={{
-                  padding: "8px 16px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>🧩</span> 扩展管理
-              </div>
+                <div
+                  onClick={() => handleMenuAction("openPgStat")}
+                  style={{
+                    padding: "8px 16px",
+                    color: vscode.foreground,
+                    cursor: "pointer",
+                    "font-size": "13px",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "8px",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <span>📈</span> pg_stat 监控
+                </div>
+                <div
+                  onClick={() => handleMenuAction("openExtensions")}
+                  style={{
+                    padding: "8px 16px",
+                    color: vscode.foreground,
+                    cursor: "pointer",
+                    "font-size": "13px",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "8px",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <span>🧩</span> 扩展管理
+                </div>
+              </Show>
               <div
                 onClick={() => handleMenuAction("openQuery")}
                 style={{
@@ -1522,11 +1636,64 @@ export default function Sidebar(props: SidebarProps) {
               >
                 <span>🔄</span> 刷新
               </div>
+              <Show
+                when={
+                  !!menu().node.schema &&
+                  !!menu().node.connectionId &&
+                  !isSystemSchema(menu().node.connectionId!, menu().node.schema!)
+                }
+              >
+                <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
+                <div
+                  onClick={() => handleMenuAction("deleteSchema")}
+                  style={{
+                    padding: "8px 16px",
+                    color: vscode.error,
+                    cursor: "pointer",
+                    "font-size": "13px",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "8px",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <span>🗑</span> 删除 Schema
+                </div>
+              </Show>
             </Show>
           </div>
         )}
       </Show>
 
+      <Show when={createSchemaModalCid()}>
+        {(() => {
+          const cid = createSchemaModalCid()!;
+          return (
+            <CreateSchemaModal
+              connectionId={cid}
+              onClose={() => setCreateSchemaModalCid(null)}
+              onSuccess={(id) => reloadConnectionSchemaList(id)}
+            />
+          );
+        })()}
+      </Show>
+      <Show when={deleteSchemaModal()}>
+        {(() => {
+          const m = deleteSchemaModal()!;
+          return (
+            <DeleteSchemaModal
+              connectionId={m.connectionId}
+              schema={m.schema}
+              onClose={() => setDeleteSchemaModal(null)}
+              onSuccess={(id) => {
+                props.onMysqlSchemaRemoved?.(m.connectionId, m.schema);
+                reloadConnectionSchemaList(id);
+              }}
+            />
+          );
+        })()}
+      </Show>
       <Show when={deleteModal()}>
         {(() => {
           const m = deleteModal()!;

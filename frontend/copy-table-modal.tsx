@@ -4,6 +4,8 @@
 
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
+import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
 import { vscode } from "./theme";
 
 export interface CopyTableModalProps {
@@ -30,14 +32,23 @@ export default function CopyTableModal(props: CopyTableModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const schema = props.schema.replace(/"/g, '""');
-      const oldTable = props.table.replace(/"/g, '""');
-      const newTable = name.replace(/"/g, '""');
-      const createSql = `CREATE TABLE "${schema}"."${newTable}" (LIKE "${schema}"."${oldTable}" INCLUDING ALL);`;
-      await executeDdl(props.connectionId, createSql);
-      if (copyData()) {
-        const insertSql = `INSERT INTO "${schema}"."${newTable}" SELECT * FROM "${schema}"."${oldTable}";`;
-        await executeDdl(props.connectionId, insertSql);
+      const kind = getRegisteredDbType(props.connectionId);
+      if (kind === "mysql") {
+        const db = mysqlBacktickIdent(props.schema);
+        const oldT = mysqlBacktickIdent(props.table);
+        const newT = mysqlBacktickIdent(name);
+        await executeDdl(props.connectionId, `CREATE TABLE ${db}.${newT} LIKE ${db}.${oldT};`);
+        if (copyData()) {
+          await executeDdl(props.connectionId, `INSERT INTO ${db}.${newT} SELECT * FROM ${db}.${oldT};`);
+        }
+      } else {
+        const s = pgQuoteIdent(props.schema);
+        const oldT = pgQuoteIdent(props.table);
+        const newT = pgQuoteIdent(name);
+        await executeDdl(props.connectionId, `CREATE TABLE ${s}.${newT} (LIKE ${s}.${oldT} INCLUDING ALL);`);
+        if (copyData()) {
+          await executeDdl(props.connectionId, `INSERT INTO ${s}.${newT} SELECT * FROM ${s}.${oldT};`);
+        }
       }
       props.onSuccess(props.connectionId, props.schema);
       props.onClose();

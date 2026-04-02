@@ -3,19 +3,49 @@
  */
 
 import { getTransport } from "./transport";
-import type { PostgresLoginParams, ColumnEditableInfo, SSEMessage } from "../shared/src";
+import type {
+  PostgresLoginParams,
+  ColumnEditableInfo,
+  SSEMessage,
+  DatabaseCapabilities,
+  DbKind,
+} from "../shared/src";
+import { getRegisteredDbType, registerConnectionDbType, unregisterConnectionDbType } from "./db-session-meta";
 
 const api = () => getTransport();
 
-/** 连接数据库，返回 connectionId */
-export async function connectPostgres(connectionId: string, params: PostgresLoginParams) {
-  const payload = { ...params, connectionId };
-  return api().request("connect-postgres", payload) as Promise<{ sucess: boolean; error?: unknown }>;
+/** 与当前会话一致：db/* 请求须带 dbType，与 connectionMap 中方言一致。 */
+function dbConn(connectionId: string) {
+  return { connectionId, dbType: getRegisteredDbType(connectionId) };
+}
+
+/** 连接数据库（params 与 PG/MySQL 共用形状）；dbType 由调用方指定并在成功后登记。 */
+export async function connectPostgres(
+  connectionId: string,
+  params: PostgresLoginParams,
+  dbType: DbKind = "postgres"
+) {
+  const res = (await api().request("db/connect", {
+    ...params,
+    connectionId,
+    dbType,
+  })) as { sucess?: boolean; error?: unknown; dbType?: DbKind };
+  if (res.sucess) registerConnectionDbType(connectionId, res.dbType ?? dbType);
+  return res as { sucess: boolean; error?: unknown };
 }
 
 /** 断开指定连接 */
 export async function disconnectPostgres(connectionId: string) {
-  return api().request("disconnect-postgres", { connectionId }) as Promise<{ success: boolean; error?: string }>;
+  try {
+    return (await api().request("db/disconnect", dbConn(connectionId))) as { success: boolean; error?: string };
+  } finally {
+    unregisterConnectionDbType(connectionId);
+  }
+}
+
+/** 当前会话的方言能力（用于按能力开关 UI） */
+export async function getDbCapabilities(connectionId: string) {
+  return api().request("db/capabilities", dbConn(connectionId)) as Promise<{ capabilities: DatabaseCapabilities }>;
 }
 
 /**
@@ -28,29 +58,34 @@ export function disconnectPostgresOnPageUnload(connectionId: string): void {
     void disconnectPostgres(connectionId);
     return;
   }
+  const payload = dbConn(connectionId);
   try {
-    fetch(`/api/disconnect-postgres`, {
+    void fetch(`/api/db/disconnect`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ connectionId }),
+      body: JSON.stringify(payload),
       keepalive: true,
     });
   } catch {
     void disconnectPostgres(connectionId);
   }
+  unregisterConnectionDbType(connectionId);
 }
 
 /** 流式查询 - 第一批。传 statements 时后端不再分句，避免重复计算。 */
 export async function queryStream(
   connectionId: string,
   queryOrStatements: string | string[],
-  batchSize = 100
+  batchSize = 100,
+  defaultSchema?: string
 ) {
+  const ds = defaultSchema?.trim();
+  const base = { ...dbConn(connectionId), batchSize, ...(ds ? { defaultSchema: ds } : {}) };
   const payload =
     typeof queryOrStatements === "string"
-      ? { query: queryOrStatements, connectionId, batchSize }
-      : { statements: queryOrStatements, connectionId, batchSize };
-  return api().request("postgres/query-stream", payload) as Promise<{
+      ? { ...base, query: queryOrStatements }
+      : { ...base, statements: queryOrStatements };
+  return api().request("db/query-stream", payload) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;
@@ -59,8 +94,13 @@ export async function queryStream(
 }
 
 /** 流式查询 - 加载更多 */
-export async function queryStreamMore(connectionId: string, batchSize = 100) {
-  return api().request("postgres/query-stream-more", { connectionId, batchSize }) as Promise<{
+export async function queryStreamMore(connectionId: string, batchSize = 100, defaultSchema?: string) {
+  const ds = defaultSchema?.trim();
+  return api().request("db/query-stream-more", {
+    ...dbConn(connectionId),
+    batchSize,
+    ...(ds ? { defaultSchema: ds } : {}),
+  }) as Promise<{
     rows: any[][];
     hasMore: boolean;
     error?: string;
@@ -69,17 +109,28 @@ export async function queryStreamMore(connectionId: string, batchSize = 100) {
 
 /** 取消查询 */
 export async function cancelQuery(connectionId: string) {
-  return api().request("postgres/cancel-query", { connectionId }) as Promise<{ success: boolean; cancelled?: boolean; message?: string; error?: string }>;
+  return api().request("db/cancel-query", dbConn(connectionId)) as Promise<{
+    success: boolean;
+    cancelled?: boolean;
+    message?: string;
+    error?: string;
+  }>;
 }
 
 /** 保存修改 */
 export async function saveChanges(connectionId: string, sql: string) {
-  return api().request("postgres/save-changes", { sql, connectionId }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
+  return api().request("db/save-changes", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
 /** 只读查询（Sidebar 等） */
-export async function queryReadonly(connectionId: string, query: string, limit = 1000) {
-  return api().request("postgres/query-readonly", { connectionId, query, limit }) as Promise<{
+export async function queryReadonly(connectionId: string, query: string, limit = 1000, defaultSchema?: string) {
+  const ds = defaultSchema?.trim();
+  return api().request("db/query-readonly", {
+    ...dbConn(connectionId),
+    query,
+    limit,
+    ...(ds ? { defaultSchema: ds } : {}),
+  }) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;
@@ -88,8 +139,13 @@ export async function queryReadonly(connectionId: string, query: string, limit =
 }
 
 /** 执行 EXPLAIN ANALYZE，返回 JSON 格式执行计划 */
-export async function explainQuery(connectionId: string, query: string) {
-  return api().request("postgres/explain", { connectionId, query }) as Promise<{
+export async function explainQuery(connectionId: string, query: string, defaultSchema?: string) {
+  const ds = defaultSchema?.trim();
+  return api().request("db/explain", {
+    ...dbConn(connectionId),
+    query,
+    ...(ds ? { defaultSchema: ds } : {}),
+  }) as Promise<{
     plan: Array<{ Plan: any; "Planning Time"?: number; "Execution Time"?: number }>;
     error?: string;
   }>;
@@ -97,12 +153,12 @@ export async function explainQuery(connectionId: string, query: string) {
 
 /** 获取 schemas */
 export async function getSchemas(connectionId: string) {
-  return api().request("postgres/schemas", { connectionId }) as Promise<{ schemas: string[]; error?: string }>;
+  return api().request("db/schemas", dbConn(connectionId)) as Promise<{ schemas: string[]; error?: string }>;
 }
 
 /** 获取表/视图/函数 */
 export async function getTables(connectionId: string, schema: string) {
-  return api().request("postgres/tables", { connectionId, schema }) as Promise<{
+  return api().request("db/tables", { ...dbConn(connectionId), schema }) as Promise<{
     tables: string[];
     views: string[];
     functions?: Array<{ oid: number; schema: string; name: string; args: string }>;
@@ -112,22 +168,22 @@ export async function getTables(connectionId: string, schema: string) {
 
 /** 获取列信息 */
 export async function getColumns(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/columns", { connectionId, schema, table }) as Promise<{ columns: any[]; error?: string }>;
+  return api().request("db/columns", { ...dbConn(connectionId), schema, table }) as Promise<{ columns: any[]; error?: string }>;
 }
 
 /** 获取索引 */
 export async function getIndexes(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/indexes", { connectionId, schema, table }) as Promise<{ indexes: any[]; error?: string }>;
+  return api().request("db/indexes", { ...dbConn(connectionId), schema, table }) as Promise<{ indexes: any[]; error?: string }>;
 }
 
 /** 获取主键列名 */
 export async function getPrimaryKeys(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/primary-keys", { connectionId, schema, table }) as Promise<{ columns: string[]; error?: string }>;
+  return api().request("db/primary-keys", { ...dbConn(connectionId), schema, table }) as Promise<{ columns: string[]; error?: string }>;
 }
 
 /** 获取唯一约束（含主键），用于导入时冲突处理 */
 export async function getUniqueConstraints(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/unique-constraints", { connectionId, schema, table }) as Promise<{
+  return api().request("db/unique-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{
     constraints: Array<{ name: string; type: string; columns: string[] }>;
     error?: string;
   }>;
@@ -135,7 +191,7 @@ export async function getUniqueConstraints(connectionId: string, schema: string,
 
 /** 获取外键 */
 export async function getForeignKeys(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/foreign-keys", { connectionId, schema, table }) as Promise<{
+  return api().request("db/foreign-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
     outgoing: any[];
     incoming: any[];
     error?: string;
@@ -144,32 +200,32 @@ export async function getForeignKeys(connectionId: string, schema: string, table
 
 /** 获取 PostgreSQL 数据类型列表 */
 export async function getDataTypes(connectionId: string) {
-  return api().request("postgres/data-types", { connectionId }) as Promise<{ types: string[]; error?: string }>;
+  return api().request("db/data-types", dbConn(connectionId)) as Promise<{ types: string[]; error?: string }>;
 }
 
 /** 执行 DDL（CREATE/ALTER TABLE 等） */
 export async function executeDdl(connectionId: string, sql: string) {
-  return api().request("postgres/execute-ddl", { connectionId, sql }) as Promise<{ success: boolean; error?: string }>;
+  return api().request("db/execute-ddl", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; error?: string }>;
 }
 
 /** 获取表/视图的 DDL */
 export async function getTableDdl(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/table-ddl", { connectionId, schema, table }) as Promise<{ ddl: string; error?: string }>;
+  return api().request("db/table-ddl", { ...dbConn(connectionId), schema, table }) as Promise<{ ddl: string; error?: string }>;
 }
 
 /** 获取函数的源码 DDL */
 export async function getFunctionDdl(connectionId: string, schema: string, funcName: string, oid?: number) {
-  return api().request("postgres/function-ddl", { connectionId, schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
+  return api().request("db/function-ddl", { ...dbConn(connectionId), schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
 }
 
 /** 导出指定 schema 的 SQL dump */
 export async function getSchemaDump(connectionId: string, schema: string, includeData = false) {
-  return api().request("postgres/schema-dump", { connectionId, schema, includeData }) as Promise<{ dump: string; error?: string }>;
+  return api().request("db/schema-dump", { ...dbConn(connectionId), schema, includeData }) as Promise<{ dump: string; error?: string }>;
 }
 
 /** 导出全库的 SQL dump */
 export async function getDatabaseDump(connectionId: string, includeData = false) {
-  return api().request("postgres/database-dump", { connectionId, includeData }) as Promise<{ dump: string; error?: string }>;
+  return api().request("db/database-dump", { ...dbConn(connectionId), includeData }) as Promise<{ dump: string; error?: string }>;
 }
 
 /** 批量导入行到表 */
@@ -185,8 +241,8 @@ export async function importRows(
     onError?: "rollback" | "discard";
   }
 ) {
-  return api().request("postgres/import-rows", {
-    connectionId,
+  return api().request("db/import-rows", {
+    ...dbConn(connectionId),
     schema,
     table,
     columns,
@@ -199,17 +255,17 @@ export async function importRows(
 
 /** 获取表注释 */
 export async function getTableComment(connectionId: string, schema: string, table: string): Promise<{ comment: string | null }> {
-  return api().request("postgres/table-comment", { connectionId, schema, table }) as Promise<{ comment: string | null }>;
+  return api().request("db/table-comment", { ...dbConn(connectionId), schema, table }) as Promise<{ comment: string | null }>;
 }
 
 /** 获取检查约束列表 */
 export async function getCheckConstraints(connectionId: string, schema: string, table: string): Promise<{ constraints: Array<{ name: string; expression: string }> }> {
-  return api().request("postgres/check-constraints", { connectionId, schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
+  return api().request("db/check-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
 }
 
 /** 分区表：父表/分区子表元数据（非分区表返回 role:none） */
 export async function getPartitionInfo(connectionId: string, schema: string, table: string) {
-  return api().request("postgres/partition-info", { connectionId, schema, table }) as Promise<
+  return api().request("db/partition-info", { ...dbConn(connectionId), schema, table }) as Promise<
     | { role: "none" }
     | {
         role: "parent";
@@ -231,12 +287,12 @@ export async function getPartitionInfo(connectionId: string, schema: string, tab
 
 /** EXPLAIN 文本计划（不执行查询），用于分区裁剪预览 */
 export async function explainQueryText(connectionId: string, query: string) {
-  return api().request("postgres/explain-text", { connectionId, query }) as Promise<{ lines: string[] }>;
+  return api().request("db/explain-text", { ...dbConn(connectionId), query }) as Promise<{ lines: string[] }>;
 }
 
 /** pg_stat 监控概览 */
 export async function getPgStatOverview(connectionId: string, limit = 20) {
-  return api().request("postgres/pg-stat-overview", { connectionId, limit }) as Promise<{
+  return api().request("db/pg-stat-overview", { ...dbConn(connectionId), limit }) as Promise<{
     connectionStats: { total: number; active: number; idle: number; waiting: number };
     lockWaits: Array<{
       waiting_pid: number;
@@ -256,7 +312,7 @@ export async function getPgStatOverview(connectionId: string, limit = 20) {
 
 /** 当前数据库已安装的扩展（名称、版本、说明） */
 export async function getInstalledExtensions(connectionId: string) {
-  return api().request("postgres/installed-extensions", { connectionId }) as Promise<{
+  return api().request("db/installed-extensions", dbConn(connectionId)) as Promise<{
     extensions: Array<{
       name: string;
       installedVersion: string;
@@ -270,7 +326,7 @@ export async function getInstalledExtensions(connectionId: string) {
 
 /** 取消/终止指定后端会话 */
 export async function manageBackend(connectionId: string, pid: number, action: "cancel" | "terminate") {
-  return api().request("postgres/manage-backend", { connectionId, pid, action }) as Promise<{
+  return api().request("db/manage-backend", { ...dbConn(connectionId), pid, action }) as Promise<{
     success: boolean;
     pid: number;
     action: "cancel" | "terminate";
@@ -278,7 +334,8 @@ export async function manageBackend(connectionId: string, pid: number, action: "
 }
 
 /** 订阅服务端推送事件 */
-export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {  return api().subscribeEvents(connectionId, callback);
+export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
+  return api().subscribeEvents(connectionId, callback);
 }
 
 /** VSCode 插件内：保存文件到用户选择路径。返回 true 表示已保存，false 表示用户取消，抛错时可回退到浏览器下载。 */
@@ -310,7 +367,7 @@ export async function getAiConfig() {
     temperature: number;
     topP?: number;
     stream?: boolean;
-    maxTokens?: number;
+    maxTokens: number;
     hasKey: boolean;
   }>;
 }

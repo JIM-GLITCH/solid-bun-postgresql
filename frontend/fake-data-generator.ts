@@ -9,6 +9,32 @@ export interface TableColumn {
   is_nullable: string;
   column_default?: string | null;
   character_maximum_length?: number | null;
+  /** MySQL: information_schema.COLUMNS.EXTRA；PostgreSQL: identity_generation */
+  identity_generation?: string | null;
+}
+
+/** MySQL 计算列 / 生成列：不应出现在 INSERT 列清单中 */
+export function isGeneratedStoredColumn(col: TableColumn): boolean {
+  const ex = String(col.identity_generation ?? "").toLowerCase();
+  return (
+    (ex.includes("virtual") && ex.includes("generated")) ||
+    (ex.includes("stored") && ex.includes("generated"))
+  );
+}
+
+function isMysqlAutoIncrementExtra(extra: string | null | undefined): boolean {
+  return String(extra ?? "").toLowerCase().includes("auto_increment");
+}
+
+/** MySQL DATETIME / TIMESTAMP 常用字面量（避免仅依赖带 Z 的 ISO 串） */
+function formatMySqlDateTime(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const min = String(d.getUTCMinutes()).padStart(2, "0");
+  const s = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${y}-${m}-${day} ${h}:${min}:${s}`;
 }
 
 /** 需要保证唯一性的列名集合（主键 + 唯一约束） */
@@ -127,6 +153,11 @@ export function generateValueForColumn(
   // 唯一约束列不生成 null
   if (nullable && !requireUnique && Math.random() < 0.05) return null;
 
+  // MySQL AUTO_INCREMENT：插入 NULL 由引擎分配，避免与已有主键冲突
+  if (isMysqlAutoIncrementExtra(col.identity_generation)) {
+    return null;
+  }
+
   // 有 default 且是 nextval/序列的（serial 等），通常由数据库自动生成，可跳过或生成递增值
   const def = (col.column_default || "").toLowerCase();
   if (def.includes("nextval") || def.includes("gen_random_uuid")) {
@@ -149,7 +180,14 @@ export function generateValueForColumn(
   if (dataType.includes("int") || dataType === "smallint" || dataType === "bigint" || dataType === "serial" || dataType === "bigserial" || dataType === "smallserial") {
     return requireUnique ? rowIndex + 1 : randomInt(1, 999999);
   }
-  if (dataType === "real" || dataType === "double precision" || dataType === "float4" || dataType === "float8") {
+  if (
+    dataType === "real" ||
+    dataType === "double precision" ||
+    dataType === "float4" ||
+    dataType === "float8" ||
+    dataType === "double" ||
+    dataType === "float"
+  ) {
     return Math.round((Math.random() * 9999.99 + 0.01) * 100) / 100;
   }
   if (dataType === "numeric" || dataType === "decimal") {
@@ -157,6 +195,21 @@ export function generateValueForColumn(
   }
   if (dataType === "boolean" || dataType === "bool") {
     return Math.random() > 0.5;
+  }
+  if (dataType === "year") {
+    return 2000 + (requireUnique ? rowIndex % 25 : randomInt(0, 24));
+  }
+  if (dataType === "time") {
+    const base = requireUnique ? rowIndex * 37 : randomInt(0, 86400 - 1);
+    const h = Math.floor(base / 3600) % 24;
+    const m = Math.floor(base / 60) % 60;
+    const s = base % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  if (dataType === "datetime") {
+    const d = new Date(Date.UTC(2020, 0, 1));
+    d.setUTCMinutes(d.getUTCMinutes() + (requireUnique ? rowIndex : randomInt(0, 1825 * 24 * 60)));
+    return formatMySqlDateTime(d);
   }
   if (dataType === "date") {
     const d = new Date(2020, 0, 1);
@@ -174,8 +227,26 @@ export function generateValueForColumn(
   if (dataType === "jsonb" || dataType === "json") {
     return JSON.stringify({ id: requireUnique ? rowIndex : randomInt(1, 999), name: `item_${requireUnique ? rowIndex : randomInt(1, 99)}` });
   }
-  if (dataType.includes("char") || dataType === "varchar" || dataType === "character varying" || dataType === "text") {
+  if (dataType === "bit") {
+    return Math.random() > 0.5 ? 1 : 0;
+  }
+  if (
+    dataType === "binary" ||
+    dataType === "varbinary" ||
+    dataType === "blob" ||
+    dataType === "tinyblob" ||
+    dataType === "mediumblob" ||
+    dataType === "longblob"
+  ) {
+    const raw = requireUnique ? `blob_${rowIndex}_testdata` : `blob_${randomInt(1, 9999)}_x`;
+    return truncate(raw, maxLen ?? 255);
+  }
+  if (dataType.includes("char") || dataType === "character varying" || dataType === "text") {
     const val = requireUnique ? `文本_${rowIndex}` : `文本_${randomInt(1, 9999)}`;
+    return truncate(val, maxLen);
+  }
+  if (dataType === "tinytext" || dataType === "mediumtext" || dataType === "longtext") {
+    const val = requireUnique ? `长文本_${rowIndex}` : `长文本_${randomInt(1, 9999)}`;
     return truncate(val, maxLen);
   }
 

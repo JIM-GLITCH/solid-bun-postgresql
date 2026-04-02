@@ -179,8 +179,43 @@ export function formatCellToEditable(value: unknown, dataTypeOid?: number): stri
 }
 
 /** 格式化为 SQL 字面量（用于 UPDATE 的 SET 子句） */
-export function formatSqlValue(value: unknown, dataTypeOid?: number): string {
+export function formatSqlValue(
+  value: unknown,
+  dataTypeOid?: number,
+  dialect: "postgres" | "mysql" = "postgres"
+): string {
   if (value === null || value === undefined) return "NULL";
+
+  if (dialect === "mysql") {
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "bigint") return String(value);
+    if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+    if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
+    if (value instanceof Date) {
+      const s = value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
+      return `'${s.replace(/'/g, "''")}'`;
+    }
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+      return `X'${value.toString("hex")}'`;
+    }
+    if (typeof value === "object" && value !== null && "type" in value && (value as any).type === "Buffer" && Array.isArray((value as any).data)) {
+      const hex = Array.from((value as any).data as number[])
+        .map((b: number) => b.toString(16).padStart(2, "0"))
+        .join("");
+      return `X'${hex}'`;
+    }
+    if (typeof value === "string") {
+      return `'${value.replace(/'/g, "''")}'`;
+    }
+    if (typeof value === "object") {
+      try {
+        return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+      } catch {
+        return `'${String(value).replace(/'/g, "''")}'`;
+      }
+    }
+    return `'${String(value).replace(/'/g, "''")}'`;
+  }
 
   // JSONB/JSON 类型：字符串值直接作为 JSON 字面量处理，不走通用 null/bool 检测
   if (typeof value === "string" && dataTypeOid === PG_OID.jsonb) {

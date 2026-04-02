@@ -11,7 +11,9 @@ import {
   needsLength,
   buildAlterTableSql,
   COMMON_TYPES,
+  COMMON_TYPES_MYSQL,
 } from "./table-designer-shared";
+import { getRegisteredDbType } from "./db-session-meta";
 import { vscode } from "./theme";
 
 export interface TableDesignerEditProps {
@@ -20,6 +22,21 @@ export interface TableDesignerEditProps {
   schema: string;
   table: string;
   onSuccess?: (connectionId: string, schema: string) => void;
+}
+
+function defaultEditColumn(connectionId: string): TableColumn {
+  if (getRegisteredDbType(connectionId) === "mysql") {
+    return {
+      name: "",
+      dataType: "varchar",
+      length: "255",
+      nullable: true,
+      primaryKey: false,
+      defaultValue: "",
+      isNew: true,
+    };
+  }
+  return { name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true };
 }
 
 function mapColumnsFromApi(cols: any[]): TableColumn[] {
@@ -47,8 +64,10 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
 
   const [editData] = createResource(source, async ({ cid, schema, table }) => {
     const [typesRes, colsRes] = await Promise.all([getDataTypes(cid), getColumns(cid, schema, table)]);
+    const fallback =
+      getRegisteredDbType(cid) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES;
     return {
-      types: typesRes.types?.length ? typesRes.types : COMMON_TYPES,
+      types: typesRes.types?.length ? typesRes.types : fallback,
       columns: mapColumnsFromApi(colsRes.columns ?? []),
     };
   });
@@ -72,7 +91,7 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
   const addColumn = () => {
     setColumns(
       produce((draft) => {
-        draft.push({ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true });
+        draft.push(defaultEditColumn(props.connectionId));
       })
     );
   };
@@ -82,14 +101,23 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
       produce((draft) => {
         draft.splice(index, 1);
         if (draft.length === 0) {
-          draft.push({ name: "", dataType: "text", nullable: true, primaryKey: false, defaultValue: "", isNew: true });
+          draft.push(defaultEditColumn(props.connectionId));
         }
       })
     );
   };
 
+  const designerDialect = () =>
+    (getRegisteredDbType(props.connectionId) === "mysql" ? "mysql" : "postgres") as const;
+
   const previewSql = () =>
-    buildAlterTableSql(props.schema, props.table, originalColumns(), columns as unknown as TableColumn[]).join("\n");
+    buildAlterTableSql(
+      props.schema,
+      props.table,
+      originalColumns(),
+      columns as unknown as TableColumn[],
+      designerDialect()
+    ).join("\n");
 
   const handleExecute = async () => {
     const sql = previewSql();

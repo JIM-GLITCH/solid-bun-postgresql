@@ -3,10 +3,15 @@
  */
 import { createSignal, For, Show, onMount } from "solid-js";
 import { explainQueryText, getPartitionInfo } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
+import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
 import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
 
-function qIdent(s: string) {
-  return `"${s.replace(/"/g, '""')}"`;
+function defaultSelectSql(connectionId: string, schema: string, table: string): string {
+  if (getRegisteredDbType(connectionId) === "mysql") {
+    return `SELECT * FROM ${mysqlBacktickIdent(schema)}.${mysqlBacktickIdent(table)} LIMIT 100`;
+  }
+  return `SELECT * FROM ${pgQuoteIdent(schema)}.${pgQuoteIdent(table)} LIMIT 100`;
 }
 
 export interface PartitionTableModalProps {
@@ -23,8 +28,7 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
   const [loadErr, setLoadErr] = createSignal<string | null>(null);
   const [info, setInfo] = createSignal<PartitionInfoResult | null>(null);
 
-  const defaultSql = () => `SELECT * FROM ${qIdent(props.schema)}.${qIdent(props.table)} LIMIT 100`;
-  const [sql, setSql] = createSignal(defaultSql());
+  const [sql, setSql] = createSignal(defaultSelectSql(props.connectionId, props.schema, props.table));
   const [explainLoading, setExplainLoading] = createSignal(false);
   const [explainLines, setExplainLines] = createSignal<string[] | null>(null);
   const [explainErr, setExplainErr] = createSignal<string | null>(null);
@@ -127,8 +131,9 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
               "font-size": "13px",
             }}
           >
-            当前表即不是「分区父表」，也不在声明式分区下作为「分区子表」（可能为普通表，或仅使用传统继承）。下方仍可对任意 SQL 做
-            EXPLAIN 预览。
+            {getRegisteredDbType(props.connectionId) === "mysql"
+              ? "当前表在 information_schema 中未表现为分区表（可能为普通表）。下方仍可对任意 SQL 做 EXPLAIN 预览。"
+              : "当前表即不是「分区父表」，也不在声明式分区下作为「分区子表」（可能为普通表，或仅使用传统继承）。下方仍可对任意 SQL 做 EXPLAIN 预览。"}
           </div>
         </Show>
 
@@ -146,7 +151,9 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
               <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "12px" }}>
                 <thead>
                   <tr style={{ "text-align": "left", background: vscode.sidebarBg }}>
-                    <th style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}` }}>分区（schema.name）</th>
+                    <th style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}` }}>
+                      {getRegisteredDbType(props.connectionId) === "mysql" ? "分区（库.分区名）" : "分区（schema.name）"}
+                    </th>
                     <th style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}` }}>边界 / 约束</th>
                   </tr>
                 </thead>
@@ -208,7 +215,9 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
         <div style={{ display: "flex", "flex-direction": "column", gap: "8px" }}>
           <div style={{ "font-size": "13px", "font-weight": "600" }}>分区裁剪预览（EXPLAIN，不执行查询）</div>
           <div style={{ color: vscode.foregroundDim, "font-size": "12px" }}>
-            修改 WHERE / JOIN 等条件后执行 EXPLAIN，从计划中可观察实际会扫描的分区（如 Append 下的子计划）。复杂场景可配合 PostgreSQL 分区裁剪规则理解。
+            {getRegisteredDbType(props.connectionId) === "mysql"
+              ? "修改 WHERE 等条件后点「EXPLAIN 预览」：结果里 partitions 列会显示可能扫描的分区。需要树形/JSON 计划时，把上方内容改成 `FORMAT=TREE SELECT …` 或 `FORMAT=JSON SELECT …`（不要写开头的 EXPLAIN，后端会自动加）。"
+              : "修改 WHERE / JOIN 等条件后执行 EXPLAIN，从计划中可观察实际会扫描的分区（如 Append 下的子计划）。复杂场景可配合 PostgreSQL 分区裁剪规则理解。"}
           </div>
           <textarea
             value={sql()}
@@ -249,7 +258,7 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
             </button>
             <button
               type="button"
-              onClick={() => setSql(defaultSql())}
+              onClick={() => setSql(defaultSelectSql(props.connectionId, props.schema, props.table))}
               style={{
                 background: vscode.buttonSecondary,
                 color: vscode.foreground,

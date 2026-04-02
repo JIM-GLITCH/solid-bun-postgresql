@@ -2,7 +2,8 @@
  * 数据库连接持久化 - 调用服务端 API（服务端加密存储）
  */
 
-import type { PostgresLoginParams } from "../shared/src";
+import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../shared/src";
+import { registerConnectionDbType } from "./db-session-meta";
 import { getTransport } from "./transport";
 
 export interface StoredConnection {
@@ -38,18 +39,19 @@ export async function loadStoredConnections(): Promise<ConnectionList> {
 /** 保存连接到服务端（服务端加密存储） */
 export async function saveConnection(
   id: string,
-  params: PostgresLoginParams,
+  params: PostgresLoginParams | StoredConnectionParams,
   meta?: { name?: string }
 ): Promise<void> {
-  const data = await getTransport().request("connections/save", { id, ...params, ...meta }) as { success?: boolean; error?: string };
+  const dbType = (params as StoredConnectionParams).dbType ?? "postgres";
+  const data = await getTransport().request("connections/save", { id, ...params, dbType, ...meta }) as { success?: boolean; error?: string };
   if (!data?.success) throw new Error(data?.error || "保存失败");
 }
 
 /** 获取已保存连接的完整参数（用于编辑，含密码） */
-export async function getStoredConnectionParams(id: string): Promise<PostgresLoginParams | null> {
+export async function getStoredConnectionParams(id: string): Promise<StoredConnectionParams | null> {
   try {
     const params = await getTransport().request("connections/get-params", { id });
-    return params != null ? (params as PostgresLoginParams) : null;
+    return params != null ? (params as StoredConnectionParams) : null;
   } catch {
     return null;
   }
@@ -79,8 +81,12 @@ export async function connectFromSaved(id: string, sessionId?: string): Promise<
     sucess?: boolean;
     success?: boolean;
     connectionId?: string;
+    dbType?: DbKind;
     error?: string;
   };
-  if (data.sucess || data.success) return { success: true, connectionId: data.connectionId };
+  if (data.sucess || data.success) {
+    if (data.connectionId) registerConnectionDbType(data.connectionId, data.dbType ?? "postgres");
+    return { success: true, connectionId: data.connectionId };
+  }
   return { success: false, error: data.error || "连接失败" };
 }
