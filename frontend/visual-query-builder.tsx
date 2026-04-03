@@ -3,6 +3,8 @@ import { createStore, produce } from "solid-js/store";
 import { writeClipboardText } from "./clipboard";
 import { parseSqlToVisualDescriptor } from "./sql-to-visual";
 import { getSchemas, getTables, getColumns, getForeignKeys } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
+import type { DbKind } from "../shared/src";
 
 // ================== 类型定义 ==================
 
@@ -84,6 +86,25 @@ interface VisualQueryBuilderProps {
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 11);
+}
+
+/** T-SQL 标识符 */
+function vqbSqlServerBracketIdent(id: string): string {
+  return "[" + id.replace(/\]/g, "]]") + "]";
+}
+
+function vqbQualifyTable(dialect: DbKind, schema: string, table: string): string {
+  if (dialect === "sqlserver") {
+    return `${vqbSqlServerBracketIdent(schema)}.${vqbSqlServerBracketIdent(table)}`;
+  }
+  return `${schema}.${table}`;
+}
+
+function vqbJoinSqlKeyword(dialect: DbKind, joinType: JoinType): string {
+  if (joinType === "INNER") return "JOIN";
+  if (joinType === "CROSS") return "CROSS JOIN";
+  if (dialect === "sqlserver" && joinType === "FULL") return "FULL OUTER JOIN";
+  return `${joinType} JOIN`;
 }
 
 // ================== 主组件 ==================
@@ -962,6 +983,9 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
 
     if (tables.length === 0) return '';
 
+    const dialect: DbKind = props.connectionId ? getRegisteredDbType(props.connectionId) : "postgres";
+    const qualify = (schema: string, name: string) => vqbQualifyTable(dialect, schema, name);
+
     // 确定主表（优先使用设置的主表，否则用第一个表）
     const primaryTableIdToUse = queryState.primaryTableId || tables[0]?.id;
     const primaryTable = tables.find(t => t.id === primaryTableIdToUse) || tables[0];
@@ -997,7 +1021,11 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     }
 
     // SELECT 子句（只包含主表及其连接的表的列）
+    // SQL Server：TOP 紧跟 SELECT，且不支持末尾 LIMIT
     let selectClause = 'SELECT';
+    if (dialect === "sqlserver" && limit != null && limit > 0) {
+      selectClause += ` TOP (${limit})`;
+    }
     if (distinct) selectClause += ' DISTINCT';
 
     // 过滤出属于有效表的列
@@ -1027,7 +1055,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     }
 
     // FROM 子句
-    let fromClause = `FROM ${primaryTable.schema}.${primaryTable.name} ${primaryTable.alias}`;
+    let fromClause = `FROM ${qualify(primaryTable.schema, primaryTable.name)} ${primaryTable.alias}`;
 
     // JOIN 子句（按 BFS 顺序生成，确保每个表 join 时其关联表已出现）
     const appearedTables = new Set<string>([primaryTable.id]);
@@ -1056,10 +1084,10 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
       // 如果没有 ON 条件，跳过这个表
       if (tableConditions.length === 0) continue;
 
-      // 有条件的表才生成 JOIN
+      // 有条件的表才生成 JOIN（T-SQL 须 FULL OUTER JOIN，不能写 FULL JOIN）
       const joinType = table.joinType || 'INNER';
-      const joinKeyword = joinType === 'INNER' ? 'JOIN' : `${joinType} JOIN`;
-      fromClause += `\n${joinKeyword} ${table.schema}.${table.name} ${table.alias}`;
+      const joinKeyword = joinType === 'INNER' ? 'JOIN' : vqbJoinSqlKeyword(dialect, joinType);
+      fromClause += `\n${joinKeyword} ${qualify(table.schema, table.name)} ${table.alias}`;
 
       // 添加到已出现的表集合
       appearedTables.add(table.id);
@@ -1110,9 +1138,9 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
       }
     }
 
-    // LIMIT 子句
+    // LIMIT 子句（PostgreSQL / MySQL；SQL Server 已在 SELECT 用 TOP）
     let limitClause = '';
-    if (limit && limit > 0) {
+    if (dialect !== "sqlserver" && limit && limit > 0) {
       limitClause = `LIMIT ${limit}`;
     }
 

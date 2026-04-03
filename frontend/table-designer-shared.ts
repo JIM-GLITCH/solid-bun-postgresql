@@ -36,6 +36,20 @@ export function normalizeMysqlReferentialAction(rule: unknown): FKAction {
   return "NO ACTION";
 }
 
+/** SQL Server sys.foreign_keys *_referential_action_desc（如 NO_ACTION）→ 设计器枚举 */
+export function normalizeSqlServerReferentialAction(rule: unknown): FKAction {
+  const s = String(rule ?? "NO_ACTION")
+    .trim()
+    .toUpperCase()
+    .replace(/_/g, " ");
+  if (s === "SET NULL") return "SET NULL";
+  if (s === "SET DEFAULT") return "SET DEFAULT";
+  if (s === "CASCADE") return "CASCADE";
+  if (s === "RESTRICT") return "RESTRICT";
+  if (s === "NO ACTION" || s === "NOACTION") return "NO ACTION";
+  return "NO ACTION";
+}
+
 export interface IndexDef {
   name: string;
   originalName?: string;
@@ -82,6 +96,8 @@ export interface CheckConstraintDef {
 export interface OriginalState {
   tableName: string;
   tableComment: string;
+  /** SQL Server 等：编辑时删除/重建主键需要真实约束名 */
+  primaryKeyConstraintName?: string;
   columns: TableColumn[];
   indexes: IndexDef[];
   foreignKeys: ForeignKeyDef[];
@@ -111,14 +127,18 @@ export interface ForeignKeyConstraint {
 const TYPES_NEEDING_LENGTH = [
   "varchar", "char", "bit", "varbit", "character varying", "character",
   "binary", "varbinary",
+  "nvarchar", "nchar",
 ];
 const TYPES_NEEDING_PRECISION = ["numeric", "decimal"];
 
-export type SqlDialect = "postgres" | "mysql";
+export type SqlDialect = "postgres" | "mysql" | "sqlserver";
 
 export function quoteIdent(dialect: SqlDialect, id: string): string {
   if (dialect === "mysql") {
     return "`" + id.replace(/`/g, "``") + "`";
+  }
+  if (dialect === "sqlserver") {
+    return "[" + id.replace(/\]/g, "]]") + "]";
   }
   return '"' + id.replace(/"/g, '""') + '"';
 }
@@ -339,6 +359,162 @@ function mysqlBuildCreateDdl(schema: string, tableName: string, current: Designe
     sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} CHECK (${chk.expression})`);
   }
 
+  return sqls;
+}
+
+// ─── SQL Server (T-SQL) DDL ───────────────────────────────────────────────────
+
+function sqlServerLit(s: string): string {
+  return s.replace(/'/g, "''");
+}
+
+function sqlServerBaseType(dataType: string): string {
+  const t = dataType.toLowerCase().trim();
+  const p = t.indexOf("(");
+  return p >= 0 ? t.slice(0, p).trim() : t;
+}
+
+function sqlServerNeedsLength(type: string): boolean {
+  const base = sqlServerBaseType(type);
+  return ["varchar", "nvarchar", "char", "nchar", "binary", "varbinary"].includes(base);
+}
+
+function sqlServerNeedsPrecision(type: string): boolean {
+  const base = sqlServerBaseType(type);
+  return base === "decimal" || base === "numeric";
+}
+
+function sqlServerBuildColumnTypeSql(col: TableColumn): string {
+  const raw = col.dataType.trim();
+  if (raw.includes("(")) return raw;
+  let typeStr = raw;
+  if (sqlServerNeedsPrecision(raw)) {
+    if (col.precision?.trim()) {
+      typeStr += col.scale?.trim()
+        ? `(${col.precision.trim()}, ${col.scale.trim()})`
+        : `(${col.precision.trim()})`;
+    }
+  } else if (sqlServerNeedsLength(raw)) {
+    const len = col.length?.trim() ?? "";
+    if (len === "-1" || len.toLowerCase() === "max") typeStr += "(MAX)";
+    else if (len) typeStr += `(${len})`;
+  }
+  return typeStr;
+}
+
+function sqlServerSupportsIdentity(dataType: string): boolean {
+  const b = sqlServerBaseType(dataType);
+  return b === "tinyint" || b === "smallint" || b === "int" || b === "bigint";
+}
+
+function sqlServerDefaultParen(d: string): string {
+  const t = d.trim();
+  if (DEFAULT_VALUE_RAW_RE.test(t)) return `(${t})`;
+  return `(N'${t.replace(/'/g, "''")}')`;
+}
+
+function sqlServerColumnDefTail(col: TableColumn): string {
+  let part = sqlServerBuildColumnTypeSql(col);
+  if (col.autoIncrement && sqlServerSupportsIdentity(col.dataType)) {
+    part += " IDENTITY(1,1)";
+  }
+  if (!col.nullable) part += " NOT NULL";
+  else part += " NULL";
+  if (!col.autoIncrement && col.defaultValue.trim()) {
+    part += ` DEFAULT ${sqlServerDefaultParen(col.defaultValue.trim())}`;
+  }
+  return part;
+}
+
+function sqlServerColumnDefForCreate(col: TableColumn): string {
+  const qi = (id: string) => quoteIdent("sqlserver", id);
+  return `${qi(col.name)} ${sqlServerColumnDefTail(col)}`;
+}
+
+function sqlServerNonClustered(_idx: IndexDef): string {
+  return "NONCLUSTERED";
+}
+
+/** T-SQL 外键无 RESTRICT，与 NO ACTION 等价 */
+function sqlServerFkRule(a: FKAction): string {
+  return a === "RESTRICT" ? "NO ACTION" : a;
+}
+
+function sqlServerTableCommentStatements(schema: string, table: string, newComment: string): string[] {
+  const sch = sqlServerLit(schema);
+  const tbl = sqlServerLit(table);
+  const dropIf = `IF EXISTS (SELECT 1 FROM sys.extended_properties ep INNER JOIN sys.tables tb ON ep.major_id = tb.object_id INNER JOIN sys.schemas s ON tb.schema_id = s.schema_id WHERE s.name = N'${sch}' AND tb.name = N'${tbl}' AND ep.class = 1 AND ep.minor_id = 0 AND ep.name = N'MS_Description')`;
+  if (!newComment.trim()) {
+    return [
+      `${dropIf} EXEC sys.sp_dropextendedproperty @name = N'MS_Description', @level0type = N'SCHEMA', @level0name = N'${sch}', @level1type = N'TABLE', @level1name = N'${tbl}'`,
+    ];
+  }
+  const val = sqlServerLit(newComment.trim());
+  return [
+    `${dropIf} EXEC sys.sp_updateextendedproperty @name = N'MS_Description', @value = N'${val}', @level0type = N'SCHEMA', @level0name = N'${sch}', @level1type = N'TABLE', @level1name = N'${tbl}' ELSE EXEC sys.sp_addextendedproperty @name = N'MS_Description', @value = N'${val}', @level0type = N'SCHEMA', @level0name = N'${sch}', @level1type = N'TABLE', @level1name = N'${tbl}'`,
+  ];
+}
+
+function sqlServerDropDefaultDynamicBatch(schema: string, table: string, column: string): string {
+  const sch = sqlServerLit(schema);
+  const tbl = sqlServerLit(table);
+  const col = sqlServerLit(column);
+  return `DECLARE @sch sysname = N'${sch}', @tbl sysname = N'${tbl}', @col sysname = N'${col}', @dc sysname;
+SELECT @dc = dc.name FROM sys.default_constraints dc
+INNER JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+INNER JOIN sys.tables t ON c.object_id = t.object_id
+INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+WHERE s.name = @sch AND t.name = @tbl AND c.name = @col;
+IF @dc IS NOT NULL EXEC(N'ALTER TABLE ' + QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl) + N' DROP CONSTRAINT ' + QUOTENAME(@dc));`;
+}
+
+function sqlServerPkConstraintName(tableName: string, original: OriginalState): string {
+  return original.primaryKeyConstraintName?.trim() || `PK_${tableName}`.replace(/[^\w]/g, "_");
+}
+
+function sqlServerBuildCreateDdl(schema: string, tableName: string, current: DesignerDdlCurrent): string[] {
+  const qi = (id: string) => quoteIdent("sqlserver", id);
+  const qualifiedTbl = qualifiedTableName("sqlserver", schema, tableName);
+  const sqls: string[] = [];
+  const pkCols = current.columns.filter((c) => c.primaryKey);
+  const lines = current.columns.map((col) => `  ${sqlServerColumnDefForCreate(col)}`);
+  if (pkCols.length > 0) {
+    const pkName = `PK_${tableName}`.replace(/[^\w]/g, "_");
+    lines.push(`  CONSTRAINT ${qi(pkName)} PRIMARY KEY (${pkCols.map((c) => qi(c.name)).join(", ")})`);
+  }
+  sqls.push(`CREATE TABLE ${qualifiedTbl} (\n${lines.join(",\n")}\n)`);
+  for (const stmt of sqlServerTableCommentStatements(schema, tableName, current.tableComment)) {
+    sqls.push(stmt);
+  }
+  for (const idx of current.indexes) {
+    if (idx.toDelete) continue;
+    const idxName = resolveIndexName(current.tableName, idx);
+    const unique = idx.unique ? "UNIQUE " : "";
+    const nc = sqlServerNonClustered(idx);
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    sqls.push(`CREATE ${unique}${nc} INDEX ${qi(idxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+  for (const fk of current.foreignKeys) {
+    if (fk.toDelete) continue;
+    const constraintName = resolveFkConstraintName(current.tableName, fk);
+    const ref = qualifiedTableName("sqlserver", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${sqlServerFkRule(fk.onDelete)} ON UPDATE ${sqlServerFkRule(fk.onUpdate)}`
+    );
+  }
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (uq.toDelete) continue;
+    const constraintName = resolveUqConstraintName(current.tableName, uq, i);
+    const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} UNIQUE (${cols})`);
+  }
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (chk.toDelete) continue;
+    const constraintName = resolveChkConstraintName(current.tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} CHECK (${chk.expression})`);
+  }
   return sqls;
 }
 
@@ -606,6 +782,282 @@ function mysqlBuildEditDdl(
   return sqls;
 }
 
+function sqlServerBuildEditDdl(
+  schema: string,
+  tableName: string,
+  original: OriginalState,
+  current: DesignerDdlCurrent
+): string[] {
+  const qi = (id: string) => quoteIdent("sqlserver", id);
+  const qualifiedTbl = qualifiedTableName("sqlserver", schema, tableName);
+  const sqls: string[] = [];
+
+  const origColMap = new Map<string, TableColumn>(
+    original.columns.map((c) => [c.name.toLowerCase(), c])
+  );
+  const origFkMap = new Map<string, ForeignKeyDef>(
+    original.foreignKeys.map((fk) => [(fk.constraintName ?? "").toLowerCase(), fk])
+  );
+  const origUqMap = new Map<string, UniqueConstraintDef>(
+    original.uniqueConstraints.map((uq) => [(uq.constraintName ?? "").toLowerCase(), uq])
+  );
+  const origChkMap = new Map<string, CheckConstraintDef>(
+    original.checkConstraints.map((chk) => [(chk.constraintName ?? "").toLowerCase(), chk])
+  );
+  const origIdxMap = new Map<string, IndexDef>(
+    original.indexes.map((idx) => [idx.name.toLowerCase(), idx])
+  );
+
+  for (const fk of current.foreignKeys) {
+    if (!fk.toDelete) continue;
+    const constraintName = fk.originalConstraintName || resolveFkConstraintName(tableName, fk);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(constraintName)}`);
+  }
+  for (const fk of current.foreignKeys) {
+    if (fk.isNew || fk.toDelete) continue;
+    const lookupKey = (fk.originalConstraintName || fk.constraintName || "").toLowerCase();
+    const orig = origFkMap.get(lookupKey);
+    if (!orig) continue;
+    const changed =
+      orig.constraintName !== fk.constraintName ||
+      orig.column !== fk.column ||
+      orig.refSchema !== fk.refSchema ||
+      orig.refTable !== fk.refTable ||
+      orig.refColumn !== fk.refColumn ||
+      orig.onDelete !== fk.onDelete ||
+      orig.onUpdate !== fk.onUpdate;
+    if (changed) {
+      const oldName = fk.originalConstraintName || orig.constraintName || resolveFkConstraintName(tableName, orig);
+      sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(oldName)}`);
+    }
+  }
+
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (!uq.toDelete) continue;
+    const constraintName = uq.originalConstraintName || resolveUqConstraintName(tableName, uq, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(constraintName)}`);
+  }
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (!chk.toDelete) continue;
+    const constraintName = chk.originalConstraintName || resolveChkConstraintName(tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(constraintName)}`);
+  }
+
+  for (const idx of current.indexes) {
+    if (!idx.toDelete) continue;
+    const idxName = resolveIndexName(tableName, idx);
+    sqls.push(`DROP INDEX ${qi(idxName)} ON ${qualifiedTbl}`);
+  }
+  for (const idx of current.indexes) {
+    if (idx.isNew || idx.toDelete) continue;
+    const lookupKey = (idx.originalName || idx.name).toLowerCase();
+    const orig = origIdxMap.get(lookupKey);
+    if (!orig) continue;
+    const nameChanged = orig.name !== idx.name;
+    const typeChanged = orig.indexType !== idx.indexType;
+    const uniqueChanged = orig.unique !== idx.unique;
+    const colsChanged = JSON.stringify([...orig.columns].sort()) !== JSON.stringify([...idx.columns].sort());
+    if (nameChanged || typeChanged || uniqueChanged || colsChanged) {
+      sqls.push(`DROP INDEX ${qi(orig.name)} ON ${qualifiedTbl}`);
+    }
+  }
+
+  for (const uq of current.uniqueConstraints) {
+    if (uq.isNew || uq.toDelete) continue;
+    const lookupKey = (uq.originalConstraintName || uq.constraintName || "").toLowerCase();
+    const orig = origUqMap.get(lookupKey);
+    if (!orig) continue;
+    const origCols = orig.columns.split(",").map((c) => c.trim()).sort().join(",");
+    const newCols = uq.columns.split(",").map((c) => c.trim()).sort().join(",");
+    if (orig.constraintName !== uq.constraintName || origCols !== newCols) {
+      const oldName = uq.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(oldName)}`);
+    }
+  }
+  for (const chk of current.checkConstraints) {
+    if (chk.isNew || chk.toDelete) continue;
+    const lookupKey = (chk.originalConstraintName || chk.constraintName || "").toLowerCase();
+    const orig = origChkMap.get(lookupKey);
+    if (!orig) continue;
+    if (orig.constraintName !== chk.constraintName || orig.expression !== chk.expression) {
+      const oldName = chk.originalConstraintName || orig.constraintName || "";
+      if (oldName) sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(oldName)}`);
+    }
+  }
+
+  for (const col of current.columns) {
+    if (!col.isNew) continue;
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD ${qi(col.name)} ${sqlServerColumnDefTail(col)}`);
+  }
+
+  const currentOriginalNames = new Set(
+    current.columns.map((c) => (c.originalName || c.name).toLowerCase())
+  );
+  for (const origCol of original.columns) {
+    if (!currentOriginalNames.has(origCol.name.toLowerCase())) {
+      sqls.push(`ALTER TABLE ${qualifiedTbl} DROP COLUMN ${qi(origCol.name)}`);
+    }
+  }
+
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    const origKey = (col.originalName || col.name).toLowerCase();
+    const orig = origColMap.get(origKey);
+    if (!orig) continue;
+    const physical =
+      col.originalName && col.originalName !== col.name ? col.originalName : col.name;
+
+    const typeChanged = sqlServerBuildColumnTypeSql(orig) !== sqlServerBuildColumnTypeSql(col);
+    const nullChanged = orig.nullable !== col.nullable;
+    const defaultChanged = orig.defaultValue !== col.defaultValue;
+    const aiChanged = !!orig.autoIncrement !== !!col.autoIncrement;
+
+    if (typeChanged || nullChanged || defaultChanged || aiChanged) {
+      if (typeChanged || nullChanged || defaultChanged) {
+        sqls.push(sqlServerDropDefaultDynamicBatch(schema, tableName, physical));
+      }
+      if (typeChanged || nullChanged) {
+        sqls.push(
+          `ALTER TABLE ${qualifiedTbl} ALTER COLUMN ${qi(physical)} ${sqlServerBuildColumnTypeSql(col)} ${col.nullable ? "NULL" : "NOT NULL"}`
+        );
+      }
+      if (defaultChanged && col.defaultValue.trim()) {
+        const dfName = `DF_${tableName}_${col.name}`.replace(/[^\w]/g, "_");
+        sqls.push(
+          `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(dfName)} DEFAULT ${sqlServerDefaultParen(col.defaultValue.trim())} FOR ${qi(physical)}`
+        );
+      }
+    }
+  }
+
+  const origPkSet = new Set(original.columns.filter((c) => c.primaryKey).map((c) => c.name.toLowerCase()));
+  const newPkCols = current.columns.filter((c) => c.primaryKey).map((c) => c.name);
+  const newPkSet = new Set(newPkCols.map((n) => n.toLowerCase()));
+  const pkChanged =
+    origPkSet.size !== newPkSet.size ||
+    [...origPkSet].some((col) => !newPkSet.has(col)) ||
+    [...newPkSet].some((col) => !origPkSet.has(col));
+  if (pkChanged && origPkSet.size > 0) {
+    sqls.push(`ALTER TABLE ${qualifiedTbl} DROP CONSTRAINT ${qi(sqlServerPkConstraintName(tableName, original))}`);
+  }
+
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    if (col.originalName && col.originalName !== col.name) {
+      const obj = `${sqlServerLit(schema)}.${sqlServerLit(tableName)}.${sqlServerLit(col.originalName)}`;
+      sqls.push(
+        `EXEC sp_rename @objname = N'${obj}', @newname = N'${sqlServerLit(col.name)}', @objtype = N'COLUMN'`
+      );
+    }
+  }
+
+  if (pkChanged && newPkCols.length > 0) {
+    const newPk = `PK_${tableName}`.replace(/[^\w]/g, "_");
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newPk)} PRIMARY KEY (${newPkCols.map(qi).join(", ")})`
+    );
+  }
+
+  for (const fk of current.foreignKeys) {
+    if (!fk.isNew) continue;
+    const constraintName = resolveFkConstraintName(tableName, fk);
+    const ref = qualifiedTableName("sqlserver", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${sqlServerFkRule(fk.onDelete)} ON UPDATE ${sqlServerFkRule(fk.onUpdate)}`
+    );
+  }
+  for (const fk of current.foreignKeys) {
+    if (fk.isNew || fk.toDelete) continue;
+    const lookupKey = (fk.originalConstraintName || fk.constraintName || "").toLowerCase();
+    const orig = origFkMap.get(lookupKey);
+    if (!orig) continue;
+    const changed =
+      orig.constraintName !== fk.constraintName ||
+      orig.column !== fk.column ||
+      orig.refSchema !== fk.refSchema ||
+      orig.refTable !== fk.refTable ||
+      orig.refColumn !== fk.refColumn ||
+      orig.onDelete !== fk.onDelete ||
+      orig.onUpdate !== fk.onUpdate;
+    if (!changed) continue;
+    const newName = resolveFkConstraintName(tableName, fk);
+    const ref = qualifiedTableName("sqlserver", fk.refSchema, fk.refTable);
+    sqls.push(
+      `ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} FOREIGN KEY (${qi(fk.column)}) REFERENCES ${ref} (${qi(fk.refColumn)}) ON DELETE ${sqlServerFkRule(fk.onDelete)} ON UPDATE ${sqlServerFkRule(fk.onUpdate)}`
+    );
+  }
+
+  for (let i = 0; i < current.uniqueConstraints.length; i++) {
+    const uq = current.uniqueConstraints[i];
+    if (!uq.isNew) continue;
+    const constraintName = resolveUqConstraintName(tableName, uq, i);
+    const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} UNIQUE (${cols})`);
+  }
+  for (const uq of current.uniqueConstraints) {
+    if (uq.isNew || uq.toDelete) continue;
+    const lookupKey = (uq.originalConstraintName || uq.constraintName || "").toLowerCase();
+    const orig = origUqMap.get(lookupKey);
+    if (!orig) continue;
+    const origCols = orig.columns.split(",").map((c) => c.trim()).sort().join(",");
+    const newCols = uq.columns.split(",").map((c) => c.trim()).sort().join(",");
+    if (orig.constraintName !== uq.constraintName || origCols !== newCols) {
+      const newName = resolveUqConstraintName(tableName, uq, 0);
+      const cols = uq.columns.split(",").map((c) => qi(c.trim())).join(", ");
+      sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} UNIQUE (${cols})`);
+    }
+  }
+
+  for (let i = 0; i < current.checkConstraints.length; i++) {
+    const chk = current.checkConstraints[i];
+    if (!chk.isNew) continue;
+    const constraintName = resolveChkConstraintName(tableName, chk, i);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(constraintName)} CHECK (${chk.expression})`);
+  }
+  for (const chk of current.checkConstraints) {
+    if (chk.isNew || chk.toDelete) continue;
+    const lookupKey = (chk.originalConstraintName || chk.constraintName || "").toLowerCase();
+    const orig = origChkMap.get(lookupKey);
+    if (!orig) continue;
+    if (orig.constraintName === chk.constraintName && orig.expression === chk.expression) continue;
+    const newName = resolveChkConstraintName(tableName, chk, 0);
+    sqls.push(`ALTER TABLE ${qualifiedTbl} ADD CONSTRAINT ${qi(newName)} CHECK (${chk.expression})`);
+  }
+
+  for (const idx of current.indexes) {
+    if (!idx.isNew) continue;
+    const idxName = resolveIndexName(tableName, idx);
+    const unique = idx.unique ? "UNIQUE " : "";
+    const nc = sqlServerNonClustered(idx);
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    sqls.push(`CREATE ${unique}${nc} INDEX ${qi(idxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+  for (const idx of current.indexes) {
+    if (idx.isNew || idx.toDelete) continue;
+    const lookupKey = (idx.originalName || idx.name).toLowerCase();
+    const orig = origIdxMap.get(lookupKey);
+    if (!orig) continue;
+    const nameChanged = orig.name !== idx.name;
+    const typeChanged = orig.indexType !== idx.indexType;
+    const uniqueChanged = orig.unique !== idx.unique;
+    const colsChanged = JSON.stringify([...orig.columns].sort()) !== JSON.stringify([...idx.columns].sort());
+    if (!nameChanged && !typeChanged && !uniqueChanged && !colsChanged) continue;
+    const unique = idx.unique ? "UNIQUE " : "";
+    const nc = sqlServerNonClustered(idx);
+    const cols = idx.columns.map((c) => qi(c)).join(", ");
+    const newIdxName = resolveIndexName(tableName, idx);
+    sqls.push(`CREATE ${unique}${nc} INDEX ${qi(newIdxName)} ON ${qualifiedTbl} (${cols})`);
+  }
+
+  if (current.tableComment !== original.tableComment) {
+    sqls.push(...sqlServerTableCommentStatements(schema, tableName, current.tableComment));
+  }
+
+  return sqls;
+}
+
 function resolveFkConstraintName(tableName: string, fk: ForeignKeyDef): string {
   return fk.constraintName?.trim() || `fk_${tableName}_${fk.column}`;
 }
@@ -633,6 +1085,10 @@ export function buildDdlStatements(
   if (dialect === "mysql") {
     if (mode === "create") return mysqlBuildCreateDdl(schema, tableName, current);
     return mysqlBuildEditDdl(schema, tableName, original, current);
+  }
+  if (dialect === "sqlserver") {
+    if (mode === "create") return sqlServerBuildCreateDdl(schema, tableName, current);
+    return sqlServerBuildEditDdl(schema, tableName, original, current);
   }
   return buildPostgresDdlStatements(schema, tableName, mode, original, current);
 }
@@ -1056,3 +1512,26 @@ export const COMMON_TYPES_MYSQL: string[] = [
   "date", "time", "datetime", "timestamp", "year",
   "json", "boolean",
 ];
+
+/** 表设计器下拉：SQL Server 常用类型 */
+export const COMMON_TYPES_SQLSERVER: string[] = [
+  "bigint", "int", "smallint", "tinyint", "bit",
+  "decimal", "numeric", "money", "smallmoney", "float", "real",
+  "date", "datetime", "datetime2", "datetimeoffset", "smalldatetime", "time",
+  "char", "varchar", "nchar", "nvarchar", "text", "ntext",
+  "binary", "varbinary", "uniqueidentifier", "xml",
+];
+
+/** 表设计器：`db/data-types` 返回列表去重、排序（完全以库为准，不拼静态列表） */
+export function normalizeDbDataTypesList(fromDb: string[] | undefined): string[] {
+  const raw = fromDb?.map((t) => String(t).trim()).filter(Boolean) ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of raw) {
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+}

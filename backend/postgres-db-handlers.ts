@@ -70,14 +70,17 @@ export async function handlePostgresDbRequest(
         stopUserClientKeepalive(existing);
         if (existing.dbKind === "postgres") {
           await existing.userUsedClient.end().catch(() => {});
+          await existing.backGroundPool.end().catch(() => {});
+        } else if (existing.dbKind === "sqlserver") {
+          await existing.userUsedClient.close().catch(() => {});
         } else {
           try {
             existing.userUsedClient.release();
           } catch {
             /* ignore */
           }
+          await existing.backGroundPool.end().catch(() => {});
         }
-        await existing.backGroundPool.end().catch(() => {});
         await existing.closeTunnel?.().catch(() => {});
       }
 

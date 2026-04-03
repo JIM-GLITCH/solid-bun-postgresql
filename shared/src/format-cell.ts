@@ -182,14 +182,17 @@ export function formatCellToEditable(value: unknown, dataTypeOid?: number): stri
 export function formatSqlValue(
   value: unknown,
   dataTypeOid?: number,
-  dialect: "postgres" | "mysql" = "postgres"
+  dialect: "postgres" | "mysql" | "sqlserver" = "postgres"
 ): string {
   if (value === null || value === undefined) return "NULL";
 
-  if (dialect === "mysql") {
+  if (dialect === "mysql" || dialect === "sqlserver") {
     if (typeof value === "number" && Number.isFinite(value)) return String(value);
     if (typeof value === "bigint") return String(value);
-    if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+    if (typeof value === "boolean") {
+      if (dialect === "sqlserver") return value ? "1" : "0";
+      return value ? "TRUE" : "FALSE";
+    }
     if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
     if (value instanceof Date) {
       const s = value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");

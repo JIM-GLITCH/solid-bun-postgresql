@@ -2,7 +2,7 @@ import { For, createSignal, Show, createEffect, createResource } from 'solid-js'
 import { connectPostgres, disconnectPostgres } from './api';
 import { saveConnection, getStoredConnectionParams } from './connection-storage';
 import { vscode } from './theme';
-import { isMysqlFamily, type PostgresLoginParams, type DbKind } from '../shared/src';
+import { isMysqlFamily, isSqlServer, type PostgresLoginParams, type DbKind } from '../shared/src';
 import type { StoredConnection } from './connection-storage';
 
 function generateConnectionId(): string {
@@ -21,38 +21,44 @@ type ConnFieldRow = { key: keyof PostgresLoginParams; label: string; desc: strin
 /** 与 StoredConnectionParams / ConnectDbRequest 共用形状，按方言切换说明与占位 */
 function connectionFieldRows(kind: DbKind): ConnFieldRow[] {
   const my = isMysqlFamily(kind);
-  const portDesc =
-    kind === "mariadb"
+  const ss = isSqlServer(kind);
+  const portDesc = ss
+    ? "SQL Server 监听端口，常用 1433"
+    : kind === "mariadb"
       ? "MariaDB 监听端口，常用 3306"
       : my
         ? "MySQL 监听端口，常用 3306"
         : "PostgreSQL 监听端口，常用 5432";
-  const userDesc = my
-    ? kind === "mariadb"
-      ? "MariaDB 账号（常见如 root 或应用用户）"
-      : "MySQL 账号（常见如 root 或应用用户）"
-    : "PostgreSQL 账号";
+  const userDesc = ss
+    ? "SQL Server 登录名（如 sa 或应用账号）"
+    : my
+      ? kind === "mariadb"
+        ? "MariaDB 账号（常见如 root 或应用用户）"
+        : "MySQL 账号（常见如 root 或应用用户）"
+      : "PostgreSQL 账号";
   return [
     { key: 'host', label: 'host', desc: '数据库主机名或 IP（SSH 开启时为跳板机可访问的地址）', example: 'localhost' },
     {
       key: 'port',
       label: 'port',
       desc: portDesc,
-      example: my ? '3306' : '5432',
+      example: ss ? '1433' : my ? '3306' : '5432',
     },
     {
       key: 'database',
-      label: my ? 'database（默认库）' : 'database',
+      label: my || ss ? 'database（默认库）' : 'database',
       desc: my
         ? '可选。留空时连接后无默认库，请在侧栏单击要使用的「库」；也可在此填写库名避免 No database selected。'
-        : '可选。留空时若存在与用户名同名的库则使用该库；否则需在查询或侧栏中指定 schema。',
-      example: my ? 'myapp' : 'mydb',
+        : ss
+          ? '可选。填写 SQL Server 中的数据库名（如 master）；留空则由服务器默认库决定。侧栏中的「Schema」为库内架构（如 dbo）。'
+          : '可选。留空时若存在与用户名同名的库则使用该库；否则需在查询或侧栏中指定 schema。',
+      example: my ? 'myapp' : ss ? 'master' : 'mydb',
     },
     {
       key: 'username',
       label: 'username',
       desc: userDesc,
-      example: my ? 'root' : 'postgres',
+      example: my ? 'root' : ss ? 'sa' : 'postgres',
     },
     { key: 'password', label: 'password', desc: '数据库密码', example: '' },
   ];
@@ -140,8 +146,9 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     setDbType(k);
     setForm((prev) => {
       const next = { ...prev };
-      if (isMysqlFamily(k) && (prev.port === '' || prev.port === '5432')) next.port = '3306';
-      if (k === 'postgres' && (prev.port === '' || prev.port === '3306')) next.port = '5432';
+      if (isMysqlFamily(k) && (prev.port === '' || prev.port === '5432' || prev.port === '1433')) next.port = '3306';
+      if (isSqlServer(k) && (prev.port === '' || prev.port === '5432' || prev.port === '3306')) next.port = '1433';
+      if (k === 'postgres' && (prev.port === '' || prev.port === '3306' || prev.port === '1433')) next.port = '5432';
       return next;
     });
     setError(null);
@@ -294,6 +301,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           <option value="postgres">PostgreSQL</option>
           <option value="mysql">MySQL</option>
           <option value="mariadb">MariaDB</option>
+          <option value="sqlserver">SQL Server</option>
         </select>
       </div>
       <Show when={isMysqlFamily(dbType())}>
@@ -316,6 +324,23 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           {dbType() === "mariadb" ? " MariaDB" : " MySQL"}
           的库名；未填库时请连接后在侧栏点击目标库。使用标准 mysql2 客户端连接（MariaDB 协议兼容）。当前未单独暴露
           SSL/TLS 开关，如需可后续扩展。
+        </div>
+      </Show>
+      <Show when={isSqlServer(dbType())}>
+        <div
+          style={{
+            'margin-bottom': '12px',
+            padding: '10px 12px',
+            'font-size': '12px',
+            color: vscode.foregroundDim,
+            'background-color': vscode.inputBg,
+            border: `1px solid ${vscode.border}`,
+            'border-radius': '6px',
+            'line-height': '1.5',
+          }}
+        >
+          <strong style={{ color: vscode.foreground }}>SQL Server</strong>
+          ：通过 node-mssql（tedious）连接。默认开启 encrypt，开发环境自签名证书需服务器允许或信任证书。当前为只读结果集与基础元数据；流式大结果、执行计划、会话监控等后续扩展。
         </div>
       </Show>
       <Show when={dbType() === 'postgres'}>
@@ -378,7 +403,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           checked={form().sshEnabled ?? false}
           onInput={(e) => setSshEnabled(e.currentTarget.checked)}
         />
-        启用 SSH 隧道（PostgreSQL / MySQL / MariaDB 均支持；通过跳板机访问内网数据库端口）
+        启用 SSH 隧道（PostgreSQL / MySQL / MariaDB / SQL Server 均支持；通过跳板机访问内网数据库端口）
       </label>
       <Show when={form().sshEnabled}>
         <div style={{ 'margin-top': '6px', 'font-size': '12px', color: vscode.foregroundDim }}>

@@ -9,7 +9,9 @@ function readStorage(): Map<string, DbKind> {
     if (!raw) return new Map();
     const obj = JSON.parse(raw) as Record<string, DbKind>;
     return new Map(
-      Object.entries(obj).filter(([, v]) => v === "postgres" || v === "mysql" || v === "mariadb")
+      Object.entries(obj).filter(
+        ([, v]) => v === "postgres" || v === "mysql" || v === "mariadb" || v === "sqlserver"
+      )
     );
   } catch {
     return new Map();

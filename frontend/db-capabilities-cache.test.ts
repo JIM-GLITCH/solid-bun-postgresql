@@ -29,6 +29,8 @@ describe("db-capabilities-cache", () => {
   let registerConnectionDbType: (id: string, k: DbKind) => void;
   let unregisterConnectionDbType: (id: string) => void;
   let registerServerCapabilities: (id: string, caps: import("../shared/src").DatabaseCapabilities) => void;
+  let registerServerDataTypes: (id: string, types: string[]) => void;
+  let getCachedDataTypes: (id: string) => string[] | undefined;
   let clearServerCapabilities: (id: string) => void;
   let getEffectiveDbCapabilities: (id: string | null | undefined) => import("../shared/src").DatabaseCapabilities;
 
@@ -39,6 +41,8 @@ describe("db-capabilities-cache", () => {
     registerConnectionDbType = meta.registerConnectionDbType;
     unregisterConnectionDbType = meta.unregisterConnectionDbType;
     registerServerCapabilities = cache.registerServerCapabilities;
+    registerServerDataTypes = cache.registerServerDataTypes;
+    getCachedDataTypes = cache.getCachedDataTypes;
     clearServerCapabilities = cache.clearServerCapabilities;
     getEffectiveDbCapabilities = cache.getEffectiveDbCapabilities;
   });
@@ -74,5 +78,13 @@ describe("db-capabilities-cache", () => {
     clearServerCapabilities(id);
     expect(getEffectiveDbCapabilities(id).sessionMonitor).toBe(true);
     unregisterConnectionDbType(id);
+  });
+
+  test("clearServerCapabilities 同时清除 data-types 缓存", () => {
+    const id = "cap-dt-clear";
+    registerServerDataTypes(id, ["int", "varchar"]);
+    expect(getCachedDataTypes(id)?.length).toBe(2);
+    clearServerCapabilities(id);
+    expect(getCachedDataTypes(id)).toBeUndefined();
   });
 });

@@ -5,7 +5,8 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
+import { sqlBracketIdent } from "./sql-ddl-quote";
 import { vscode } from "./theme";
 
 export interface DeleteSchemaModalProps {
@@ -28,6 +29,9 @@ export function isSystemSchema(connectionId: string, schema: string): boolean {
   if (isMysqlFamily(getRegisteredDbType(connectionId))) {
     return ["information_schema", "mysql", "performance_schema", "sys"].includes(lower);
   }
+  if (isSqlServer(getRegisteredDbType(connectionId))) {
+    return ["guest", "information_schema", "sys", "dbo"].includes(lower);
+  }
   if (["pg_catalog", "information_schema"].includes(lower)) return true;
   if (lower.startsWith("pg_")) return true;
   return false;
@@ -38,7 +42,8 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
   const [error, setError] = createSignal<string | null>(null);
 
   const kind = () => getRegisteredDbType(props.connectionId);
-  const title = () => (isMysqlFamily(kind()) ? "删除数据库" : "删除 Schema");
+  const title = () =>
+    isMysqlFamily(kind()) ? "删除数据库" : isSqlServer(kind()) ? "删除 Schema（T-SQL）" : "删除 Schema";
   const label = () => (isMysqlFamily(kind()) ? "数据库" : "Schema");
 
   const handleConfirm = async () => {
@@ -49,9 +54,10 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const sql =
-        isMysqlFamily(kind())
-          ? `DROP DATABASE ${mysqlBacktickIdent(props.schema)};`
+      const sql = isMysqlFamily(kind())
+        ? `DROP DATABASE ${mysqlBacktickIdent(props.schema)};`
+        : isSqlServer(kind())
+          ? `DROP SCHEMA ${sqlBracketIdent(props.schema)};`
           : `DROP SCHEMA ${pgQuoteIdent(props.schema)} CASCADE;`;
       await executeDdl(props.connectionId, sql);
       props.onSuccess(props.connectionId);
@@ -93,7 +99,12 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
         <p style={{ "font-size": "13px", color: vscode.foreground, margin: "0 0 8px 0" }}>
           将永久删除{label()}{" "}
           <strong style={{ "font-family": "'JetBrains Mono', monospace" }}>{props.schema}</strong>
-          {kind() === "postgres" ? "（CASCADE，依赖对象一并删除）" : ""}，不可恢复。
+          {kind() === "postgres"
+            ? "（CASCADE，依赖对象一并删除）"
+            : isSqlServer(kind())
+              ? "（须为空架构，否则请先删除其中对象）"
+              : ""}
+          ，不可恢复。
         </p>
         <Show when={error()}>
           <div

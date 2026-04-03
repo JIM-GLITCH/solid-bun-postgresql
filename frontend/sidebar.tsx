@@ -22,7 +22,27 @@ import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
+import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
+
+/** 侧栏生成「查全表 / TOP / LIMIT」等与方言一致的 SELECT */
+function selectStarFromTableSql(connectionId: string, schema: string, table: string, topN?: number): string {
+  const kind = getRegisteredDbType(connectionId);
+  if (isMysqlFamily(kind)) {
+    const a = mysqlBacktickIdent(schema);
+    const b = mysqlBacktickIdent(table);
+    return topN != null ? `SELECT * FROM ${a}.${b} LIMIT ${topN}` : `SELECT * FROM ${a}.${b}`;
+  }
+  if (isSqlServer(kind)) {
+    const a = sqlBracketIdent(schema);
+    const b = sqlBracketIdent(table);
+    const top = topN != null ? `TOP (${topN}) ` : "";
+    return `SELECT ${top}* FROM ${a}.${b}`;
+  }
+  const a = pgQuoteIdent(schema);
+  const b = pgQuoteIdent(table);
+  return topN != null ? `SELECT * FROM ${a}.${b} LIMIT ${topN}` : `SELECT * FROM ${a}.${b}`;
+}
 
 // 数据库对象类型
 type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
@@ -587,7 +607,7 @@ export default function Sidebar(props: SidebarProps) {
 
     const cid = node.connectionId;
     if (e.detail === 2 && (node.type === "table" || node.type === "view") && node.schema && node.table && cid) {
-      props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table}`);
+      props.onQueryRequest?.(cid, selectStarFromTableSql(cid, node.schema, node.table));
     }
     // 双击函数：展示源码
     if (e.detail === 2 && node.type === "function" && node.schema && cid && props.onViewFunctionDdl) {
@@ -622,12 +642,12 @@ export default function Sidebar(props: SidebarProps) {
     switch (action) {
       case "select":
         if (node.schema && node.table && cid) {
-          props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table}`);
+          props.onQueryRequest?.(cid, selectStarFromTableSql(cid, node.schema, node.table));
         }
         break;
       case "selectTop100":
         if (node.schema && node.table && cid) {
-          props.onQueryRequest?.(cid, `SELECT * FROM ${node.schema}.${node.table} LIMIT 100`);
+          props.onQueryRequest?.(cid, selectStarFromTableSql(cid, node.schema, node.table, 100));
         }
         break;
       case "count":
@@ -1166,7 +1186,12 @@ export default function Sidebar(props: SidebarProps) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <Show when={menu().node.type === "schema" || menu().node.type === "tables" || menu().node.type === "table"}>
+            <Show
+              when={
+                (menu().node.type === "schema" || menu().node.type === "tables" || menu().node.type === "table") &&
+                getEffectiveDbCapabilities(menu().node.connectionId).tableDesigner
+              }
+            >
               <div
                 onClick={() => handleMenuAction("newTable")}
                 style={{
@@ -1184,7 +1209,7 @@ export default function Sidebar(props: SidebarProps) {
                 <span>📋</span> 新增表
               </div>
             </Show>
-            <Show when={menu().node.type === "table"}>
+            <Show when={menu().node.type === "table" && getEffectiveDbCapabilities(menu().node.connectionId).tableDesigner}>
               <div
                 onClick={() => handleMenuAction("editTable")}
                 style={{
@@ -1265,22 +1290,24 @@ export default function Sidebar(props: SidebarProps) {
               >
                 <span>🔀</span> 分区结构 / 裁剪预览
               </div>
-              <div
-                onClick={() => handleMenuAction("generateFakeData")}
-                style={{
-                  padding: "8px 16px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>📊</span> 生成假数据
-              </div>
+              <Show when={getEffectiveDbCapabilities(menu().node.connectionId).fakeDataImport}>
+                <div
+                  onClick={() => handleMenuAction("generateFakeData")}
+                  style={{
+                    padding: "8px 16px",
+                    color: vscode.foreground,
+                    cursor: "pointer",
+                    "font-size": "13px",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "8px",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <span>📊</span> 生成假数据
+                </div>
+              </Show>
               <div style={{ height: "1px", "background-color": vscode.border, margin: "4px 0" }} />
               <div
                 onClick={() => handleMenuAction("truncateTable")}

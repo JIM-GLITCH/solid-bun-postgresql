@@ -5,8 +5,8 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
-import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
+import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
 import { vscode } from "./theme";
 
 export interface CopyTableModalProps {
@@ -41,6 +41,18 @@ export default function CopyTableModal(props: CopyTableModalProps) {
         await executeDdl(props.connectionId, `CREATE TABLE ${db}.${newT} LIKE ${db}.${oldT};`);
         if (copyData()) {
           await executeDdl(props.connectionId, `INSERT INTO ${db}.${newT} SELECT * FROM ${db}.${oldT};`);
+        }
+      } else if (isSqlServer(kind)) {
+        const s = sqlBracketIdent(props.schema);
+        const oldT = sqlBracketIdent(props.table);
+        const newT = sqlBracketIdent(name);
+        if (copyData()) {
+          await executeDdl(props.connectionId, `SELECT * INTO ${s}.${newT} FROM ${s}.${oldT};`);
+        } else {
+          await executeDdl(
+            props.connectionId,
+            `SELECT TOP (0) * INTO ${s}.${newT} FROM ${s}.${oldT};`
+          );
         }
       } else {
         const s = pgQuoteIdent(props.schema);

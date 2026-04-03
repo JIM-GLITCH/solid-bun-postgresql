@@ -5,7 +5,7 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
 import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
 
@@ -38,6 +38,10 @@ export default function RenameTableModal(props: RenameTableModalProps) {
         const oldT = mysqlBacktickIdent(props.table);
         const newT = mysqlBacktickIdent(name);
         await executeDdl(props.connectionId, `RENAME TABLE ${db}.${oldT} TO ${db}.${newT};`);
+      } else if (isSqlServer(kind)) {
+        const oldEsc = `${props.schema}.${props.table}`.replace(/'/g, "''");
+        const newEsc = name.replace(/'/g, "''");
+        await executeDdl(props.connectionId, `EXEC sp_rename N'${oldEsc}', N'${newEsc}', N'OBJECT';`);
       } else {
         await executeDdl(
           props.connectionId,

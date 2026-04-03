@@ -13,8 +13,7 @@ import {
   type ForeignKeyConstraint,
   needsLength,
   buildCreateTableSql,
-  COMMON_TYPES,
-  COMMON_TYPES_MYSQL,
+  normalizeDbDataTypesList,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily } from "../shared/src";
@@ -55,11 +54,9 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
 
   onMount(() => {
     if (props.connectionId) {
-      const fallback =
-        isMysqlFamily(getRegisteredDbType(props.connectionId)) ? COMMON_TYPES_MYSQL : COMMON_TYPES;
       getDataTypes(props.connectionId)
-        .then(({ types }) => setDataTypes(types?.length ? types : fallback))
-        .catch(() => {});
+        .then(({ types }) => setDataTypes(normalizeDbDataTypesList(types)))
+        .catch(() => setDataTypes([]));
     }
   });
 

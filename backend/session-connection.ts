@@ -9,6 +9,7 @@ import type { Pool as MysqlPool, PoolConnection } from "mysql2/promise";
 import type { DbKind, SSEMessage } from "../shared/src";
 import type { GetDbConfigResult } from "./connect-postgres";
 import type { GetMysqlDbConfigResult } from "./connect-mysql";
+import type { GetSqlServerDbConfigResult } from "./connect-sqlserver";
 
 export interface PostgresSessionConnection {
   dbKind: "postgres";
@@ -42,7 +43,21 @@ export interface MysqlSessionConnection {
   mysqlCurrentDatabase?: string;
 }
 
-export type SessionConnection = PostgresSessionConnection | MysqlSessionConnection;
+/** SQL Server：查询与侧栏共用同一 ConnectionPool（无独立「长连接」句柄） */
+export interface SqlServerSessionConnection {
+  dbKind: "sqlserver";
+  /** node-mssql ConnectionPool（`mssql` 包无官方 .d.ts） */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  userUsedClient: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  backGroundPool: any;
+  dbForReconnect: GetSqlServerDbConfigResult;
+  eventPushers: Set<(msg: SSEMessage) => void>;
+  closeTunnel?: () => Promise<void>;
+  keepAliveTimer?: ReturnType<typeof setInterval>;
+}
+
+export type SessionConnection = PostgresSessionConnection | MysqlSessionConnection | SqlServerSessionConnection;
 
 export function isPostgresSession(s: SessionConnection): s is PostgresSessionConnection {
   return s.dbKind === "postgres";

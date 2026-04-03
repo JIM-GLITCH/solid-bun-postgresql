@@ -14,8 +14,10 @@ import { getRegisteredDbType, registerConnectionDbType, unregisterConnectionDbTy
 import {
   clearServerCapabilities,
   registerServerCapabilities,
+  registerServerDataTypes,
 } from "./db-capabilities-cache";
 import { defaultDatabaseCapabilities } from "../shared/src";
+import { normalizeDbDataTypesList } from "./table-designer-shared";
 
 const api = () => getTransport();
 
@@ -38,6 +40,7 @@ export async function connectPostgres(
   if (res.success) {
     registerConnectionDbType(connectionId, res.dbType ?? dbType);
     void prefetchDbCapabilities(connectionId);
+    void prefetchDbDataTypes(connectionId);
   }
   return res as { success: boolean; error?: unknown };
 }
@@ -67,6 +70,17 @@ export async function prefetchDbCapabilities(connectionId: string): Promise<void
       connectionId,
       defaultDatabaseCapabilities(getRegisteredDbType(connectionId))
     );
+  }
+}
+
+/** 建连后拉取 `db/data-types` 并缓存（仅库返回类型；失败则表设计器内再请求） */
+export async function prefetchDbDataTypes(connectionId: string): Promise<void> {
+  try {
+    const { types } = await getDataTypes(connectionId);
+    const list = normalizeDbDataTypesList(types);
+    if (list.length > 0) registerServerDataTypes(connectionId, list);
+  } catch {
+    /* 忽略 */
   }
 }
 
@@ -201,7 +215,11 @@ export async function getIndexes(connectionId: string, schema: string, table: st
 
 /** 获取主键列名 */
 export async function getPrimaryKeys(connectionId: string, schema: string, table: string) {
-  return api().request("db/primary-keys", { ...dbConn(connectionId), schema, table }) as Promise<{ columns: string[]; error?: string }>;
+  return api().request("db/primary-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
+    columns: string[];
+    constraintName?: string;
+    error?: string;
+  }>;
 }
 
 /** 获取唯一约束（含主键），用于导入时冲突处理 */

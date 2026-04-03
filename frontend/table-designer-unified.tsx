@@ -124,10 +124,13 @@ import {
   getTableComment,
   getSchemas,
   getTables,
+  getDataTypes,
   executeDdl,
 } from "./api";
+import { getCachedDataTypes, registerServerDataTypes } from "./db-capabilities-cache";
 import {
   type TableColumn,
+  type FKAction,
   type IndexDef,
   type ForeignKeyDef,
   type UniqueConstraintDef,
@@ -135,15 +138,17 @@ import {
   type OriginalState,
   needsLength,
   needsPrecision,
-  COMMON_TYPES,
-  COMMON_TYPES_MYSQL,
+  type SqlDialect,
   autoIndexName,
   validateDesignerState,
   buildDdlStatements,
   normalizeMysqlReferentialAction,
+  normalizeSqlServerReferentialAction,
+  normalizeDbDataTypesList,
 } from "./table-designer-shared";
+import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface TableDesignerUnifiedProps {
@@ -167,8 +172,11 @@ function emptyOriginalState(): OriginalState {
   };
 }
 
-function designerDialect(connectionId: string): "postgres" | "mysql" {
-  return isMysqlFamily(getRegisteredDbType(connectionId)) ? "mysql" : "postgres";
+function designerDialect(connectionId: string): SqlDialect {
+  const k = getRegisteredDbType(connectionId);
+  if (isMysqlFamily(k)) return "mysql";
+  if (isSqlServer(k)) return "sqlserver";
+  return "postgres";
 }
 
 function emptyDesignerColumn(connectionId: string): TableColumn {
@@ -176,6 +184,17 @@ function emptyDesignerColumn(connectionId: string): TableColumn {
     return {
       name: "",
       dataType: "varchar",
+      length: "255",
+      nullable: true,
+      primaryKey: false,
+      defaultValue: "",
+      isNew: true,
+    };
+  }
+  if (isSqlServer(getRegisteredDbType(connectionId))) {
+    return {
+      name: "",
+      dataType: "nvarchar",
       length: "255",
       nullable: true,
       primaryKey: false,
@@ -283,13 +302,14 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
       const pkSet = new Set<string>((data.pkRes.columns ?? []).map((c: string) => c.toLowerCase()));
 
-      const isMysql = designerDialect(props.connectionId) === "mysql";
+      const dialect = designerDialect(props.connectionId);
+      const dedupUniqueIndexes = dialect === "mysql" || dialect === "sqlserver";
       const uqOnlyList = (data.uqRes.constraints ?? []).filter((c: any) => c.type === "UNIQUE");
-      const mysqlUniqueConstraintNames = new Set(
+      const uniqueConstraintIndexNames = new Set(
         uqOnlyList.map((u: any) => String(u.name ?? "").toLowerCase()).filter(Boolean)
       );
       const colSig = (cols: string[]) => JSON.stringify([...cols].map((c) => c.toLowerCase()).sort());
-      const mysqlUniqueColSigs = new Set(
+      const uniqueColSigs = new Set(
         uqOnlyList.map((u: any) => {
           const arr = Array.isArray(u.columns)
             ? u.columns.map(String)
@@ -320,17 +340,21 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       const loadedIndexes: IndexDef[] = (data.idxRes.indexes ?? [])
         .filter((idx: any) => !idx.is_primary)
         .filter((idx: any) => {
-          if (!isMysql || !idx.is_unique) return true;
+          if (!dedupUniqueIndexes || !idx.is_unique) return true;
           const iname = String(idx.index_name ?? "").toLowerCase();
-          if (mysqlUniqueConstraintNames.has(iname)) return false;
+          if (uniqueConstraintIndexNames.has(iname)) return false;
           const icols = Array.isArray(idx.columns) ? idx.columns.map(String) : [];
-          if (mysqlUniqueColSigs.has(colSig(icols))) return false;
+          if (uniqueColSigs.has(colSig(icols))) return false;
           return true;
         })
         .map((idx: any) => ({
           name: idx.index_name ?? "",
           originalName: idx.index_name ?? "",
-          indexType: ((idx.index_type ?? "btree").toUpperCase() === "HASH" ? "HASH" : "BTREE") as "BTREE" | "HASH",
+          indexType: (String(idx.index_type ?? "")
+            .toUpperCase()
+            .includes("HASH")
+            ? "HASH"
+            : "BTREE") as "BTREE" | "HASH",
           columns: Array.isArray(idx.columns) ? idx.columns : [],
           unique: idx.is_unique ?? false,
           isNew: false,
@@ -345,8 +369,16 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         refSchema: fk.target_schema ?? props.schema,
         refTable: fk.target_table ?? "",
         refColumn: fk.target_column ?? "",
-        onDelete: (isMysql ? normalizeMysqlReferentialAction(fk.delete_rule) : (fk.delete_rule ?? "NO ACTION")) as ForeignKeyDef["onDelete"],
-        onUpdate: (isMysql ? normalizeMysqlReferentialAction(fk.update_rule) : (fk.update_rule ?? "NO ACTION")) as ForeignKeyDef["onUpdate"],
+        onDelete: ((): ForeignKeyDef["onDelete"] => {
+          if (dialect === "mysql") return normalizeMysqlReferentialAction(fk.delete_rule);
+          if (dialect === "sqlserver") return normalizeSqlServerReferentialAction(fk.delete_rule);
+          return (fk.delete_rule ?? "NO ACTION") as ForeignKeyDef["onDelete"];
+        })(),
+        onUpdate: ((): ForeignKeyDef["onUpdate"] => {
+          if (dialect === "mysql") return normalizeMysqlReferentialAction(fk.update_rule);
+          if (dialect === "sqlserver") return normalizeSqlServerReferentialAction(fk.update_rule);
+          return (fk.update_rule ?? "NO ACTION") as ForeignKeyDef["onUpdate"];
+        })(),
         isNew: false,
         isExisting: true,
         toDelete: false,
@@ -406,6 +438,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       const snapshot: OriginalState = {
         tableName: props.table ?? "",
         tableComment: loadedComment,
+        primaryKeyConstraintName: data.pkRes.constraintName,
         columns: JSON.parse(JSON.stringify(loadedColumns)),
         indexes: JSON.parse(JSON.stringify(loadedIndexes)),
         foreignKeys: JSON.parse(JSON.stringify(loadedForeignKeys)),
@@ -424,9 +457,23 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
     setOriginalState(emptyOriginalState());
   }
 
-  const columnTypeOptions = createMemo(() =>
-    designerDialect(props.connectionId) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES
+  const [designerDataTypes] = createResource(
+    () => props.connectionId,
+    async (cid) => {
+      const cached = getCachedDataTypes(cid);
+      if (cached) return cached;
+      try {
+        const { types } = await getDataTypes(cid);
+        const list = normalizeDbDataTypesList(types);
+        registerServerDataTypes(cid, list);
+        return list;
+      } catch {
+        return [];
+      }
+    }
   );
+
+  const columnTypeOptions = createMemo(() => designerDataTypes() ?? []);
 
   // ── Tab button style helper ────────────────────────────────────────────────
   const tabStyle = (tab: typeof activeTab extends () => infer T ? T : never) => ({
@@ -442,6 +489,26 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
+    <Show
+      when={getEffectiveDbCapabilities(props.connectionId).tableDesigner}
+      fallback={
+        <div
+          style={{
+            padding: "24px",
+            color: vscode.foreground,
+            "font-size": "14px",
+            "line-height": "1.6",
+          }}
+        >
+          <p style={{ margin: "0 0 8px 0" }}>
+            当前连接未开放<strong>表设计器</strong>能力。
+          </p>
+          <p style={{ margin: 0, color: vscode.foregroundDim, "font-size": "13px" }}>
+            请在查询窗口中手写 DDL，或换用支持该能力的方言版本。
+          </p>
+        </div>
+      }
+    >
     <div style={{ display: "flex", "flex-direction": "column", height: "100%", overflow: "hidden" }}>
 
       {/* Loading / Error states for edit mode */}
@@ -1574,6 +1641,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         </div>
       </Show>
     </div>
+    </Show>
   );
 }
 

@@ -145,7 +145,7 @@ bun run build-extension
 **兼容旧路径（弃用，将移除）**：`/api/db/pg-stat-overview`、`/api/db/manage-backend` 等仍指向新的 `db/session-monitor`、`db/session-control`，请新客户端直接使用新 URL / RPC 名。  
 **SSE**：`/api/events` 推荐使用查询参数 **`connectionSessionId`**；仍接受 **`connectionId`**（与旧 README / 书签兼容）。
 
-**扩展第三方言**：见 [docs/adding-a-database-dialect.md](docs/adding-a-database-dialect.md)（`DbKind`、`defaultDatabaseCapabilities`、`*-db-handlers.ts`、`api-core` 路由）。
+**扩展第三方言**：见 [docs/adding-a-database-dialect.md](docs/adding-a-database-dialect.md)（`DbKind`、`defaultDatabaseCapabilities`、`*-db-handlers.ts`、`api-core` 路由）。**能力字段与侧栏/API 对照**：[docs/database-capabilities-matrix.md](docs/database-capabilities-matrix.md)。
 
 VSCode 扩展下由 `api-handlers-vscode` 将 **同一套 RPC method**（如 `db/query`）转发到 `api-core`，与 HTTP 路径一一对应。
 

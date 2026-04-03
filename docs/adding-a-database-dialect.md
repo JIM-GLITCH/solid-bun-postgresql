@@ -6,7 +6,7 @@
 
 1. 在 **`shared/src/types.ts`** 的 **`DbKind`** 中增加字面量（如 `"sqlite"`）。
 2. 将 **`ConnectDbRequest`** 的联合类型**增加一支**（与 `db/connect` 载荷形状一致；若新库登录字段不同，在此支上收窄字段）。
-3. 在 **`shared/src/database-capabilities.ts`** 的 **`defaultDatabaseCapabilities`** 中为该 `kind` 返回完整 **`DatabaseCapabilities`**（未支持的能力务必为 `false`，避免 UI 误开）。
+3. 在 **`shared/src/database-capabilities.ts`** 的 **`defaultDatabaseCapabilities`** 中为该 `kind` 返回完整 **`DatabaseCapabilities`**（未支持的能力务必为 `false`，避免 UI 误开）。字段与侧栏/API 对照见 **[database-capabilities-matrix.md](./database-capabilities-matrix.md)**。
 4. 若 Transport 有 **`db/*` 新方法**，同步 **`shared/src/transport.ts`** 的 **`ApiMethod`** 与 **`ApiRequestPayload`**。
 
 ## 2. 后端会话与路由

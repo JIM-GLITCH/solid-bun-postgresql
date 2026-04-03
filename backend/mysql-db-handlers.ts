@@ -391,14 +391,17 @@ export async function handleMysqlDbRequest(
         stopUserClientKeepalive(existing);
         if (existing.dbKind === "postgres") {
           await existing.userUsedClient.end().catch(() => {});
+          await existing.backGroundPool.end().catch(() => {});
+        } else if (existing.dbKind === "sqlserver") {
+          await existing.userUsedClient.close().catch(() => {});
         } else {
           try {
             existing.userUsedClient.release();
           } catch {
             /* ignore */
           }
+          await existing.backGroundPool.end().catch(() => {});
         }
-        await existing.backGroundPool.end().catch(() => {});
         await existing.closeTunnel?.().catch(() => {});
       }
 
@@ -882,12 +885,7 @@ export async function handleMysqlDbRequest(
       const fromDb = (trows as Array<{ name?: string; NAME?: string }>).map((r) =>
         String(r.name ?? r.NAME ?? "")
       ).filter(Boolean);
-      const builtins = [
-        "tinyint", "smallint", "mediumint", "int", "integer", "bigint", "decimal", "numeric",
-        "float", "double", "bit", "date", "time", "datetime", "timestamp", "year", "char",
-        "varchar", "binary", "varbinary", "blob", "text", "enum", "set", "json", "geometry",
-      ];
-      return { types: [...new Set([...fromDb, ...builtins])].sort() };
+      return { types: [...new Set(fromDb)].sort((a, b) => a.localeCompare(b)) };
     }
 
     case "db/execute-ddl": {

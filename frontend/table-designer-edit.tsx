@@ -10,8 +10,7 @@ import {
   type TableColumn,
   needsLength,
   buildAlterTableSql,
-  COMMON_TYPES,
-  COMMON_TYPES_MYSQL,
+  normalizeDbDataTypesList,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily } from "../shared/src";
@@ -65,10 +64,8 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
 
   const [editData] = createResource(source, async ({ cid, schema, table }) => {
     const [typesRes, colsRes] = await Promise.all([getDataTypes(cid), getColumns(cid, schema, table)]);
-    const fallback =
-      isMysqlFamily(getRegisteredDbType(cid)) ? COMMON_TYPES_MYSQL : COMMON_TYPES;
     return {
-      types: typesRes.types?.length ? typesRes.types : fallback,
+      types: normalizeDbDataTypesList(typesRes.types),
       columns: mapColumnsFromApi(colsRes.columns ?? []),
     };
   });

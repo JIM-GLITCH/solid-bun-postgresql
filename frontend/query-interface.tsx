@@ -114,6 +114,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
   const [loadingMore, setLoadingMore] = createSignal(false);  // 是否正在加载更多
   const [showQueryBuilder, setShowQueryBuilder] = createSignal(false);  // 是否显示 Visual Query Builder
+  createEffect(() => {
+    if (!dbCaps().visualQueryBuilder) setShowQueryBuilder(false);
+  });
   const [showHistoryPanel, setShowHistoryPanel] = createSignal(false);  // 是否显示查询历史
   const [showExportMenu, setShowExportMenu] = createSignal(false);  // 导出下拉
   const [showImportModal, setShowImportModal] = createSignal(false);  // 导入弹窗
@@ -312,6 +315,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (eventTargetInJsonbEditorModal(e.target) || eventTargetInJsonbEditorModal(document.activeElement)) return;
     if (props.isActiveTab && !props.isActiveTab()) return;
     if (document.activeElement?.closest("[data-sql-editor]")) return;
+    if (!dbCaps().resultCellEdit) return;
     e.preventDefault();
     saveAllChanges();
   };
@@ -882,7 +886,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     colName: string,
     value: unknown,
     dataTypeOid: number | undefined,
-    dialect: "postgres" | "mysql"
+    dialect: "postgres" | "mysql" | "sqlserver"
   ): string {
     if (value === null || value === undefined) return `${colName} IS NULL`;
     return `${colName} = ${formatSqlValueShared(value, dataTypeOid, dialect)}`;
@@ -922,6 +926,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   // 处理删除单行（加入待执行列表）
   function handleDeleteRow(rowIndex: number) {
+    if (!dbCaps().resultCellEdit) return;
     const sql = generateDeleteSql(rowIndex);
     if (!sql) return;
     setPendingDeletes(prev => [...prev, { sql, rowIndex }]);
@@ -976,6 +981,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   // 处理添加行，在 belowRowIndex 下方插入（空表时 belowRowIndex=-1，插入到索引 0）
   function handleAddRow(belowRowIndex: number) {
+    if (!dbCaps().resultCellEdit) return;
     const cols = columns();
     if (cols.length === 0) return;
     const insertAt = Math.max(0, belowRowIndex + 1);
@@ -1033,6 +1039,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   // 处理单元格保存（newValue 为 null 表示设为 SQL NULL）
   function handleCellSave(rowIndex: number, colIndex: number, newValue: string | null) {
+    if (!dbCaps().resultCellEdit) return;
     const currentValue = result[rowIndex][colIndex];
 
     if (newValue === null && (currentValue === null || currentValue === undefined)) return;
@@ -1081,6 +1088,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   // 执行所有待保存的 UPDATE、DELETE、INSERT（使用 adminClient）
   async function saveAllChanges() {
     if (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0) return;
+    if (!dbCaps().resultCellEdit) return;
     const cid = props.activeConnectionId?.();
     if (!cid) return;
 
@@ -1245,41 +1253,43 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 </Show>
               </div>
             </Show>
-            <span style={{ color: (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.warning : vscode.foregroundDim }}>
-              {pendingUpdates().length + pendingDeletes().length + pendingInserts().length} 个待保存的修改
-            </span>
-            <button
-              onClick={() => setShowPendingSql(!showPendingSql())}
-              style={{
-                padding: "6px 16px",
-                "font-size": "14px",
-                "background-color": vscode.buttonSecondary,
-                color: "#fff",
-                border: "none",
-                "border-radius": "4px",
-                cursor: "pointer"
-              }}
-            >
-              {showPendingSql() ? "隐藏 SQL" : "查看修改"}
-            </button>
-            <button
-              onClick={saveAllChanges}
-              disabled={saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)}
-              style={{
-                padding: "6px 16px",
-                "font-size": "14px",
-                "background-color": (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.buttonBg : vscode.buttonSecondary,
-                color: "#fff",
-                border: "none",
-                "border-radius": "4px",
-                cursor: (saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)) ? "not-allowed" : "pointer"
-              }}
-            >
-              {saving() ? "保存中..." : "保存修改"}
-            </button>
+            <Show when={dbCaps().resultCellEdit}>
+              <span style={{ color: (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.warning : vscode.foregroundDim }}>
+                {pendingUpdates().length + pendingDeletes().length + pendingInserts().length} 个待保存的修改
+              </span>
+              <button
+                onClick={() => setShowPendingSql(!showPendingSql())}
+                style={{
+                  padding: "6px 16px",
+                  "font-size": "14px",
+                  "background-color": vscode.buttonSecondary,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: "pointer"
+                }}
+              >
+                {showPendingSql() ? "隐藏 SQL" : "查看修改"}
+              </button>
+              <button
+                onClick={saveAllChanges}
+                disabled={saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)}
+                style={{
+                  padding: "6px 16px",
+                  "font-size": "14px",
+                  "background-color": (pendingUpdates().length > 0 || pendingDeletes().length > 0 || pendingInserts().length > 0) ? vscode.buttonBg : vscode.buttonSecondary,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: (saving() || (pendingUpdates().length === 0 && pendingDeletes().length === 0 && pendingInserts().length === 0)) ? "not-allowed" : "pointer"
+                }}
+              >
+                {saving() ? "保存中..." : "保存修改"}
+              </button>
+            </Show>
           </div>
         </div>
-        <Show when={showPendingSql()}>
+        <Show when={dbCaps().resultCellEdit && showPendingSql()}>
           <div style={{
             "margin-bottom": "12px",
             padding: "12px",
@@ -1577,7 +1587,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                               rowIndex={rowIndex}
                               colIndex={c}
                               dataTypeOid={colInfo.dataTypeOid}
-                              isEditable={colInfo.isEditable || (pendingInserts().some(p => p.rowIndex === rowIndex) && !!colInfo.tableName && !!colInfo.columnName)}
+                              isEditable={
+                                dbCaps().resultCellEdit &&
+                                (colInfo.isEditable ||
+                                  (pendingInserts().some((p) => p.rowIndex === rowIndex) &&
+                                    !!colInfo.tableName &&
+                                    !!colInfo.columnName))
+                              }
                               isModified={modifiedCells[rowIndex]?.[c] ?? false}
                               isPendingDelete={pendingDel()}
                               isPendingInsert={pendingIns()}
@@ -1654,7 +1670,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 const isCellModified = () => modifiedCells[rowIndex()]?.[colIndex()] ?? false;
                 const isRowPendingDelete = () => pendingDeletes().some(d => d.rowIndex === rowIndex());
                 const isRowPendingInsert = () => pendingInserts().some(p => p.rowIndex === rowIndex());
-                const isCellEditable = () => colInfo() && (colInfo()!.isEditable || (isRowPendingInsert() && !!colInfo()!.tableName && !!colInfo()!.columnName));
+                const isCellEditable = () =>
+                  dbCaps().resultCellEdit &&
+                  colInfo() &&
+                  (colInfo()!.isEditable || (isRowPendingInsert() && !!colInfo()!.tableName && !!colInfo()!.columnName));
                 const isJsonOrJsonbColumn = () => {
                   const oid = colInfo()?.dataTypeOid;
                   return oid === PG_OID.json || oid === PG_OID.jsonb;
@@ -1677,7 +1696,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       padding: "4px 0",
                     }}
                   >
-                    <Show when={hasContextCell() && (() => { const s = selection(); const keys = (s && s.size > 0) ? [...s] : [cellKey(rowIndex(), colIndex())]; return keys.some(k => { const [r, c] = k.split(",").map(Number); return modifiedCells[r]?.[c]; }); })()}>
+                    <Show when={dbCaps().resultCellEdit && hasContextCell() && (() => { const s = selection(); const keys = (s && s.size > 0) ? [...s] : [cellKey(rowIndex(), colIndex())]; return keys.some(k => { const [r, c] = k.split(",").map(Number); return modifiedCells[r]?.[c]; }); })()}>
                       <button
                         type="button"
                         role="menuitem"
@@ -1718,6 +1737,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                           const col = columns()[ci];
                           const raw = result[ri][ci];
                           const editable =
+                            dbCaps().resultCellEdit &&
                             col &&
                             (col.isEditable ||
                               (pendingInserts().some((p) => p.rowIndex === ri) && !!col.tableName && !!col.columnName));
@@ -1747,7 +1767,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                             for (const k of sel) {
                               const [r, c] = k.split(",").map(Number);
                               const col = cols[c];
-                              const editable = col && (col.isEditable || (pendingInserts().some(p => p.rowIndex === r) && col.tableName && col.columnName));
+                              const editable =
+                                dbCaps().resultCellEdit &&
+                                col &&
+                                (col.isEditable || (pendingInserts().some((p) => p.rowIndex === r) && col.tableName && col.columnName));
                               if (editable) handleCellSave(r, c, null);
                             }
                           } else {
@@ -1762,7 +1785,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         Set null
                       </button>
                     </Show>
-                    <Show when={hasContextCell() && isRowPendingDelete()}>
+                    <Show when={dbCaps().resultCellEdit && hasContextCell() && isRowPendingDelete()}>
                       <button
                         type="button"
                         role="menuitem"
@@ -1785,7 +1808,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         撤销删除
                       </button>
                     </Show>
-                    <Show when={hasContextCell() && isRowPendingInsert()}>
+                    <Show when={dbCaps().resultCellEdit && hasContextCell() && isRowPendingInsert()}>
                       <button
                         type="button"
                         role="menuitem"
@@ -1802,7 +1825,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         撤销添加
                       </button>
                     </Show>
-                    <Show when={canAddRow()}>
+                    <Show when={dbCaps().resultCellEdit && canAddRow()}>
                       <button
                         type="button"
                         role="menuitem"
@@ -1814,7 +1837,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         插入行
                       </button>
                     </Show>
-                    <Show when={selectedRows().length > 0 && canDeleteRow()}>
+                    <Show when={dbCaps().resultCellEdit && selectedRows().length > 0 && canDeleteRow()}>
                       <button
                         type="button"
                         role="menuitem"
@@ -2006,25 +2029,27 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>◇</span> 格式化
             </button>
-            <button
-              onClick={() => setShowQueryBuilder(!showQueryBuilder())}
-              style={{
-                padding: "10px 24px",
-                "font-size": "14px",
-                "font-weight": "500",
-                "background-color": showQueryBuilder() ? vscode.accent : vscode.buttonSecondary,
-                color: "#fff",
-                border: "none",
-                "border-radius": "6px",
-                cursor: "pointer",
-                display: "flex",
-                "align-items": "center",
-                gap: "6px",
-                transition: "background-color 0.2s ease"
-              }}
-            >
-              <span>🔧</span> {showQueryBuilder() ? "关闭构建器" : "可视化构建"}
-            </button>
+            <Show when={dbCaps().visualQueryBuilder}>
+              <button
+                onClick={() => setShowQueryBuilder(!showQueryBuilder())}
+                style={{
+                  padding: "10px 24px",
+                  "font-size": "14px",
+                  "font-weight": "500",
+                  "background-color": showQueryBuilder() ? vscode.accent : vscode.buttonSecondary,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "6px",
+                  cursor: "pointer",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "6px",
+                  transition: "background-color 0.2s ease"
+                }}
+              >
+                <span>🔧</span> {showQueryBuilder() ? "关闭构建器" : "可视化构建"}
+              </button>
+            </Show>
             <button
               onClick={() => setShowHistoryPanel(!showHistoryPanel())}
               style={{
@@ -2299,7 +2324,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         </Resizable>
 
         {/* Visual Query Builder 弹窗 */}
-        <Show when={showQueryBuilder()}>
+        <Show when={dbCaps().visualQueryBuilder && showQueryBuilder()}>
           <div style={{
             position: "fixed",
             top: 0,

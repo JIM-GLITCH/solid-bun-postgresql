@@ -5,7 +5,8 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
+import { sqlBracketIdent } from "./sql-ddl-quote";
 import { vscode } from "./theme";
 
 export interface CreateSchemaModalProps {
@@ -23,6 +24,29 @@ function validateName(connectionId: string, raw: string): string | null {
   if (isMysqlFamily(kind)) {
     const blocked = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
     if (blocked.has(lower)) return "该名称为系统库，不可新建同名";
+  } else if (isSqlServer(kind)) {
+    // 固定数据库角色名与架构争用 sys 对象名：CREATE SCHEMA 会报 “already an object named …”，但侧栏只列 INFORMATION_SCHEMA 里的架构，角色不会显示
+    if (lower === "public") {
+      return "「public」在 SQL Server 中是固定数据库角色，不是架构，侧栏不会列出；不能与新建架构同名，请换名（如 app、staging）。";
+    }
+    const blocked = new Set([
+      "guest",
+      "information_schema",
+      "sys",
+      "dbo",
+      "db_owner",
+      "db_accessadmin",
+      "db_backupoperator",
+      "db_datareader",
+      "db_datawriter",
+      "db_ddladmin",
+      "db_denydatareader",
+      "db_denydatawriter",
+      "db_securityadmin",
+    ]);
+    if (blocked.has(lower)) {
+      return "该名称与系统架构或固定数据库角色同名（侧栏可能看不到对应项），不可用作新建架构名。";
+    }
   } else {
     if (lower === "information_schema" || lower === "pg_catalog" || lower.startsWith("pg_")) {
       return "该名称为系统或保留名，请换名";
@@ -45,11 +69,14 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
   const [error, setError] = createSignal<string | null>(null);
 
   const kind = () => getRegisteredDbType(props.connectionId);
-  const title = () => (isMysqlFamily(kind()) ? "新建数据库" : "新建 Schema");
+  const title = () =>
+    isMysqlFamily(kind()) ? "新建数据库" : isSqlServer(kind()) ? "新建 Schema（T-SQL）" : "新建 Schema";
   const hint = () =>
     isMysqlFamily(kind())
       ? "将执行 CREATE DATABASE（MySQL/MariaDB 中「库」同义）。"
-      : "将执行 CREATE SCHEMA。";
+      : isSqlServer(kind())
+        ? "将执行 CREATE SCHEMA（当前库内新建架构）。勿使用 public：它是固定数据库角色，侧栏不会出现，且无法与同名架构并存。"
+        : "将执行 CREATE SCHEMA。";
 
   const handleSubmit = async () => {
     const n = name();
@@ -61,9 +88,11 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const sql =
-        isMysqlFamily(kind())
-          ? `CREATE DATABASE ${mysqlBacktickIdent(n)};`
+      const sql = isMysqlFamily(kind())
+        ? `CREATE DATABASE ${mysqlBacktickIdent(n)};`
+        : isSqlServer(kind())
+          ? // 单条批处理、无 EXEC、无尾部分号，减少 2759；属主显式 dbo
+            `CREATE SCHEMA ${sqlBracketIdent(n)} AUTHORIZATION dbo`
           : `CREATE SCHEMA ${pgQuoteIdent(n)};`;
       await executeDdl(props.connectionId, sql);
       props.onSuccess(props.connectionId);

@@ -1,11 +1,16 @@
 /** 共享类型定义 */
 
 /** 数据库方言（增库时在 union 中扩展） */
-export type DbKind = "postgres" | "mysql" | "mariadb";
+export type DbKind = "postgres" | "mysql" | "mariadb" | "sqlserver";
 
 /** MySQL 与 MariaDB 共用 mysql2 协议与后端处理器 */
-export function isMysqlFamily(kind: DbKind): boolean {
+export function isMysqlFamily(kind: DbKind): kind is "mysql" | "mariadb" {
   return kind === "mysql" || kind === "mariadb";
+}
+
+/** Microsoft SQL Server（mssql / tedious） */
+export function isSqlServer(kind: DbKind): boolean {
+  return kind === "sqlserver";
 }
 
 /**
@@ -34,6 +39,23 @@ export interface DatabaseCapabilities {
    * 与 `sessionMonitor` 解耦，便于日后仅接入其一的方言或权限策略。
    */
   pgExtensionCatalog: boolean;
+  /** 是否启用图形化表设计器（新建/编辑表、生成 DDL）；为 false 时侧栏隐藏相关入口 */
+  tableDesigner: boolean;
+  /**
+   * 查询结果网格是否允许就地编辑单元格、插入/删除行及批量保存（`db/save-changes`）。
+   * 为 false 时隐藏待保存工具栏与相关右键菜单，且不接受单元格提交。
+   */
+  resultCellEdit: boolean;
+  /**
+   * 是否开放查询页「可视化构建」（Visual Query Builder：schema/表/列/外键拉取与生成 SQL）。
+   * 为 false 时隐藏入口并关闭已打开的构建器浮层。
+   */
+  visualQueryBuilder: boolean;
+  /**
+   * 是否开放侧栏「生成假数据」等依赖 `db/import-rows` 的批量写入。
+   * 为 false 时隐藏入口；方言未实现 `db/import-rows` 时应为 false。
+   */
+  fakeDataImport: boolean;
 }
 
 export interface PostgresLoginParams {
@@ -68,7 +90,8 @@ export interface ConnectPostgresRequest extends PostgresLoginParams {
 export type ConnectDbRequest =
   | (PostgresLoginParams & { connectionId: string; dbType: "postgres" })
   | (PostgresLoginParams & { connectionId: string; dbType: "mysql" })
-  | (PostgresLoginParams & { connectionId: string; dbType: "mariadb" });
+  | (PostgresLoginParams & { connectionId: string; dbType: "mariadb" })
+  | (PostgresLoginParams & { connectionId: string; dbType: "sqlserver" });
 
 /** 加密落盘的连接参数：在 PG 登录信息上增加方言，旧数据无 dbType 时视为 postgres */
 export type StoredConnectionParams = PostgresLoginParams & { dbType?: DbKind };
@@ -106,5 +129,5 @@ export interface ColumnEditableInfo {
   /** 列是否允许 NULL（来自 pg_attribute.attnotnull） */
   nullable?: boolean;
   /** UPDATE/INSERT 字面量方言；MySQL 结果集由后端设置 */
-  sqlDialect?: "postgres" | "mysql";
+  sqlDialect?: "postgres" | "mysql" | "sqlserver";
 }
