@@ -47,13 +47,15 @@ export async function runSqlServerQueryWithTdsMetadata(
 ): Promise<{ rows: unknown[][]; tdsColumns: SqlServerTdsColumnMeta[] }> {
   const p = pool as unknown as PoolWithAcquire;
   const connection = await p.acquire(pool);
+  // 池化连接可能带残留 SET ROWCOUNT，影响后续 COLMETADATA/行数；在执行用户批前强制清零
+  const batch = `SET ROWCOUNT 0;\n${sqlText}`;
   try {
     return await new Promise((resolve, reject) => {
       type Rs = { columns: SqlServerTdsColumnMeta[]; rows: unknown[][] };
       const recordsets: Rs[] = [];
       let current: Rs = { columns: [], rows: [] };
 
-      const req = new TediousRequest(sqlText, (err: Error | null | undefined) => {
+      const req = new TediousRequest(batch, (err: Error | null | undefined) => {
         if (err) {
           reject(err);
           return;

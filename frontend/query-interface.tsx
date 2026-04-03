@@ -5,7 +5,7 @@ import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
 import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
-import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentFromDataType, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
+import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentForGridColumn, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
 import {
   queryStream,
   queryStreamMore,
@@ -965,16 +965,27 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   // 生成 INSERT SQL（使用第一个有 tableName 的表的可插入列）
   function generateInsertSql(rowIndex: number): string | null {
     const row = result[rowIndex];
+    if (!row) return null;
     const cols = columns();
-    const firstTable = cols.find(c => c.tableName && c.columnName)?.tableName;
+    const anchor = cols.find((c) => c.tableName && c.columnName);
+    const firstTable = anchor?.tableName;
     if (!firstTable) return null;
+    const dialect = anchor?.sqlDialect ?? "postgres";
     const tableCols = cols
       .map((c, i) => ({ ...c, colIndex: i }))
-      .filter(c => c.tableName === firstTable && c.columnName);
-    if (tableCols.length === 0) return null;
-    const dialect = tableCols[0]?.sqlDialect ?? "postgres";
-    const colNames = tableCols.map(c => c.columnName!);
-    const values = tableCols.map(c => formatSqlValueShared(row[c.colIndex], c.dataTypeOid, dialect));
+      .filter((c) => c.tableName === firstTable && c.columnName && !c.omitFromInsert);
+    if (tableCols.length === 0) {
+      // 结果集中列均为 identity/computed 等 omitFromInsert 时，仍应生成可执行语句（由库填充默认值）
+      if (dialect === "sqlserver" || dialect === "postgres") {
+        return `INSERT INTO ${firstTable} DEFAULT VALUES`;
+      }
+      if (dialect === "mysql") {
+        return `INSERT INTO ${firstTable} () VALUES ()`;
+      }
+      return null;
+    }
+    const colNames = tableCols.map((c) => c.columnName!);
+    const values = tableCols.map((c) => formatSqlValueShared(row[c.colIndex], c.dataTypeOid, dialect));
     return `INSERT INTO ${firstTable} (${colNames.join(", ")}) VALUES (${values.join(", ")})`;
   }
 
@@ -1428,7 +1439,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         "font-size": "13px",
                         "word-break": "break-all"
                       }}>
-                        {index() + 1}. {sql() ?? "..."};
+                        {index() + 1}. {sql() ?? "（无法生成 INSERT：缺少表/列元数据）"};
                       </span>
                       <button
                         onClick={() => removePendingInsert(index())}
@@ -1617,7 +1628,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                                 }
                                 setTableContextMenu({ x: e.clientX, y: e.clientY, contextCell: { rowIndex, colIndex: c } });
                               }}
-                              align={getAlignmentFromDataType(colInfo.dataTypeOid)}
+                              align={getAlignmentForGridColumn(colInfo)}
                               onSave={(newValue) => handleCellSave(rowIndex, c, newValue)}
                             />
                           );

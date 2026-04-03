@@ -130,4 +130,6 @@ export interface ColumnEditableInfo {
   nullable?: boolean;
   /** UPDATE/INSERT 字面量方言；MySQL 结果集由后端设置 */
   sqlDialect?: "postgres" | "mysql" | "sqlserver";
+  /** 生成 INSERT 时省略（如 SQL Server identity / computed） */
+  omitFromInsert?: boolean;
 }

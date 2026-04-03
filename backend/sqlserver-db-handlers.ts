@@ -282,8 +282,8 @@ interface SqlServerBrowseColumnMeta {
   sourceSchema: string | null;
   sourceTable: string | null;
   sourceColumn: string | null;
-  isPartOfUniqueKey: boolean | null;
   isComputedColumn: boolean | null;
+  isIdentityColumn: boolean | null;
 }
 
 async function fetchSqlServerBrowseColumnMetadata(
@@ -294,14 +294,16 @@ async function fetchSqlServerBrowseColumnMetadata(
   try {
     const req = pool.request();
     req.input("batch", sql.NVarChar(sql.MAX), sqlText);
+    // DMV 返回「每列一行」；会话若残留 ROWCOUNT，结果行会被截断 → browse 错位、第二个空表无法插入
     const r = await req.query(`
+      SET ROWCOUNT 0;
       SELECT column_ordinal AS columnOrdinal,
              name AS resultName,
              source_schema AS sourceSchema,
              source_table AS sourceTable,
              source_column AS sourceColumn,
-             is_part_of_unique_key AS isPartOfUniqueKey,
-             is_computed_column AS isComputedColumn
+             is_computed_column AS isComputedColumn,
+             is_identity_column AS isIdentityColumn
       FROM sys.dm_exec_describe_first_result_set(@batch, NULL, 1) AS d
       WHERE d.error_number IS NULL AND d.is_hidden = 0
       ORDER BY d.column_ordinal
@@ -498,22 +500,30 @@ async function enrichSqlServerQueryColumnsEditable(
   // TDS usUpdateable（flags bit 2–3，即 0x0c）在即席 SELECT 结果里常为 ReadOnly；
   // 网格编辑走带唯一键的 UPDATE，不依赖可更新游标，故不能据此关掉 isEditable。
   for (let i = 0; i < tdsColumns.length; i++) {
-    if (tdsColumns[i]!.flags & 0x20) base[i].isEditable = false; // fComputed（TDS 7.2+）
-    if (browseByIndex[i]?.isComputedColumn) base[i].isEditable = false;
+    const f = tdsColumns[i]!.flags;
+    const br = browseByIndex[i];
+    if (f & 0x20 || br?.isComputedColumn) base[i].isEditable = false; // fComputed（TDS 7.2+）
+    if (f & 0x20 || br?.isComputedColumn === true) base[i].omitFromInsert = true;
+    if (f & 0x10 || br?.isIdentityColumn === true) base[i].omitFromInsert = true; // fIdentity
   }
 
   return base;
 }
 
+/**
+ * @param sqlText 实际执行的 SQL（可含 SET ROWCOUNT 等前缀）
+ * @param browseSourceSql 仅用于 sys.dm_exec_describe_first_result_set，须为与结果集一致的单条 SELECT，否则 browse 元数据会错导致无法插入行
+ */
 async function buildSqlServerGridQueryResult(
   pool: sql.ConnectionPool,
-  sqlText: string
+  sqlText: string,
+  browseSourceSql?: string
 ): Promise<{ rows: unknown[][]; columns: ColumnEditableInfo[] }> {
   const { rows, tdsColumns } = await runSqlServerQueryWithTdsMetadata(pool, sqlText);
   const base: ColumnEditableInfo[] = tdsColumns.map((tdsCol, idx) =>
     columnEditableFromMssqlMeta(tdsCol.colName, idx + 1, tediousColumnToMssqlRecordsetMeta(tdsCol))
   );
-  const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, sqlText);
+  const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, browseSourceSql ?? sqlText);
   const columns = await enrichSqlServerQueryColumnsEditable(pool, base, tdsColumns, browseRows);
   return { rows, columns };
 }
@@ -574,7 +584,8 @@ function recordsetToRowsAndColumns(recordset: unknown): {
 /** 只读查询行数上限：SET ROWCOUNT（单批次内有效） */
 function wrapReadonlyWithRowCount(innerSql: string, limit: number): string {
   const lim = Math.max(1, Math.min(100_000, Math.floor(limit)));
-  return `SET ROWCOUNT ${lim};\n${innerSql}\nSET ROWCOUNT 0;`;
+  // 池化连接上可能残留上次失败批处理未执行的 SET ROWCOUNT 0，先清零再限制行数
+  return `SET ROWCOUNT 0;\nSET ROWCOUNT ${lim};\n${innerSql}\nSET ROWCOUNT 0;`;
 }
 
 function sumRowsAffected(rowsAffected: number[] | undefined): number {
@@ -1223,10 +1234,11 @@ export async function handleSqlServerDbRequest(
       if (statements.length !== 1) {
         throw new Error("SQL Server 只读查询当前仅支持单条语句");
       }
-      const limited = wrapReadonlyWithRowCount(statements[0], limit);
+      const innerSelect = statements[0]!;
+      const limited = wrapReadonlyWithRowCount(innerSelect, limit);
       const pool = session.backGroundPool;
       try {
-        const { rows, columns } = await buildSqlServerGridQueryResult(pool, limited);
+        const { rows, columns } = await buildSqlServerGridQueryResult(pool, limited, innerSelect);
         return { rows, columns, hasMore: false };
       } catch (e: unknown) {
         throw new Error(formatMssqlErrorChain(e));

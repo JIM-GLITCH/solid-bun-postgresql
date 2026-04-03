@@ -108,6 +108,56 @@ export function getAlignmentFromDataType(dataTypeOid?: number): "left" | "right"
   return RIGHT_ALIGN_OIDS.has(dataTypeOid as any) ? "right" : "left";
 }
 
+function sqlFamilyTypeLabelBase(label: string): string {
+  const t = label.trim().toLowerCase();
+  if (!t) return "";
+  const open = t.indexOf("(");
+  return (open >= 0 ? t.slice(0, open) : t).trim();
+}
+
+/** MySQL / SQL Server 表头类型串（如 int、decimal(18,0)、datetime2(7)）的基名 → 与 PG 一致的数字/时间右对齐 */
+const SQL_FAMILY_RIGHT_ALIGN_BASES = new Set([
+  "int",
+  "bigint",
+  "smallint",
+  "tinyint",
+  "mediumint",
+  "float",
+  "real",
+  "double",
+  "decimal",
+  "numeric",
+  "money",
+  "smallmoney",
+  "date",
+  "datetime",
+  "datetime2",
+  "smalldatetime",
+  "datetimeoffset",
+  "time",
+  "timestamp",
+  "year",
+  "bit",
+]);
+
+/**
+ * 查询网格列对齐：PostgreSQL 用 OID；MySQL / SQL Server 无 OID 时根据 dataTypeLabel 推断。
+ */
+export function getAlignmentForGridColumn(col: {
+  dataTypeOid?: number;
+  dataTypeLabel?: string;
+  sqlDialect?: "postgres" | "mysql" | "sqlserver";
+}): "left" | "right" {
+  if (col.dataTypeOid != null) {
+    return getAlignmentFromDataType(col.dataTypeOid);
+  }
+  if (col.sqlDialect === "mysql" || col.sqlDialect === "sqlserver") {
+    const base = sqlFamilyTypeLabelBase(col.dataTypeLabel ?? "");
+    if (base && SQL_FAMILY_RIGHT_ALIGN_BASES.has(base)) return "right";
+  }
+  return "left";
+}
+
 /** 格式化为表格显示 */
 export function formatCellDisplay(value: unknown, dataTypeOid?: number): string {
   if (value === null || value === undefined) return "NULL";
