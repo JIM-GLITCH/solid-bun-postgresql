@@ -1517,10 +1517,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       >
                         <div style={{ display: "flex", "flex-direction": "column", "align-items": "center", gap: "2px" }}>
                           <span>{col.name}</span>
-                          {((getDataTypeName(col.dataTypeOid) || col.dataTypeLabel) || col.nullable !== undefined) && (
+                          {((col.dataTypeLabel?.trim() || getDataTypeName(col.dataTypeOid)) || col.nullable !== undefined) && (
                             <span style={{ "font-size": "11px", color: vscode.foregroundDim, "font-weight": "400" }}>
                               {[
-                                getDataTypeName(col.dataTypeOid) || col.dataTypeLabel,
+                                col.dataTypeLabel?.trim() || getDataTypeName(col.dataTypeOid),
                                 col.nullable === true ? "nullable" : col.nullable === false ? "NOT NULL" : undefined
                               ]
                                 .filter(Boolean)

@@ -3,7 +3,8 @@
  * Phase 4: 外键、唯一、检查约束
  */
 
-import { createSignal, onMount, For, Show } from "solid-js";
+import { createSignal, createEffect, onMount, For, Show } from "solid-js";
+import { TableDesignerTypeInput } from "./table-designer-type-input";
 import { createStore, produce } from "solid-js/store";
 import { getDataTypes, executeDdl } from "./api";
 import {
@@ -14,7 +15,9 @@ import {
   needsLength,
   buildCreateTableSql,
   normalizeDbDataTypesList,
+  reconcileColumnDataTypesToDbList,
 } from "./table-designer-shared";
+import { registerServerDataTypes } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
@@ -47,33 +50,52 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const [uniqueConstraints, setUniqueConstraints] = createStore<UniqueConstraint[]>([]);
   const [checkConstraints, setCheckConstraints] = createStore<CheckConstraint[]>([]);
   const [fkConstraints, setFkConstraints] = createStore<ForeignKeyConstraint[]>([]);
-  const [dataTypes, setDataTypes] = createSignal<string[]>(COMMON_TYPES);
+  const [dataTypes, setDataTypes] = createSignal<string[]>([]);
   const [error, setError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [showPreview, setShowPreview] = createSignal(false);
+  const [typeSuggestOpenRow, setTypeSuggestOpenRow] = createSignal<number | null>(null);
 
   onMount(() => {
     if (props.connectionId) {
       getDataTypes(props.connectionId)
-        .then(({ types }) => setDataTypes(normalizeDbDataTypesList(types)))
+        .then(({ types }) => {
+          const list = normalizeDbDataTypesList(types);
+          setDataTypes(list);
+          registerServerDataTypes(props.connectionId, list);
+        })
         .catch(() => setDataTypes([]));
     }
   });
 
+  createEffect(() => {
+    const list = dataTypes();
+    if (list.length === 0) return;
+    setColumns(
+      produce((draft) => {
+        reconcileColumnDataTypesToDbList(draft, list);
+      })
+    );
+  });
+
   const addColumn = () => {
+    const list = dataTypes();
     setColumns(
       produce((draft) => {
         draft.push(defaultCreateColumn(props.connectionId));
+        if (list.length > 0) reconcileColumnDataTypesToDbList([draft[draft.length - 1]!], list);
       })
     );
   };
 
   const removeColumn = (index: number) => {
+    const list = dataTypes();
     setColumns(
       produce((draft) => {
         draft.splice(index, 1);
         if (draft.length === 0) {
           draft.push(defaultCreateColumn(props.connectionId));
+          if (list.length > 0) reconcileColumnDataTypesToDbList([draft[0]!], list);
         }
       })
     );
@@ -173,8 +195,8 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
         </button>
       </div>
 
-      <div style={{ overflow: "auto", "margin-bottom": "24px" }}>
-        <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "13px" }}>
+      <div style={{ overflow: "visible", "margin-bottom": "24px" }}>
+        <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "13px", overflow: "visible" }}>
           <thead>
             <tr>
               <th style={{ padding: "8px", "text-align": "left", "border-bottom": `1px solid ${vscode.border}`, color: vscode.foregroundDim }}>列名</th>
@@ -208,26 +230,31 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
                       }}
                     />
                   </td>
-                  <td style={{ padding: "4px 8px", "border-bottom": `1px solid ${vscode.border}` }}>
-                    <select
+                  <td
+                    style={{
+                      padding: "4px 8px",
+                      "border-bottom": `1px solid ${vscode.border}`,
+                      overflow: "visible",
+                      position: "relative",
+                    }}
+                  >
+                    <TableDesignerTypeInput
+                      rowIndex={i()}
                       value={col.dataType}
-                      onChange={(e) => setColumns(i(), "dataType", e.currentTarget.value)}
-                      style={{
+                      onChange={(v) => setColumns(i(), "dataType", v)}
+                      options={dataTypes}
+                      inputStyle={{
                         padding: "4px 8px",
-                        "min-width": "140px",
                         "background-color": vscode.inputBg,
                         color: vscode.inputFg,
                         border: `1px solid ${vscode.inputBorder}`,
                         "border-radius": "4px",
+                        "font-size": "13px",
                       }}
-                    >
-                      <For each={COMMON_TYPES}>{(t) => <option value={t}>{t}</option>}</For>
-                      <optgroup label="其他">
-                        <For each={dataTypes().filter((t) => !COMMON_TYPES.includes(t))}>
-                          {(t) => <option value={t}>{t}</option>}
-                        </For>
-                      </optgroup>
-                    </select>
+                      openRow={typeSuggestOpenRow}
+                      setOpenRow={setTypeSuggestOpenRow}
+                      placeholder="类型，建议或手填"
+                    />
                   </td>
                   <td style={{ padding: "4px 8px", "border-bottom": `1px solid ${vscode.border}` }}>
                     <Show when={needsLength(col.dataType)} fallback={<span style={{ color: vscode.foregroundDim }}>—</span>}>

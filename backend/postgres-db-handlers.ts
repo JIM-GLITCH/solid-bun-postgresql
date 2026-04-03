@@ -414,9 +414,18 @@ export async function handlePostgresDbRequest(
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
       const session = pgSession(getSWithDb, cid);
       const result = await session.backGroundPool.query(
-        `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length,
-         numeric_precision, numeric_scale, identity_generation
-         FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position`,
+        `SELECT c.column_name, c.data_type, c.udt_name, c.is_nullable, c.column_default,
+         c.character_maximum_length, c.numeric_precision, c.numeric_scale, c.identity_generation,
+         pg_catalog.format_type(a.atttypid, a.atttypmod) AS pg_format_type
+         FROM information_schema.columns c
+         LEFT JOIN pg_catalog.pg_namespace ns ON ns.nspname = c.table_schema
+         LEFT JOIN pg_catalog.pg_class cls
+           ON cls.relnamespace = ns.oid AND cls.relname = c.table_name
+           AND cls.relkind IN ('r', 'v', 'm', 'f', 'p')
+         LEFT JOIN pg_catalog.pg_attribute a
+           ON a.attrelid = cls.oid AND a.attname = c.column_name AND a.attnum > 0 AND NOT a.attisdropped
+         WHERE c.table_schema = $1 AND c.table_name = $2
+         ORDER BY c.ordinal_position`,
         [schema, table]
       );
       return { columns: result.rows };
@@ -505,16 +514,20 @@ export async function handlePostgresDbRequest(
     case "db/data-types": {
       const cid = getConnId();
       const session = pgSession(getSWithDb, cid);
+      // 仅可出现在 CREATE TABLE 列上的类别：b 标量、e 枚举、r 范围、m multirange。
+      // 排除 typtype=p（伪类型：anycompatible、any、void、internal 等，不能作存储列类型）。
+      // 用 format_type 输出 SQL 常用名（smallint/integer/bigint），而非仅 typname（int2/int4/int8）。
       const result = await session.backGroundPool.query(
-        `SELECT t.typname AS name
+        `SELECT DISTINCT pg_catalog.format_type(t.oid, NULL) AS name
          FROM pg_type t
          JOIN pg_namespace n ON t.typnamespace = n.oid
          WHERE n.nspname = 'pg_catalog'
-           AND t.typtype IN ('b', 'e', 'p')
+           AND t.typtype IN ('b', 'e', 'r', 'm')
+           AND t.typisdefined
            AND t.typname !~ '^_'
-         ORDER BY t.typname`
+         ORDER BY 1`
       );
-      return { types: result.rows.map((r: { name: string }) => r.name) };
+      return { types: result.rows.map((r: { name: string }) => String(r.name ?? "").trim()).filter(Boolean) };
     }
 
     case "db/execute-ddl": {

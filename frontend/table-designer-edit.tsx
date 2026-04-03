@@ -4,6 +4,7 @@
  */
 
 import { createEffect, createResource, createSignal, For, Show } from "solid-js";
+import { TableDesignerTypeInput } from "./table-designer-type-input";
 import { createStore, produce, reconcile } from "solid-js/store";
 import { getDataTypes, getColumns, executeDdl } from "./api";
 import {
@@ -11,8 +12,11 @@ import {
   needsLength,
   buildAlterTableSql,
   normalizeDbDataTypesList,
+  columnApiDataTypeLabel,
+  reconcileColumnDataTypesToDbList,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
+import { registerServerDataTypes } from "./db-capabilities-cache";
 import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
@@ -42,7 +46,7 @@ function defaultEditColumn(connectionId: string): TableColumn {
 function mapColumnsFromApi(cols: any[]): TableColumn[] {
   return cols.map((c: any) => ({
     name: c.column_name,
-    dataType: c.data_type,
+    dataType: columnApiDataTypeLabel(c),
     length: c.character_maximum_length ? String(c.character_maximum_length) : "",
     nullable: c.is_nullable === "YES",
     primaryKey: false,
@@ -54,10 +58,11 @@ function mapColumnsFromApi(cols: any[]): TableColumn[] {
 export default function TableDesignerEdit(props: TableDesignerEditProps) {
   const [columns, setColumns] = createStore<TableColumn[]>([]);
   const [originalColumns, setOriginalColumns] = createSignal<TableColumn[]>([]);
-  const [dataTypes, setDataTypes] = createSignal<string[]>(COMMON_TYPES);
+  const [dataTypes, setDataTypes] = createSignal<string[]>([]);
   const [saving, setSaving] = createSignal(false);
   const [showPreview, setShowPreview] = createSignal(false);
   const [ddlError, setDdlError] = createSignal<string | null>(null);
+  const [typeSuggestOpenRow, setTypeSuggestOpenRow] = createSignal<number | null>(null);
 
   const source = () =>
     props.connectionId && props.table ? { cid: props.connectionId, schema: props.schema, table: props.table } : null;
@@ -76,9 +81,12 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
       const data = editData();
       if (data) {
         setDataTypes(data.types);
+        if (data.types.length > 0) registerServerDataTypes(props.connectionId, data.types);
         if (data.columns.length) {
-          setColumns(reconcile(data.columns, { key: "name" }));
-          setOriginalColumns(data.columns);
+          const cols = data.columns.map((c) => ({ ...c }));
+          reconcileColumnDataTypesToDbList(cols, data.types);
+          setColumns(reconcile(cols, { key: "name" }));
+          setOriginalColumns(JSON.parse(JSON.stringify(cols)) as TableColumn[]);
         }
       }
     } catch {
@@ -87,19 +95,23 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
   });
 
   const addColumn = () => {
+    const list = dataTypes();
     setColumns(
       produce((draft) => {
         draft.push(defaultEditColumn(props.connectionId));
+        if (list.length > 0) reconcileColumnDataTypesToDbList([draft[draft.length - 1]!], list);
       })
     );
   };
 
   const removeColumn = (index: number) => {
+    const list = dataTypes();
     setColumns(
       produce((draft) => {
         draft.splice(index, 1);
         if (draft.length === 0) {
           draft.push(defaultEditColumn(props.connectionId));
+          if (list.length > 0) reconcileColumnDataTypesToDbList([draft[0]!], list);
         }
       })
     );
@@ -183,8 +195,8 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
         </button>
       </div>
 
-      <div style={{ overflow: "auto", "margin-bottom": "24px" }}>
-        <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "13px" }}>
+      <div style={{ overflow: "visible", "margin-bottom": "24px" }}>
+        <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "13px", overflow: "visible" }}>
           <thead>
             <tr>
               <th style={{ padding: "8px", "text-align": "left", "border-bottom": `1px solid ${vscode.border}`, color: vscode.foregroundDim }}>列名</th>
@@ -219,26 +231,31 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
                       }}
                     />
                   </td>
-                  <td style={{ padding: "4px 8px", "border-bottom": `1px solid ${vscode.border}` }}>
-                    <select
+                  <td
+                    style={{
+                      padding: "4px 8px",
+                      "border-bottom": `1px solid ${vscode.border}`,
+                      overflow: "visible",
+                      position: "relative",
+                    }}
+                  >
+                    <TableDesignerTypeInput
+                      rowIndex={i()}
                       value={col.dataType}
-                      onChange={(e) => setColumns(i(), "dataType", e.currentTarget.value)}
-                      style={{
+                      onChange={(v) => setColumns(i(), "dataType", v)}
+                      options={dataTypes}
+                      inputStyle={{
                         padding: "4px 8px",
-                        "min-width": "140px",
                         "background-color": vscode.inputBg,
                         color: vscode.inputFg,
                         border: `1px solid ${vscode.inputBorder}`,
                         "border-radius": "4px",
+                        "font-size": "13px",
                       }}
-                    >
-                      <For each={COMMON_TYPES}>{(t) => <option value={t}>{t}</option>}</For>
-                      <optgroup label="其他">
-                        <For each={dataTypes().filter((t) => !COMMON_TYPES.includes(t))}>
-                          {(t) => <option value={t}>{t}</option>}
-                        </For>
-                      </optgroup>
-                    </select>
+                      openRow={typeSuggestOpenRow}
+                      setOpenRow={setTypeSuggestOpenRow}
+                      placeholder="类型，建议或手填"
+                    />
                   </td>
                   <td style={{ padding: "4px 8px", "border-bottom": `1px solid ${vscode.border}` }}>
                     <Show when={needsLength(col.dataType)} fallback={<span style={{ color: vscode.foregroundDim }}>—</span>}>

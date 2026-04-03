@@ -119,7 +119,7 @@ export interface ColumnEditableInfo {
   isEditable: boolean;
   /** PostgreSQL 类型 OID，用于格式化显示与 SQL 值（timestamp 精度等） */
   dataTypeOid?: number;
-  /** 表头展示用类型名（MySQL 等无 OID 时由后端填入） */
+  /** 表头展示用类型名（MySQL 等无 OID 时由后端填入；PostgreSQL 物理列可用 `format_type` 含数组维数） */
   dataTypeLabel?: string;
   tableName?: string;
   columnName?: string;

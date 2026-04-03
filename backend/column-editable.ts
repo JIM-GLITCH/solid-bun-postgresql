@@ -147,6 +147,45 @@ async function getTableNames(
   return map;
 }
 
+/** 物理列在目录中的 SQL 类型串（含数组维数，如 integer[][]）；表达式列无此项 */
+async function getAttributeFormatTypes(
+  client: QueryClient,
+  fields: FieldDef[]
+): Promise<Map<string, string>> {
+  const seen = new Set<string>();
+  const pairs: Array<{ rel: number; att: number }> = [];
+  for (const f of fields) {
+    if (f.tableID === 0 || f.columnID === 0) continue;
+    const key = `${f.tableID}:${f.columnID}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ rel: f.tableID, att: f.columnID });
+  }
+  if (pairs.length === 0) return new Map();
+
+  const placeholders: string[] = [];
+  const params: number[] = [];
+  let n = 1;
+  for (const p of pairs) {
+    placeholders.push(`($${n}::oid, $${n + 1}::int2)`);
+    params.push(p.rel, p.att);
+    n += 2;
+  }
+  const sql = `
+    SELECT a.attrelid, a.attnum, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fmt
+    FROM pg_catalog.pg_attribute a
+    WHERE (a.attrelid, a.attnum) IN (${placeholders.join(", ")})
+      AND NOT a.attisdropped
+  `;
+  const result = await client.query(sql, params);
+  const out = new Map<string, string>();
+  for (const row of result.rows as { attrelid: number; attnum: number; fmt: string }[]) {
+    const fmt = row.fmt != null ? String(row.fmt).trim() : "";
+    if (fmt) out.set(`${row.attrelid}:${row.attnum}`, fmt);
+  }
+  return out;
+}
+
 export async function calculateColumnEditable(
   client: QueryClient,
   fields: FieldDef[],
@@ -163,10 +202,11 @@ export async function calculateColumnEditable(
 
   const tableOids = [...new Set(fields.map((f) => f.tableID).filter((id) => id !== 0))];
 
-  const [uniqueConstraints, columnMetaMap, tableNameMap] = await Promise.all([
+  const [uniqueConstraints, columnMetaMap, tableNameMap, formatTypeMap] = await Promise.all([
     getUniqueConstraints(client, tableOids),
     getColumnMeta(client, tableOids),
     getTableNames(client, tableOids),
+    getAttributeFormatTypes(client, fields),
   ]);
 
   interface TableInstance {
@@ -233,6 +273,11 @@ export async function calculateColumnEditable(
       isEditable: false,
       dataTypeOid: field.dataTypeID,
     };
+
+    if (field.tableID !== 0 && field.columnID !== 0) {
+      const fmt = formatTypeMap.get(`${field.tableID}:${field.columnID}`);
+      if (fmt) info.dataTypeLabel = fmt;
+    }
 
     // 对于来自表的列，从 pg_attribute 获取 nullable（无论是否可编辑）
     if (field.tableID !== 0) {

@@ -185,14 +185,25 @@ const DEFAULT_VALUE_RAW_RE = /^[0-9]+(\.[0-9]+)?$|^true$|^false$|^null$|^now\(\)
 
 // ─── Helper functions ─────────────────────────────────────────────────────────
 
+/** 类型串里是否已带 (n) 或 (p,s)（长度/精度已写在 dataType 里，不再单独占一列） */
+function dataTypeAlreadyHasNumericTypmod(type: string): boolean {
+  return /\(\s*\d+(\s*,\s*\d+)?\s*\)/.test(type.toLowerCase());
+}
+
 export function needsLength(type: string): boolean {
   const lower = type.toLowerCase().trim();
-  return TYPES_NEEDING_LENGTH.some((t) => lower === t || lower.startsWith(t + "("));
+  const base = TYPES_NEEDING_LENGTH.some((t) => lower === t || lower.startsWith(t + "("));
+  if (!base) return false;
+  if (dataTypeAlreadyHasNumericTypmod(lower)) return false;
+  return true;
 }
 
 export function needsPrecision(type: string): boolean {
   const lower = type.toLowerCase().trim();
-  return TYPES_NEEDING_PRECISION.some((t) => lower === t || lower.startsWith(t + "("));
+  const base = TYPES_NEEDING_PRECISION.some((t) => lower === t || lower.startsWith(t + "("));
+  if (!base) return false;
+  if (dataTypeAlreadyHasNumericTypmod(lower)) return false;
+  return true;
 }
 
 export function formatDefaultValue(d: string): string {
@@ -1495,34 +1506,29 @@ export function buildAlterTableSql(
   );
 }
 
-/** @deprecated Common PostgreSQL types list */
-export const COMMON_TYPES: string[] = [
-  "bigint", "bigserial", "boolean", "bytea", "char", "character varying",
-  "date", "decimal", "double precision", "integer", "json", "jsonb",
-  "numeric", "real", "serial", "smallint", "text", "time", "timestamp",
-  "timestamptz", "uuid", "varchar",
-];
+/** `db/columns` 与 `db/data-types` 对齐：PostgreSQL 优先 `pg_format_type`（与 `format_type` 建议列表一致，如 smallint），否则 `udt_name`；其它库用 `data_type` */
+export function columnApiDataTypeLabel(c: { data_type?: string; udt_name?: string; pg_format_type?: string }): string {
+  const fmt = c.pg_format_type != null ? String(c.pg_format_type).trim() : "";
+  if (fmt) return fmt;
+  const udt = c.udt_name != null ? String(c.udt_name).trim() : "";
+  if (udt) return udt;
+  return String(c.data_type ?? "").trim();
+}
 
-/** 表设计器下拉：MySQL 常用类型（与 PG 列表分离） */
-export const COMMON_TYPES_MYSQL: string[] = [
-  "bigint", "int", "integer", "smallint", "tinyint", "mediumint",
-  "decimal", "numeric", "float", "double",
-  "char", "varchar", "text", "tinytext", "mediumtext", "longtext",
-  "binary", "varbinary", "blob", "tinyblob", "mediumblob", "longblob",
-  "date", "time", "datetime", "timestamp", "year",
-  "json", "boolean",
-];
+/**
+ * 若 `dataType` 与 `list` 中某项仅大小写不同，则改为列表中的写法；不在列表中时保留用户输入（支持 integer[][] 等）。
+ */
+export function reconcileColumnDataTypesToDbList(columns: TableColumn[], list: string[]): void {
+  if (list.length === 0) return;
+  const byLower = new Map(list.map((t) => [t.toLowerCase(), t]));
+  for (const col of columns) {
+    const key = col.dataType.trim().toLowerCase();
+    const canon = byLower.get(key);
+    if (canon) col.dataType = canon;
+  }
+}
 
-/** 表设计器下拉：SQL Server 常用类型 */
-export const COMMON_TYPES_SQLSERVER: string[] = [
-  "bigint", "int", "smallint", "tinyint", "bit",
-  "decimal", "numeric", "money", "smallmoney", "float", "real",
-  "date", "datetime", "datetime2", "datetimeoffset", "smalldatetime", "time",
-  "char", "varchar", "nchar", "nvarchar", "text", "ntext",
-  "binary", "varbinary", "uniqueidentifier", "xml",
-];
-
-/** 表设计器：`db/data-types` 返回列表去重、排序（完全以库为准，不拼静态列表） */
+/** 表设计器：`db/data-types` 返回列表去重、排序（完全以库为准） */
 export function normalizeDbDataTypesList(fromDb: string[] | undefined): string[] {
   const raw = fromDb?.map((t) => String(t).trim()).filter(Boolean) ?? [];
   const seen = new Set<string>();

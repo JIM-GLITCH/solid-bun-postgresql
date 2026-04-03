@@ -145,11 +145,14 @@ import {
   normalizeMysqlReferentialAction,
   normalizeSqlServerReferentialAction,
   normalizeDbDataTypesList,
+  columnApiDataTypeLabel,
+  reconcileColumnDataTypesToDbList,
 } from "./table-designer-shared";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { vscode } from "./theme";
+import { TableDesignerTypeInput } from "./table-designer-type-input";
 
 export interface TableDesignerUnifiedProps {
   connectionId: string;
@@ -231,6 +234,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   const [showSqlPreview, setShowSqlPreview] = createSignal(true);
   const [saving, setSaving] = createSignal(false);
   const [errors, setErrors] = createSignal<string[]>([]);
+  const [typeSuggestOpenRow, setTypeSuggestOpenRow] = createSignal<number | null>(null);
 
   // ── FK ref data (schemas / tables per schema / columns per schema.table) ──
   const [fkSchemas, setFkSchemas] = createSignal<string[]>([]);
@@ -241,6 +245,10 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   createEffect(() => {
     if (!props.connectionId) return;
     getSchemas(props.connectionId).then((r) => setFkSchemas(r.schemas ?? []));
+  });
+
+  createEffect(() => {
+    if (activeTab() !== "columns") setTypeSuggestOpenRow(null);
   });
 
   // Load tables when a FK's refSchema is set
@@ -281,7 +289,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       : null;
 
   const [editData, { refetch: refetchEditData }] = createResource(editSource, async ({ cid, schema, table }) => {
-    const [colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes] = await Promise.all([
+    const [colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes, typesRes] = await Promise.all([
       getColumns(cid, schema, table),
       getIndexes(cid, schema, table),
       getForeignKeys(cid, schema, table),
@@ -289,8 +297,11 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       getCheckConstraints(cid, schema, table),
       getTableComment(cid, schema, table),
       getPrimaryKeys(cid, schema, table),
+      getDataTypes(cid),
     ]);
-    return { colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes };
+    const dataTypesList = normalizeDbDataTypesList(typesRes.types);
+    if (dataTypesList.length > 0) registerServerDataTypes(cid, dataTypesList);
+    return { colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes, dataTypesList };
   });
 
   // ── Populate state after edit data loads ───────────────────────────────────
@@ -324,7 +335,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       const loadedColumns: TableColumn[] = (data.colsRes.columns ?? []).map((c: any) => ({
         name: c.column_name,
         originalName: c.column_name,
-        dataType: c.data_type,
+        dataType: columnApiDataTypeLabel(c),
         length: c.character_maximum_length ? String(c.character_maximum_length) : "",
         precision: c.numeric_precision ? String(c.numeric_precision) : "",
         scale: c.numeric_scale ? String(c.numeric_scale) : "",
@@ -336,6 +347,10 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         isNew: false,
         isExisting: true,
       }));
+
+      if (data.dataTypesList.length > 0) {
+        reconcileColumnDataTypesToDbList(loadedColumns, data.dataTypesList);
+      }
 
       const loadedIndexes: IndexDef[] = (data.idxRes.indexes ?? [])
         .filter((idx: any) => !idx.is_primary)
@@ -460,16 +475,30 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   const [designerDataTypes] = createResource(
     () => props.connectionId,
     async (cid) => {
+      let list: string[];
       const cached = getCachedDataTypes(cid);
-      if (cached) return cached;
-      try {
-        const { types } = await getDataTypes(cid);
-        const list = normalizeDbDataTypesList(types);
-        registerServerDataTypes(cid, list);
-        return list;
-      } catch {
-        return [];
+      if (cached) {
+        list = cached;
+      } else {
+        try {
+          const { types } = await getDataTypes(cid);
+          list = normalizeDbDataTypesList(types);
+          registerServerDataTypes(cid, list);
+        } catch {
+          list = [];
+        }
       }
+      // 类型列表就绪后，仅在仍为「新建表」时把占位 dataType 对齐下拉项（在 microtask 里读 props.mode，避免慢请求返回时已是编辑态却误改列）
+      const snapshot = list;
+      queueMicrotask(() => {
+        if (props.mode !== "create" || snapshot.length === 0) return;
+        setColumns(
+          produce((draft) => {
+            reconcileColumnDataTypesToDbList(draft, snapshot);
+          })
+        );
+      });
+      return list;
     }
   );
 
@@ -670,7 +699,12 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
             <button
               data-testid="btn-add-column"
               onClick={() => {
-                setColumns((cols) => [...cols, emptyDesignerColumn(props.connectionId)]);
+                const list = columnTypeOptions();
+                setColumns((cols) => {
+                  const row = emptyDesignerColumn(props.connectionId);
+                  if (list.length > 0) reconcileColumnDataTypesToDbList([row], list);
+                  return [...cols, row];
+                });
               }}
               style={{
                 "background-color": "transparent",
@@ -772,11 +806,15 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
           {/* 4. Tab content area (placeholders — tasks 5-8) */}
           <div
             data-testid="tab-content"
-            style={{ flex: "1", overflow: "auto", padding: "16px" }}
+            style={{
+              flex: "1",
+              overflow: activeTab() === "columns" ? "visible" : "auto",
+              padding: "16px",
+            }}
           >
             <Show when={activeTab() === "columns"}>
               <div data-testid="tab-columns">
-                <table style={{ width: "100%", "border-collapse": "collapse" }}>
+                <table style={{ width: "100%", "border-collapse": "collapse", overflow: "visible" }}>
                   <thead>
                     <tr>
                       {(["列名", "类型", "长度/精度", "小数位", "非空", "主键", "自增", "默认值", "注释", "操作"] as const).map((h) => (
@@ -838,17 +876,18 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                                 style={inputStyle}
                               />
                             </td>
-                            {/* 类型 */}
-                            <td style={cellStyle}>
-                              <select
+                            {/* 类型：主题化建议 + 可手填 */}
+                            <td style={{ ...cellStyle, overflow: "visible", position: "relative" }}>
+                              <TableDesignerTypeInput
+                                rowIndex={i()}
                                 value={col.dataType}
-                                onChange={(e) => setColumns(i(), "dataType", e.currentTarget.value)}
-                                style={{ ...inputStyle, width: "auto", "min-width": "120px" }}
-                              >
-                                <For each={columnTypeOptions()}>
-                                  {(t) => <option value={t}>{t}</option>}
-                                </For>
-                              </select>
+                                onChange={(v) => setColumns(i(), "dataType", v)}
+                                options={columnTypeOptions}
+                                inputStyle={inputStyle}
+                                openRow={typeSuggestOpenRow}
+                                setOpenRow={setTypeSuggestOpenRow}
+                                placeholder="类型，可从建议中选或手填"
+                              />
                             </td>
                             {/* 长度/精度 */}
                             <td style={cellStyle}>
