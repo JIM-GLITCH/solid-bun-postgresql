@@ -14,9 +14,10 @@ import {
   type StoredConnectionParams,
   type SSEMessage,
   defaultDatabaseCapabilities,
+  isMysqlFamily,
 } from "../shared/src";
 import { connectPostgres, getDbConfig, type GetDbConfigResult } from "./connect-postgres";
-import type { SessionConnection } from "./session-connection";
+import type { MysqlSessionConnection, SessionConnection } from "./session-connection";
 import { handlePostgresDbRequest, type PostgresDbHandlerContext } from "./postgres-db-handlers";
 import { handleMysqlDbRequest, teardownMysqlStreaming, type MysqlDbHandlerContext } from "./mysql-db-handlers";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
@@ -101,14 +102,15 @@ async function recreateUserUsedClient(cid: string): Promise<void> {
 async function recreateMysqlUserUsedClient(cid: string): Promise<void> {
   const session = connectionMap.get(cid);
   if (!session) throw new Error("连接不存在");
-  if (session.dbKind !== "mysql") throw new Error("内部错误：非 MySQL 会话");
+  if (!isMysqlFamily(session.dbKind)) throw new Error("内部错误：非 MySQL/MariaDB 会话");
+  const m = session as MysqlSessionConnection;
   try {
-    session.userUsedClient.release();
+    m.userUsedClient.release();
   } catch {
     /* ignore */
   }
-  const conn = await session.backGroundPool.getConnection();
-  session.userUsedClient = conn;
+  const conn = await m.backGroundPool.getConnection();
+  m.userUsedClient = conn;
   sendSSEMessage(cid, { type: "INFO", message: "查询专用连接已自动重建", timestamp: Date.now() });
 }
 
@@ -131,11 +133,12 @@ const connectionMap = new Map<string, SessionConnection>();
 function shouldRouteDbRequestToMysql(method: string, payload: unknown): boolean {
   if (!method.startsWith("db/")) return false;
   if (method === "db/connect") {
-    return (payload as ConnectDbRequest).dbType === "mysql";
+    return isMysqlFamily((payload as ConnectDbRequest).dbType);
   }
   const cid = (payload as { connectionId?: string }).connectionId;
   if (cid == null || String(cid) === "") return false;
-  return connectionMap.get(String(cid))?.dbKind === "mysql";
+  const k = connectionMap.get(String(cid))?.dbKind;
+  return k != null && isMysqlFamily(k);
 }
 const aiKeyStore = new Map<string, string>();
 
@@ -320,15 +323,22 @@ async function buildMysqlSchemaContext(pool: MysqlPool, schema?: string): Promis
   return { context: chunks.join("\n"), injected };
 }
 
+function aiDialectDisplayLabel(dialect: DbKind): string {
+  if (dialect === "postgres") return "PostgreSQL";
+  if (dialect === "mariadb") return "MariaDB";
+  return "MySQL";
+}
+
 async function buildAiSchemaContext(session: SessionConnection, schema?: string): Promise<{ context: string; injected: string[] }> {
-  if (session.dbKind === "postgres") {
-    return buildPostgresSchemaContext(session.backGroundPool as Pool, schema);
+  switch (session.dbKind) {
+    case "postgres":
+      return buildPostgresSchemaContext(session.backGroundPool as Pool, schema);
+    case "mysql":
+    case "mariadb":
+      return buildMysqlSchemaContext(session.backGroundPool as MysqlPool, schema);
+    default:
+      throw new Error("不支持的会话类型");
   }
-  if (session.dbKind === "mysql") {
-    return buildMysqlSchemaContext(session.backGroundPool as MysqlPool, schema);
-  }
-  const _never: never = session;
-  return _never;
 }
 
 function buildPortableSqlPrompt(params: {
@@ -338,7 +348,7 @@ function buildPortableSqlPrompt(params: {
   dialect: DbKind;
 }): string {
   const { sql, schemaContext, extraInstruction, dialect } = params;
-  const dbLabel = dialect === "mysql" ? "MySQL" : "PostgreSQL";
+  const dbLabel = aiDialectDisplayLabel(dialect);
   return [
     "你是 SQL 助手，请严格按要求输出。",
     "任务: 按用户要求编辑当前 SQL",
@@ -362,7 +372,7 @@ function buildPortableSqlPrompt(params: {
 
 function buildDiffSqlPrompt(params: { sql: string; schemaContext: string; dialect: DbKind }): string {
   const { sql, schemaContext, dialect } = params;
-  const dbLabel = dialect === "mysql" ? "MySQL" : "PostgreSQL";
+  const dbLabel = aiDialectDisplayLabel(dialect);
   return [
     "[DIFF MODE] 你是 SQL 助手，请严格按要求输出。",
     "任务: 输出最小改动的 SQL diff JSON",
@@ -394,7 +404,7 @@ function buildDiffSqlPrompt(params: { sql: string; schemaContext: string; dialec
 }
 
 function buildAiJsonSystemPrompt(dialect: DbKind): string {
-  const label = dialect === "mysql" ? "MySQL" : "PostgreSQL";
+  const label = aiDialectDisplayLabel(dialect);
   return [
     "You are a SQL assistant for database developers.",
     "Output MUST be valid JSON only, no markdown fences.",
@@ -497,7 +507,7 @@ export async function disconnectConnection(connectionId: string): Promise<void> 
     if (conn.dbKind === "postgres") {
       await conn.userUsedClient.end().catch(() => {});
     } else {
-      if (conn.dbKind === "mysql") {
+      if (isMysqlFamily(conn.dbKind)) {
         teardownMysqlStreaming(conn);
       }
       try {
@@ -614,7 +624,7 @@ export async function handleApiRequest<M extends ApiMethod>(
         throw new Error("缺少必填字段");
       }
       const kind = dbType ?? "postgres";
-      const defaultPort = kind === "mysql" ? "3306" : "5432";
+      const defaultPort = isMysqlFamily(kind) ? "3306" : "5432";
       const toSave: StoredConnectionParams = {
         host: params.host,
         port: params.port || defaultPort,

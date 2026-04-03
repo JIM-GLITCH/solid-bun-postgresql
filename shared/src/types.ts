@@ -1,7 +1,12 @@
 /** 共享类型定义 */
 
 /** 数据库方言（增库时在 union 中扩展） */
-export type DbKind = "postgres" | "mysql";
+export type DbKind = "postgres" | "mysql" | "mariadb";
+
+/** MySQL 与 MariaDB 共用 mysql2 协议与后端处理器 */
+export function isMysqlFamily(kind: DbKind): boolean {
+  return kind === "mysql" || kind === "mariadb";
+}
 
 /**
  * 当前数据库会话的能力开关（与后端 `db/capabilities`、前端 `getEffectiveDbCapabilities` 缓存对齐）。
@@ -62,7 +67,8 @@ export interface ConnectPostgresRequest extends PostgresLoginParams {
  */
 export type ConnectDbRequest =
   | (PostgresLoginParams & { connectionId: string; dbType: "postgres" })
-  | (PostgresLoginParams & { connectionId: string; dbType: "mysql" });
+  | (PostgresLoginParams & { connectionId: string; dbType: "mysql" })
+  | (PostgresLoginParams & { connectionId: string; dbType: "mariadb" });
 
 /** 加密落盘的连接参数：在 PG 登录信息上增加方言，旧数据无 dbType 时视为 postgres */
 export type StoredConnectionParams = PostgresLoginParams & { dbType?: DbKind };

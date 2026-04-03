@@ -5,6 +5,7 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface DeleteSchemaModalProps {
@@ -24,7 +25,7 @@ function mysqlBacktickIdent(id: string): string {
 
 export function isSystemSchema(connectionId: string, schema: string): boolean {
   const lower = schema.toLowerCase();
-  if (getRegisteredDbType(connectionId) === "mysql") {
+  if (isMysqlFamily(getRegisteredDbType(connectionId))) {
     return ["information_schema", "mysql", "performance_schema", "sys"].includes(lower);
   }
   if (["pg_catalog", "information_schema"].includes(lower)) return true;
@@ -37,8 +38,8 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
   const [error, setError] = createSignal<string | null>(null);
 
   const kind = () => getRegisteredDbType(props.connectionId);
-  const title = () => (kind() === "mysql" ? "删除数据库" : "删除 Schema");
-  const label = () => (kind() === "mysql" ? "数据库" : "Schema");
+  const title = () => (isMysqlFamily(kind()) ? "删除数据库" : "删除 Schema");
+  const label = () => (isMysqlFamily(kind()) ? "数据库" : "Schema");
 
   const handleConfirm = async () => {
     if (isSystemSchema(props.connectionId, props.schema)) {
@@ -49,7 +50,7 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
     setError(null);
     try {
       const sql =
-        kind() === "mysql"
+        isMysqlFamily(kind())
           ? `DROP DATABASE ${mysqlBacktickIdent(props.schema)};`
           : `DROP SCHEMA ${pgQuoteIdent(props.schema)} CASCADE;`;
       await executeDdl(props.connectionId, sql);

@@ -17,6 +17,7 @@ import {
   COMMON_TYPES_MYSQL,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface TableDesignerCreateProps {
@@ -27,7 +28,7 @@ export interface TableDesignerCreateProps {
 }
 
 function defaultCreateColumn(connectionId: string): TableColumn {
-  if (getRegisteredDbType(connectionId) === "mysql") {
+  if (isMysqlFamily(getRegisteredDbType(connectionId))) {
     return {
       name: "",
       dataType: "varchar",
@@ -55,7 +56,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   onMount(() => {
     if (props.connectionId) {
       const fallback =
-        getRegisteredDbType(props.connectionId) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES;
+        isMysqlFamily(getRegisteredDbType(props.connectionId)) ? COMMON_TYPES_MYSQL : COMMON_TYPES;
       getDataTypes(props.connectionId)
         .then(({ types }) => setDataTypes(types?.length ? types : fallback))
         .catch(() => {});
@@ -89,7 +90,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const removeFk = (i: number) => setFkConstraints((prev) => prev.filter((_, idx) => idx !== i));
 
   const designerDialect = () =>
-    (getRegisteredDbType(props.connectionId) === "mysql" ? "mysql" : "postgres") as const;
+    (isMysqlFamily(getRegisteredDbType(props.connectionId)) ? "mysql" : "postgres") as const;
 
   const getStmts = () =>
     buildCreateTableSql(

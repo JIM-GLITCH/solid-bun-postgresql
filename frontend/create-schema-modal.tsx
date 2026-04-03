@@ -5,6 +5,7 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface CreateSchemaModalProps {
@@ -19,7 +20,7 @@ function validateName(connectionId: string, raw: string): string | null {
   if (!/^[a-zA-Z0-9_]+$/.test(s)) return "仅允许字母、数字与下划线";
   const lower = s.toLowerCase();
   const kind = getRegisteredDbType(connectionId);
-  if (kind === "mysql") {
+  if (isMysqlFamily(kind)) {
     const blocked = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
     if (blocked.has(lower)) return "该名称为系统库，不可新建同名";
   } else {
@@ -44,10 +45,10 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
   const [error, setError] = createSignal<string | null>(null);
 
   const kind = () => getRegisteredDbType(props.connectionId);
-  const title = () => (kind() === "mysql" ? "新建数据库" : "新建 Schema");
+  const title = () => (isMysqlFamily(kind()) ? "新建数据库" : "新建 Schema");
   const hint = () =>
-    kind() === "mysql"
-      ? "将执行 CREATE DATABASE（与 MySQL 中「库」同义）。"
+    isMysqlFamily(kind())
+      ? "将执行 CREATE DATABASE（MySQL/MariaDB 中「库」同义）。"
       : "将执行 CREATE SCHEMA。";
 
   const handleSubmit = async () => {
@@ -61,7 +62,7 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
     setError(null);
     try {
       const sql =
-        kind() === "mysql"
+        isMysqlFamily(kind())
           ? `CREATE DATABASE ${mysqlBacktickIdent(n)};`
           : `CREATE SCHEMA ${pgQuoteIdent(n)};`;
       await executeDdl(props.connectionId, sql);

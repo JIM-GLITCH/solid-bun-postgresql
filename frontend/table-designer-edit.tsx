@@ -14,6 +14,7 @@ import {
   COMMON_TYPES_MYSQL,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface TableDesignerEditProps {
@@ -25,7 +26,7 @@ export interface TableDesignerEditProps {
 }
 
 function defaultEditColumn(connectionId: string): TableColumn {
-  if (getRegisteredDbType(connectionId) === "mysql") {
+  if (isMysqlFamily(getRegisteredDbType(connectionId))) {
     return {
       name: "",
       dataType: "varchar",
@@ -65,7 +66,7 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
   const [editData] = createResource(source, async ({ cid, schema, table }) => {
     const [typesRes, colsRes] = await Promise.all([getDataTypes(cid), getColumns(cid, schema, table)]);
     const fallback =
-      getRegisteredDbType(cid) === "mysql" ? COMMON_TYPES_MYSQL : COMMON_TYPES;
+      isMysqlFamily(getRegisteredDbType(cid)) ? COMMON_TYPES_MYSQL : COMMON_TYPES;
     return {
       types: typesRes.types?.length ? typesRes.types : fallback,
       columns: mapColumnsFromApi(colsRes.columns ?? []),
@@ -108,7 +109,7 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
   };
 
   const designerDialect = () =>
-    (getRegisteredDbType(props.connectionId) === "mysql" ? "mysql" : "postgres") as const;
+    (isMysqlFamily(getRegisteredDbType(props.connectionId)) ? "mysql" : "postgres") as const;
 
   const previewSql = () =>
     buildAlterTableSql(

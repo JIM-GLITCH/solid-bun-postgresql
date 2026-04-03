@@ -2,7 +2,7 @@
  * 各方言默认能力（保守约定：新方言在未接线前应对未列出的能力视为 false）。
  * 与后端 `db/capabilities` 返回值应对齐；前端在缓存未命中时用作回退。
  */
-import type { DatabaseCapabilities, DbKind } from "./types";
+import { type DatabaseCapabilities, type DbKind, isMysqlFamily } from "./types";
 
 export function defaultDatabaseCapabilities(kind: DbKind): DatabaseCapabilities {
   if (kind === "postgres") {
@@ -16,9 +16,9 @@ export function defaultDatabaseCapabilities(kind: DbKind): DatabaseCapabilities 
       pgExtensionCatalog: true,
     };
   }
-  if (kind === "mysql") {
+  if (isMysqlFamily(kind)) {
     return {
-      dialect: "mysql",
+      dialect: kind,
       streamingQuery: true,
       cancelQuery: true,
       explainAnalyzeJson: true,

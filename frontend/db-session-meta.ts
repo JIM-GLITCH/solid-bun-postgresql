@@ -1,4 +1,4 @@
-import type { DbKind } from "../shared/src";
+import { type DbKind, isMysqlFamily } from "../shared/src";
 
 const STORAGE_KEY = "solid-db-conn-kinds";
 
@@ -8,7 +8,9 @@ function readStorage(): Map<string, DbKind> {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     if (!raw) return new Map();
     const obj = JSON.parse(raw) as Record<string, DbKind>;
-    return new Map(Object.entries(obj).filter(([, v]) => v === "postgres" || v === "mysql"));
+    return new Map(
+      Object.entries(obj).filter(([, v]) => v === "postgres" || v === "mysql" || v === "mariadb")
+    );
   } catch {
     return new Map();
   }

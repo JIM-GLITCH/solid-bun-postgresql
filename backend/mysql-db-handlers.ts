@@ -1,5 +1,5 @@
 /**
- * MySQL（MVP）：建连、只读查询、schemas/tables/columns；其余 db/* 显式抛错。
+ * MySQL / MariaDB：共用 mysql2 与同一套 db/* 实现（MariaDB 协议兼容 MySQL）。
  */
 import type { Readable } from "node:stream";
 import type { Connection as MysqlCallbackConnection, FieldPacket } from "mysql2";
@@ -11,15 +11,15 @@ import type {
   PostgresLoginParams,
   SSEMessage,
 } from "../shared/src";
-import { getSqlSegments } from "../shared/src";
+import { getSqlSegments, isMysqlFamily } from "../shared/src";
 import { createMysqlPool, getMysqlDbConfig } from "./connect-mysql";
 import { calculateMysqlColumnEditable } from "./mysql-column-editable";
 import type { MysqlSessionConnection, SessionConnection } from "./session-connection";
 
 function mysqlSession(getSWithDb: (cid: string) => SessionConnection, cid: string): MysqlSessionConnection {
   const s = getSWithDb(cid);
-  if (s.dbKind !== "mysql") throw new Error("内部错误：期望 MySQL 会话");
-  return s;
+  if (!isMysqlFamily(s.dbKind)) throw new Error("内部错误：期望 MySQL/MariaDB 会话");
+  return s as MysqlSessionConnection;
 }
 
 function getStatementsFromSql(sql: string): string[] {
@@ -372,14 +372,17 @@ export async function handleMysqlDbRequest(
   } = ctx;
 
   const unsupported = () => {
-    throw new Error(`当前 MySQL 连接尚不支持该操作（${method}），请使用 PostgreSQL 或等待后续版本。`);
+    throw new Error(`当前 MySQL/MariaDB 连接尚不支持该操作（${method}），请使用 PostgreSQL 或等待后续版本。`);
   };
 
   switch (method) {
     case "db/connect": {
       const params = payload as ConnectDbRequest;
-      if (params.dbType !== "mysql") throw new Error("内部错误：db/connect MySQL 分支须 dbType=mysql");
-      const { connectionId: cid, dbType: _dbT, ...connectParams } = params;
+      if (params.dbType !== "mysql" && params.dbType !== "mariadb") {
+        throw new Error("内部错误：db/connect 此分支须 dbType=mysql|mariadb");
+      }
+      const { connectionId: cid, dbType, ...connectParams } = params;
+      const mysqlFamilyKind: "mysql" | "mariadb" = dbType;
       const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
 
       const existing = connectionMap.get(cid);
@@ -405,7 +408,7 @@ export async function handleMysqlDbRequest(
       const initialDb = String(loginParams.database ?? "").trim();
 
       connectionMap.set(cid, {
-        dbKind: "mysql",
+        dbKind: mysqlFamilyKind,
         userUsedClient: userConn,
         backGroundPool: pool,
         dbForReconnect: db,
@@ -414,7 +417,7 @@ export async function handleMysqlDbRequest(
         ...(initialDb ? { mysqlCurrentDatabase: initialDb } : {}),
       });
       startMysqlUserClientKeepalive(cid);
-      return { success: true, connectionId: cid, dbType: "mysql" as const };
+      return { success: true, connectionId: cid, dbType: mysqlFamilyKind };
     }
 
     case "db/disconnect": {
@@ -1114,11 +1117,13 @@ export async function handleMysqlDbRequest(
       const names = (dbs ?? [])
         .map((r) => String(r.Database ?? r.database ?? Object.values(r)[0] ?? ""))
         .filter((n) => n && !exclude.has(n.toLowerCase()));
-      const parts: string[] = ["-- MySQL multi-database dump\n\n"];
+      const parts: string[] = [
+        session.dbKind === "mariadb" ? "-- MariaDB multi-database dump\n\n" : "-- MySQL multi-database dump\n\n",
+      ];
       for (const dbName of names) {
         const { dump } = (await handleMysqlDbRequest(
           "db/schema-dump",
-          { connectionId: cid, dbType: "mysql", schema: dbName, includeData },
+          { connectionId: cid, dbType: session.dbKind, schema: dbName, includeData },
           ctx
         )) as { dump: string };
         parts.push(dump);

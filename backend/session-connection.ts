@@ -27,7 +27,7 @@ export interface PostgresSessionConnection {
 }
 
 export interface MysqlSessionConnection {
-  dbKind: "mysql";
+  dbKind: "mysql" | "mariadb";
   userUsedClient: PoolConnection;
   backGroundPool: MysqlPool;
   dbForReconnect: GetMysqlDbConfigResult;

@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { getSessionMonitor, sessionControl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { useDialog } from "./dialog-context";
 import { MODAL_Z_FULLSCREEN, vscode } from "./theme";
 
@@ -98,6 +99,7 @@ export default function PgStatModal(props: PgStatModalProps) {
   });
 
   const dbKind = createMemo(() => getRegisteredDbType(props.connectionId));
+  const mysqlFamilyLabel = createMemo(() => (dbKind() === "mariadb" ? "MariaDB" : "MySQL"));
 
   return (
     <div
@@ -129,7 +131,7 @@ export default function PgStatModal(props: PgStatModalProps) {
       >
         <div style={{ display: "flex", "justify-content": "space-between", "align-items": "center" }}>
           <div style={{ "font-size": "15px", "font-weight": 600 }}>
-            {dbKind() === "mysql" ? "MySQL 会话与锁监控" : "PostgreSQL 会话与锁监控"}
+            {isMysqlFamily(dbKind()) ? `${mysqlFamilyLabel()} 会话与锁监控` : "PostgreSQL 会话与锁监控"}
           </div>
           <button onClick={props.onClose} style={iconBtnStyle()}>×</button>
         </div>
@@ -173,7 +175,7 @@ export default function PgStatModal(props: PgStatModalProps) {
           <StatCard title="活跃连接" value={String(data()?.connectionStats.active ?? 0)} />
           <StatCard title="空闲连接" value={String(data()?.connectionStats.idle ?? 0)} />
           <StatCard
-            title={dbKind() === "mysql" ? "等待/锁相关状态" : "等待事件连接"}
+            title={isMysqlFamily(dbKind()) ? "等待/锁相关状态" : "等待事件连接"}
             value={String(data()?.connectionStats.waiting ?? 0)}
           />
         </div>

@@ -143,6 +143,7 @@ import {
   normalizeMysqlReferentialAction,
 } from "./table-designer-shared";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { vscode } from "./theme";
 
 export interface TableDesignerUnifiedProps {
@@ -167,11 +168,11 @@ function emptyOriginalState(): OriginalState {
 }
 
 function designerDialect(connectionId: string): "postgres" | "mysql" {
-  return getRegisteredDbType(connectionId) === "mysql" ? "mysql" : "postgres";
+  return isMysqlFamily(getRegisteredDbType(connectionId)) ? "mysql" : "postgres";
 }
 
 function emptyDesignerColumn(connectionId: string): TableColumn {
-  if (getRegisteredDbType(connectionId) === "mysql") {
+  if (isMysqlFamily(getRegisteredDbType(connectionId))) {
     return {
       name: "",
       dataType: "varchar",

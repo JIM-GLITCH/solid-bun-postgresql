@@ -5,6 +5,7 @@
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
 import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
 
@@ -32,7 +33,7 @@ export default function RenameTableModal(props: RenameTableModalProps) {
     setError(null);
     try {
       const kind = getRegisteredDbType(props.connectionId);
-      if (kind === "mysql") {
+      if (isMysqlFamily(kind)) {
         const db = mysqlBacktickIdent(props.schema);
         const oldT = mysqlBacktickIdent(props.table);
         const newT = mysqlBacktickIdent(name);

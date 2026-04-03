@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll } from "bun:test";
-import { defaultDatabaseCapabilities } from "../shared/src";
+import { defaultDatabaseCapabilities, type DbKind } from "../shared/src";
 
 function installSessionStorage(): void {
   const mem = new Map<string, string>();
@@ -26,7 +26,7 @@ function installSessionStorage(): void {
 }
 
 describe("db-capabilities-cache", () => {
-  let registerConnectionDbType: (id: string, k: "postgres" | "mysql") => void;
+  let registerConnectionDbType: (id: string, k: DbKind) => void;
   let unregisterConnectionDbType: (id: string) => void;
   let registerServerCapabilities: (id: string, caps: import("../shared/src").DatabaseCapabilities) => void;
   let clearServerCapabilities: (id: string) => void;
@@ -55,6 +55,13 @@ describe("db-capabilities-cache", () => {
     const c = getEffectiveDbCapabilities(id);
     expect(c.dialect).toBe("mysql");
     expect(c.sessionMonitor).toBe(true);
+    unregisterConnectionDbType(id);
+  });
+
+  test("mariadb 登记后回退矩阵 dialect 为 mariadb", () => {
+    const id = "cap-test-mariadb";
+    registerConnectionDbType(id, "mariadb");
+    expect(getEffectiveDbCapabilities(id).dialect).toBe("mariadb");
     unregisterConnectionDbType(id);
   });
 

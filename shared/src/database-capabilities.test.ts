@@ -19,4 +19,12 @@ describe("defaultDatabaseCapabilities", () => {
     expect(c.pgExtensionCatalog).toBe(false);
     expect(c.streamingQuery).toBe(true);
   });
+
+  test("mariadb 与 mysql 能力矩阵一致、方言为 mariadb", () => {
+    const c = defaultDatabaseCapabilities("mariadb");
+    expect(c.dialect).toBe("mariadb");
+    expect(c.sessionMonitor).toBe(true);
+    expect(c.pgExtensionCatalog).toBe(false);
+    expect(c.streamingQuery).toBe(true);
+  });
 });

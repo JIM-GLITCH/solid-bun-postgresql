@@ -22,6 +22,7 @@ import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
+import { isMysqlFamily } from "../shared/src";
 
 // 数据库对象类型
 type NodeType = "savedConnection" | "connection" | "schema" | "tables" | "views" | "functions" | "table" | "view" | "function" | "column" | "indexes" | "index";
@@ -556,7 +557,7 @@ export default function Sidebar(props: SidebarProps) {
     setState("selectedId", node.id);
 
     const schemaCid = node.connectionId;
-    if (node.type === "schema" && node.schema && schemaCid && getRegisteredDbType(schemaCid) === "mysql") {
+    if (node.type === "schema" && node.schema && schemaCid && isMysqlFamily(getRegisteredDbType(schemaCid))) {
       props.onMysqlDefaultSchema?.(schemaCid, node.schema);
     }
 
