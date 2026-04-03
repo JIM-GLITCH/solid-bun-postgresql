@@ -470,13 +470,18 @@ function sqlServerDropDefaultDynamicBatch(schema: string, table: string, column:
   const sch = sqlServerLit(schema);
   const tbl = sqlServerLit(table);
   const col = sqlServerLit(column);
-  return `DECLARE @sch sysname = N'${sch}', @tbl sysname = N'${tbl}', @col sysname = N'${col}', @dc sysname;
+  // 勿用 EXEC(N'...' + QUOTENAME(...)) 单行形式：部分环境会误解析，报 “Incorrect syntax near 'QUOTENAME'”
+  return `DECLARE @sch sysname = N'${sch}', @tbl sysname = N'${tbl}', @col sysname = N'${col}', @dc sysname, @sql nvarchar(max);
 SELECT @dc = dc.name FROM sys.default_constraints dc
 INNER JOIN sys.columns c ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
 INNER JOIN sys.tables t ON c.object_id = t.object_id
 INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
 WHERE s.name = @sch AND t.name = @tbl AND c.name = @col;
-IF @dc IS NOT NULL EXEC(N'ALTER TABLE ' + QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl) + N' DROP CONSTRAINT ' + QUOTENAME(@dc));`;
+IF @dc IS NOT NULL
+BEGIN
+  SET @sql = N'ALTER TABLE ' + QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl) + N' DROP CONSTRAINT ' + QUOTENAME(@dc);
+  EXEC (@sql);
+END`;
 }
 
 function sqlServerPkConstraintName(tableName: string, original: OriginalState): string {

@@ -43,6 +43,7 @@ export interface JsonbMonacoJsonProps {
 
 export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
   let container!: HTMLDivElement;
+  let disposeMonaco: (() => void) | undefined;
 
   onMount(() => {
     ensureJsonbMonacoStyles();
@@ -77,7 +78,13 @@ export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
     const detachMonacoLayout = attachMonacoLayoutOnResize(container, editor);
 
     const model = editor.getModel();
-    if (!model) return;
+    if (!model) {
+      disposeMonaco = () => {
+        detachMonacoLayout();
+        editor.dispose();
+      };
+      return;
+    }
 
     let lineBgDecoIds: string[] = [];
     const lineDiagWidgets = new Map<number, monaco.editor.IContentWidget>();
@@ -177,14 +184,19 @@ export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
       }
     });
 
-    onCleanup(() => {
+    disposeMonaco = () => {
       subMarkers.dispose();
       unsubTheme();
       disposeLineDiagWidgets();
       lineBgDecoIds = model.deltaDecorations(lineBgDecoIds, []);
       detachMonacoLayout();
       editor.dispose();
-    });
+    };
+  });
+
+  onCleanup(() => {
+    disposeMonaco?.();
+    disposeMonaco = undefined;
   });
 
   return (

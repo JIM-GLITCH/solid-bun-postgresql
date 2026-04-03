@@ -33,12 +33,12 @@ export function JSONB_Editor(props: JsonbEditorProps) {
       props.onClose();
     }
   }
-  document.addEventListener("keydown", handleKeyDown);
-  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   onMount(() => {
+    document.addEventListener("keydown", handleKeyDown);
     queueMicrotask(() => modalPanelEl?.focus());
   });
+  onCleanup(() => document.removeEventListener("keydown", handleKeyDown));
 
   function handleCodeChange(text: string) {
     setRawText(text);

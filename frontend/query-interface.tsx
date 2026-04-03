@@ -213,6 +213,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const offsetY = () => visible().start * ROW_HEIGHT;
 
   const [tableContainerRef, setTableContainerRef] = createSignal<HTMLDivElement | null>(null);
+  let removeTableResizeListener: (() => void) | undefined;
 
   // 响应外部查询请求（如侧边栏点击表）
   createEffect(() => {
@@ -229,9 +230,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       if (el) setContainerHeight(Math.max(el.clientHeight, 200));
     };
     window.addEventListener("resize", onResize);
-    onCleanup(() => {
-      window.removeEventListener("resize", onResize);
-    });
+    removeTableResizeListener = () => window.removeEventListener("resize", onResize);
     getAiConfig()
       .then((cfg) => {
         setAiApiMode(cfg.apiMode);
@@ -252,6 +251,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       // ignore localStorage errors in restricted environments
     }
   });
+
+  onCleanup(() => removeTableResizeListener?.());
 
   // 将表格选区转为制表符分隔的文本（便于粘贴到 Excel）
   function getSelectionAsTabSeparated(): string | null {
@@ -1581,19 +1582,21 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                       <For each={columns()}>
                         {(colInfo, colIndex) => {
                           const c = colIndex();
+                          // 必须在渲染阶段求值为布尔再传入；若内联 dbCaps()… 于 JSX，Solid 会生成 memo getter，
+                          // 双击时在事件回调里读 props.isEditable 会在 Owner=null 下创建 computation（dev 警告）。
+                          const isCellEditable =
+                            dbCaps().resultCellEdit &&
+                            (colInfo.isEditable ||
+                              (pendingInserts().some((p) => p.rowIndex === rowIndex) &&
+                                !!colInfo.tableName &&
+                                !!colInfo.columnName));
                           return (
                             <EditableCell
                               value={() => result[rowIndex][c]}
                               rowIndex={rowIndex}
                               colIndex={c}
                               dataTypeOid={colInfo.dataTypeOid}
-                              isEditable={
-                                dbCaps().resultCellEdit &&
-                                (colInfo.isEditable ||
-                                  (pendingInserts().some((p) => p.rowIndex === rowIndex) &&
-                                    !!colInfo.tableName &&
-                                    !!colInfo.columnName))
-                              }
+                              isEditable={isCellEditable}
                               isModified={modifiedCells[rowIndex]?.[c] ?? false}
                               isPendingDelete={pendingDel()}
                               isPendingInsert={pendingIns()}

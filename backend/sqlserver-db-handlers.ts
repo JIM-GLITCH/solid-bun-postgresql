@@ -275,20 +275,98 @@ interface MssqlNullableRow {
   IS_NULLABLE: string;
 }
 
-/** 根据 TDS 表名 + INFORMATION_SCHEMA 主键/唯一键，填充 tableName、uniqueKey*、isEditable（与 MySQL 逻辑同构） */
+/** sys.dm_exec_describe_first_result_set（browse=1）可见列，补全 nvarchar/int 等类型在 TDS 中缺失的 source 表信息 */
+interface SqlServerBrowseColumnMeta {
+  columnOrdinal: number;
+  resultName: string | null;
+  sourceSchema: string | null;
+  sourceTable: string | null;
+  sourceColumn: string | null;
+  isPartOfUniqueKey: boolean | null;
+  isComputedColumn: boolean | null;
+}
+
+async function fetchSqlServerBrowseColumnMetadata(
+  pool: sql.ConnectionPool,
+  sqlText: string
+): Promise<SqlServerBrowseColumnMeta[] | undefined> {
+  if (!sqlText.trim()) return undefined;
+  try {
+    const req = pool.request();
+    req.input("batch", sql.NVarChar(sql.MAX), sqlText);
+    const r = await req.query(`
+      SELECT column_ordinal AS columnOrdinal,
+             name AS resultName,
+             source_schema AS sourceSchema,
+             source_table AS sourceTable,
+             source_column AS sourceColumn,
+             is_part_of_unique_key AS isPartOfUniqueKey,
+             is_computed_column AS isComputedColumn
+      FROM sys.dm_exec_describe_first_result_set(@batch, NULL, 1) AS d
+      WHERE d.error_number IS NULL AND d.is_hidden = 0
+      ORDER BY d.column_ordinal
+    `);
+    const rows = (r.recordset ?? []) as SqlServerBrowseColumnMeta[];
+    return rows.length > 0 ? rows : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function indexBrowseMetadataByResultColumn(
+  tdsCount: number,
+  browseRows: SqlServerBrowseColumnMeta[] | undefined
+): (SqlServerBrowseColumnMeta | undefined)[] {
+  const out: (SqlServerBrowseColumnMeta | undefined)[] = Array.from({ length: tdsCount }, () => undefined);
+  if (!browseRows?.length) return out;
+  const byOrd = new Map<number, SqlServerBrowseColumnMeta>();
+  for (const row of browseRows) {
+    byOrd.set(row.columnOrdinal, row);
+  }
+  for (let i = 0; i < tdsCount; i++) {
+    out[i] = byOrd.get(i + 1);
+  }
+  return out;
+}
+
+function resolveSqlServerBaseTable(
+  tcol: SqlServerTdsColumnMeta,
+  browse: SqlServerBrowseColumnMeta | undefined
+): { schema: string; table: string } | undefined {
+  const tds = parseTdsTableParts(tcol);
+  if (tds) return tds;
+  const s = browse?.sourceSchema?.trim();
+  const t = browse?.sourceTable?.trim();
+  if (s && t) return { schema: s, table: t };
+  return undefined;
+}
+
+function sqlServerPhysicalColumnName(
+  tcol: SqlServerTdsColumnMeta,
+  browse: SqlServerBrowseColumnMeta | undefined
+): string {
+  const sc = browse?.sourceColumn?.trim();
+  if (sc) return sc;
+  return String(tcol.colName || "");
+}
+
+/** 根据 TDS 表名（仅 text/ntext/image）或 browse 元数据 + INFORMATION_SCHEMA 主键/唯一键，填充 tableName、uniqueKey*、isEditable（与 MySQL 逻辑同构） */
 async function enrichSqlServerQueryColumnsEditable(
   pool: sql.ConnectionPool,
   base: ColumnEditableInfo[],
-  tdsColumns: SqlServerTdsColumnMeta[]
+  tdsColumns: SqlServerTdsColumnMeta[],
+  browseRows?: SqlServerBrowseColumnMeta[]
 ): Promise<ColumnEditableInfo[]> {
   if (base.length !== tdsColumns.length || base.length === 0) return base;
+
+  const browseByIndex = indexBrowseMetadataByResultColumn(tdsColumns.length, browseRows);
 
   const instances = new Map<string, Map<string, number[]>>();
   for (let i = 0; i < tdsColumns.length; i++) {
     const tcol = tdsColumns[i]!;
-    const tab = parseTdsTableParts(tcol);
+    const tab = resolveSqlServerBaseTable(tcol, browseByIndex[i]);
     if (!tab) continue;
-    const orgName = String(tcol.colName || "");
+    const orgName = sqlServerPhysicalColumnName(tcol, browseByIndex[i]);
     if (!orgName) continue;
     const ik = `${tab.schema}${TDS_INST_SEP}${tab.table}${TDS_INST_SEP}`;
     if (!instances.has(ik)) instances.set(ik, new Map());
@@ -298,8 +376,8 @@ async function enrichSqlServerQueryColumnsEditable(
   }
 
   const tableKeys = new Set<string>();
-  for (const tcol of tdsColumns) {
-    const tab = parseTdsTableParts(tcol);
+  for (let i = 0; i < tdsColumns.length; i++) {
+    const tab = resolveSqlServerBaseTable(tdsColumns[i]!, browseByIndex[i]);
     if (tab) tableKeys.add(tdsTableKey(tab.schema, tab.table));
   }
 
@@ -380,13 +458,14 @@ async function enrichSqlServerQueryColumnsEditable(
 
   for (let i = 0; i < tdsColumns.length; i++) {
     const tcol = tdsColumns[i]!;
-    const tab = parseTdsTableParts(tcol);
+    const tab = resolveSqlServerBaseTable(tcol, browseByIndex[i]);
     if (!tab) continue;
     const tk = tdsTableKey(tab.schema, tab.table);
-    const orgName = String(tcol.colName || "");
+    const physName = sqlServerPhysicalColumnName(tcol, browseByIndex[i]);
+    if (!physName) continue;
     base[i].tableName = `${bracketIdentSqlServer(tab.schema)}.${bracketIdentSqlServer(tab.table)}`;
-    base[i].columnName = bracketIdentSqlServer(orgName);
-    const nm = nullableByTable.get(tk)?.get(orgName);
+    base[i].columnName = bracketIdentSqlServer(physName);
+    const nm = nullableByTable.get(tk)?.get(physName);
     if (nm !== undefined) base[i].nullable = nm;
   }
 
@@ -416,8 +495,11 @@ async function enrichSqlServerQueryColumnsEditable(
     }
   }
 
+  // TDS usUpdateable（flags bit 2–3，即 0x0c）在即席 SELECT 结果里常为 ReadOnly；
+  // 网格编辑走带唯一键的 UPDATE，不依赖可更新游标，故不能据此关掉 isEditable。
   for (let i = 0; i < tdsColumns.length; i++) {
-    if (!(tdsColumns[i]!.flags & 0x0c)) base[i].isEditable = false;
+    if (tdsColumns[i]!.flags & 0x20) base[i].isEditable = false; // fComputed（TDS 7.2+）
+    if (browseByIndex[i]?.isComputedColumn) base[i].isEditable = false;
   }
 
   return base;
@@ -431,7 +513,8 @@ async function buildSqlServerGridQueryResult(
   const base: ColumnEditableInfo[] = tdsColumns.map((tdsCol, idx) =>
     columnEditableFromMssqlMeta(tdsCol.colName, idx + 1, tediousColumnToMssqlRecordsetMeta(tdsCol))
   );
-  const columns = await enrichSqlServerQueryColumnsEditable(pool, base, tdsColumns);
+  const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, sqlText);
+  const columns = await enrichSqlServerQueryColumnsEditable(pool, base, tdsColumns, browseRows);
   return { rows, columns };
 }
 

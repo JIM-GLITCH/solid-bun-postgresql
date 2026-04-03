@@ -5,6 +5,11 @@ import type { ColumnEditableInfo } from "../shared/src";
 // 支持 Client 或 Pool 查询
 type QueryClient = Client | Pool;
 
+/** 结果编辑 DML 用的 PostgreSQL 标识符引用（与裸 relname/nspname 一致，避免空格等破坏语法） */
+function pgQuoteIdent(ident: string): string {
+  return '"' + String(ident).replace(/"/g, '""') + '"';
+}
+
 interface UniqueConstraintInfo {
   tableOid: number;
   tableName: string;
@@ -272,6 +277,7 @@ export async function calculateColumnEditable(
       columnID: field.columnID,
       isEditable: false,
       dataTypeOid: field.dataTypeID,
+      sqlDialect: "postgres",
     };
 
     if (field.tableID !== 0 && field.columnID !== 0) {
@@ -300,12 +306,9 @@ export async function calculateColumnEditable(
 
     const columnName = columnMeta.name;
 
-    // 来自表的列：始终设置 tableName/columnName，便于生成 INSERT 语句（含无主键表）
-    info.tableName =
-      tableInfo.schemaName === "public"
-        ? tableInfo.tableName
-        : `${tableInfo.schemaName}.${tableInfo.tableName}`;
-    info.columnName = columnName;
+    // 来自表的列：始终设置已引用的 tableName/columnName，便于生成 INSERT/UPDATE/DELETE（含空格、关键字）
+    info.tableName = `${pgQuoteIdent(tableInfo.schemaName)}.${pgQuoteIdent(tableInfo.tableName)}`;
+    info.columnName = pgQuoteIdent(columnName);
     info.tableAlias = alias;
 
     // 有主键/唯一约束时才能编辑行（UPDATE/DELETE 需定位行）
@@ -319,7 +322,7 @@ export async function calculateColumnEditable(
       const keyColMeta = tableColumnMeta.get(colNum);
       if (!keyColMeta) return info;
 
-      uniqueKeyColumns.push(keyColMeta.name);
+      uniqueKeyColumns.push(pgQuoteIdent(keyColMeta.name));
 
       const indices = instance.fieldIndices.get(colNum);
       if (!indices || indices.length === 0) return info;

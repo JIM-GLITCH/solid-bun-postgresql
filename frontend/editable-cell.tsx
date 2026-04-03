@@ -1,6 +1,48 @@
-import { createSignal, createEffect, Show } from "solid-js";
+import { createSignal, Show, onMount, type JSX } from "solid-js";
 import { formatCellDisplay, formatCellToEditable } from "../shared/src";
 import { vscode } from "./theme";
+
+/** 独立子组件：挂载后在有效 owner 下 focus，避免在 ref/untrack 回调里 defer 触发 Solid dev 警告 */
+function ResultCellEditInput(props: {
+  value: string;
+  textAlign: "left" | "right" | "center";
+  onInput: (v: string) => void;
+  onKeyDown: (e: KeyboardEvent) => void;
+  onBlur: () => void;
+}): JSX.Element {
+  let inputEl: HTMLInputElement | undefined;
+  onMount(() => {
+    // ref 可能在同一 tick 稍晚赋值，defer 仅用于 DOM focus（不创建新的 Solid computation）
+    queueMicrotask(() => inputEl?.focus({ preventScroll: true }));
+  });
+  return (
+    <input
+      ref={(el) => {
+        inputEl = el;
+      }}
+      type="text"
+      value={props.value}
+      title="编辑单元格"
+      onInput={(e) => props.onInput(e.currentTarget.value)}
+      onKeyDown={props.onKeyDown}
+      onBlur={props.onBlur}
+      style={{
+        width: "100%",
+        padding: "2px 4px",
+        "user-select": "text",
+        border: `2px solid ${vscode.accent}`,
+        "border-radius": "2px",
+        "font-size": "inherit",
+        "font-family": "inherit",
+        "box-sizing": "border-box",
+        outline: "none",
+        "text-align": props.textAlign,
+        margin: "-4px -6px",
+        "min-width": "calc(100% + 12px)",
+      }}
+    />
+  );
+}
 
 interface EditableCellProps {
   /** 直接传值，或传访问器 () => value 以建立对 store 的细粒度依赖 */
@@ -30,11 +72,6 @@ interface EditableCellProps {
 export default function EditableCell(props: EditableCellProps) {
   const [isEditing, setIsEditing] = createSignal(false);
   const [editValue, setEditValue] = createSignal("");
-  let inputRef: HTMLInputElement | undefined;
-
-  createEffect(() => {
-    if (isEditing()) inputRef?.focus();
-  });
 
   const getValue = () => (typeof props.value === "function" ? props.value() : props.value);
   const getAlign = () => (typeof props.align === "function" ? props.align() : (props.align ?? "left"));
@@ -130,28 +167,12 @@ export default function EditableCell(props: EditableCellProps) {
           </span>
         }
       >
-        <input
-          ref={(el) => inputRef = el}
-          type="text"
+        <ResultCellEditInput
           value={editValue()}
-          title="编辑单元格"
-          onInput={(e) => setEditValue(e.currentTarget.value)}
+          textAlign={getAlign()}
+          onInput={setEditValue}
           onKeyDown={handleKeyDown}
           onBlur={() => saveValue()}
-          style={{
-            width: "100%",
-            padding: "2px 4px",
-            "user-select": "text",
-            border: `2px solid ${vscode.accent}`,
-            "border-radius": "2px",
-            "font-size": "inherit",
-            "font-family": "inherit",
-            "box-sizing": "border-box",
-            outline: "none",
-            "text-align": getAlign(),
-            margin: "-4px -6px",
-            "min-width": "calc(100% + 12px)"
-          }}
         />
       </Show>
     </td>
