@@ -36,7 +36,7 @@ export class HttpTransport implements IApiTransport {
   }
 
   subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-    const url = `${API_BASE}/api/events?connectionId=${encodeURIComponent(connectionId)}`;
+    const url = `${API_BASE}/api/events?connectionSessionId=${encodeURIComponent(connectionId)}`;
     const eventSource = new EventSource(url);
 
     eventSource.onmessage = (event) => {

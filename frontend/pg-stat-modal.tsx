@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
-import { getPgStatOverview, manageBackend } from "./api";
+import { getSessionMonitor, sessionControl } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
 import { useDialog } from "./dialog-context";
 import { MODAL_Z_FULLSCREEN, vscode } from "./theme";
 
@@ -8,7 +9,28 @@ interface PgStatModalProps {
   onClose: () => void;
 }
 
-type PgStatData = Awaited<ReturnType<typeof getPgStatOverview>>;
+type PgStatData = Awaited<ReturnType<typeof getSessionMonitor>>;
+
+function slowSourceLabel(source: PgStatData["slowQuerySource"] | undefined): string {
+  switch (source) {
+    case "pg_stat_statements":
+      return "pg_stat_statements";
+    case "pg_stat_activity":
+      return "pg_stat_activity";
+    case "mysql_events_statements":
+      return "events_statements_summary_by_digest";
+    case "mysql_processlist":
+      return "PROCESSLIST";
+    default:
+      return "-";
+  }
+}
+
+function mysqlRowThreadId(r: Record<string, unknown>): number {
+  const v = r.id ?? r.connection_id;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
 export default function PgStatModal(props: PgStatModalProps) {
   const { showConfirm } = useDialog();
@@ -29,7 +51,7 @@ export default function PgStatModal(props: PgStatModalProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await getPgStatOverview(props.connectionId, 20);
+      const res = await getSessionMonitor(props.connectionId, 20);
       setData(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -52,7 +74,7 @@ export default function PgStatModal(props: PgStatModalProps) {
     if (!(await showConfirm(tip, title))) return;
     setOpLoadingPid(pid);
     try {
-      const res = await manageBackend(props.connectionId, pid, action);
+      const res = await sessionControl(props.connectionId, pid, action);
       if (!res.success) {
         throw new Error(`${action} 返回 false（可能该会话已结束或权限不足）`);
       }
@@ -74,6 +96,8 @@ export default function PgStatModal(props: PgStatModalProps) {
     const t = data()?.collectedAt;
     return t ? new Date(t).toLocaleTimeString() : "-";
   });
+
+  const dbKind = createMemo(() => getRegisteredDbType(props.connectionId));
 
   return (
     <div
@@ -104,7 +128,9 @@ export default function PgStatModal(props: PgStatModalProps) {
         }}
       >
         <div style={{ display: "flex", "justify-content": "space-between", "align-items": "center" }}>
-          <div style={{ "font-size": "15px", "font-weight": 600 }}>pg_stat 监控视图</div>
+          <div style={{ "font-size": "15px", "font-weight": 600 }}>
+            {dbKind() === "mysql" ? "MySQL 会话与锁监控" : "PostgreSQL 会话与锁监控"}
+          </div>
           <button onClick={props.onClose} style={iconBtnStyle()}>×</button>
         </div>
 
@@ -146,10 +172,13 @@ export default function PgStatModal(props: PgStatModalProps) {
           <StatCard title="连接总数" value={String(data()?.connectionStats.total ?? 0)} />
           <StatCard title="活跃连接" value={String(data()?.connectionStats.active ?? 0)} />
           <StatCard title="空闲连接" value={String(data()?.connectionStats.idle ?? 0)} />
-          <StatCard title="等待事件连接" value={String(data()?.connectionStats.waiting ?? 0)} />
+          <StatCard
+            title={dbKind() === "mysql" ? "等待/锁相关状态" : "等待事件连接"}
+            value={String(data()?.connectionStats.waiting ?? 0)}
+          />
         </div>
 
-        <SectionTitle text={`慢查询 (${data()?.slowQuerySource === "pg_stat_statements" ? "pg_stat_statements" : "pg_stat_activity"})`} />
+        <SectionTitle text={`会话与 SQL 采样 (${slowSourceLabel(data()?.slowQuerySource)})`} />
         <Show when={data()?.slowQuerySource === "pg_stat_activity"}>
           <div
             style={{
@@ -166,32 +195,108 @@ export default function PgStatModal(props: PgStatModalProps) {
             <code style={{ "margin-left": "4px" }}>shared_preload_libraries=pg_stat_statements</code>。
           </div>
         </Show>
-        <TableWrap>
-          <table style={tableStyle()}>
-            <thead>
-              <tr>
-                <Th>SQL</Th>
-                <Th>calls</Th>
-                <Th>total(ms)</Th>
-                <Th>mean(ms)</Th>
-                <Th>rows/state</Th>
-              </tr>
-            </thead>
-            <tbody>
-              <For each={data()?.slowQueries ?? []}>
-                {(r) => (
-                  <tr>
-                    <Td mono>{String(r.query ?? "")}</Td>
-                    <Td>{String(r.calls ?? "-")}</Td>
-                    <Td>{String(r.total_exec_time ?? "-")}</Td>
-                    <Td>{String(r.mean_exec_time ?? "-")}</Td>
-                    <Td>{String(r.rows ?? r.state ?? "-")}</Td>
-                  </tr>
-                )}
-              </For>
-            </tbody>
-          </table>
-        </TableWrap>
+        <Show when={data()?.slowQuerySource === "mysql_processlist"}>
+          <div
+            style={{
+              "font-size": "12px",
+              color: vscode.foregroundDim,
+              background: vscode.sidebarBg,
+              border: `1px solid ${vscode.border}`,
+              "border-radius": "6px",
+              padding: "8px 10px",
+            }}
+          >
+            当前为 <code>PROCESSLIST</code> 实时列表（按 TIME 排序）。若需按 digest 汇总历史耗时，请在实例上启用并采集{" "}
+            <code>performance_schema.events_statements_summary_by_digest</code>（需相应 consumer 与权限）。
+          </div>
+        </Show>
+        <Show when={data()?.slowQuerySource === "mysql_processlist"}>
+          <TableWrap>
+            <table style={tableStyle()}>
+              <thead>
+                <tr>
+                  <Th>ID</Th>
+                  <Th>用户</Th>
+                  <Th>主机</Th>
+                  <Th>库</Th>
+                  <Th>命令</Th>
+                  <Th>时间(s)</Th>
+                  <Th>状态</Th>
+                  <Th>SQL</Th>
+                  <Th>操作</Th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={data()?.slowQueries ?? []}>
+                  {(r) => {
+                    const row = r as Record<string, unknown>;
+                    const tid = mysqlRowThreadId(row);
+                    return (
+                      <tr>
+                        <Td>{String(tid || "-")}</Td>
+                        <Td>{String(row.user ?? "")}</Td>
+                        <Td mono>{String(row.host ?? "")}</Td>
+                        <Td>{String(row.db ?? "")}</Td>
+                        <Td>{String(row.command ?? "")}</Td>
+                        <Td>{String(row.time_seconds ?? "-")}</Td>
+                        <Td>{String(row.state ?? "")}</Td>
+                        <Td mono>{String(row.query ?? "")}</Td>
+                        <Td>
+                          <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
+                            <button
+                              type="button"
+                              style={smallBtnStyle(false)}
+                              disabled={tid <= 0 || opLoadingPid() === tid}
+                              onClick={() => void runBackendAction(tid, "cancel")}
+                            >
+                              Kill query
+                            </button>
+                            <button
+                              type="button"
+                              style={smallBtnStyle(true)}
+                              disabled={tid <= 0 || opLoadingPid() === tid}
+                              onClick={() => void runBackendAction(tid, "terminate")}
+                            >
+                              Kill
+                            </button>
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+                  }}
+                </For>
+              </tbody>
+            </table>
+          </TableWrap>
+        </Show>
+        <Show when={data()?.slowQuerySource !== "mysql_processlist"}>
+          <TableWrap>
+            <table style={tableStyle()}>
+              <thead>
+                <tr>
+                  <Th>SQL</Th>
+                  <Th>calls</Th>
+                  <Th>total(ms)</Th>
+                  <Th>mean(ms)</Th>
+                  <Th>rows/state</Th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={data()?.slowQueries ?? []}>
+                  {(r) => (
+                    <tr>
+                      <Td mono>{String(r.query ?? "")}</Td>
+                      <Td>{String(r.calls ?? "-")}</Td>
+                      <Td>{String(r.total_exec_time ?? "-")}</Td>
+                      <Td>{String(r.mean_exec_time ?? "-")}</Td>
+                      <Td>{String(r.rows ?? r.state ?? "-")}</Td>
+                    </tr>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </TableWrap>
+        </Show>
 
         <SectionTitle text="锁等待" />
         <TableWrap>

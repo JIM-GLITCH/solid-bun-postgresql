@@ -3,17 +3,14 @@
  * 用于 standalone (Node + Hono) 构建
  */
 
-import type { ApiMethod, ApiRequestPayload, SSEMessage } from "../shared/src";
+import type { ApiMethod, ApiRequestPayload, HttpRpcMethod, SSEMessage } from "../shared/src";
+import { HTTP_API_METHOD_SET } from "../shared/src";
 import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
-/** 通用 POST 处理器：解析 JSON，调用 handleApiRequest，统一错误处理 */
-function postApi<M extends ApiMethod>(
-  method: M,
-  opts?: { useSucess?: boolean; status200?: boolean }
-): RouteHandler {
-  const { useSucess = false, status200 = false } = opts ?? {};
+/** 通用 POST 处理器：成功 200 + JSON；失败 500 + `{ error, success: false }`（与 HttpTransport `res.ok` 一致） */
+function postApi<M extends ApiMethod>(method: M): RouteHandler {
   return async (req: Request) => {
     try {
       const data = (await req.json()) as ApiRequestPayload[M];
@@ -21,70 +18,33 @@ function postApi<M extends ApiMethod>(
       return Response.json(result);
     } catch (e: unknown) {
       const err = e instanceof Error ? e.message : String(e);
-      const body = useSucess ? { error: err, sucess: false } : { error: err, success: false };
-      return Response.json(body, { status: status200 ? 200 : 500 });
+      return Response.json({ error: err, success: false }, { status: 500 });
     }
   };
 }
 
-/** POST API 路由配置：path -> method，少数需特殊错误格式的单独标注 */
-const POST_ROUTES: Array<{ path: string; method: ApiMethod; useSucess?: boolean; status200?: boolean }> = [
-  { path: "/api/connections/list", method: "connections/list" },
-  { path: "/api/connections/save", method: "connections/save" },
-  { path: "/api/connections/delete", method: "connections/delete" },
-  { path: "/api/connections/update-meta", method: "connections/update-meta" },
-  { path: "/api/connections/reorder", method: "connections/reorder" },
-  { path: "/api/connections/get-params", method: "connections/get-params" },
-  { path: "/api/connections/connect", method: "connections/connect", useSucess: true, status200: true },
-  { path: "/api/query-history/add", method: "query-history/add" },
-  { path: "/api/query-history/search", method: "query-history/search" },
-  { path: "/api/query-history/delete", method: "query-history/delete" },
-  { path: "/api/query-history/clear", method: "query-history/clear" },
-  { path: "/api/db/connect", method: "db/connect", useSucess: true, status200: true },
-  { path: "/api/db/disconnect", method: "db/disconnect" },
-  { path: "/api/db/query", method: "db/query", useSucess: true },
-  { path: "/api/db/capabilities", method: "db/capabilities" },
-  { path: "/api/db/query-stream", method: "db/query-stream" },
-  { path: "/api/db/query-stream-more", method: "db/query-stream-more" },
-  { path: "/api/db/save-changes", method: "db/save-changes" },
-  { path: "/api/db/cancel-query", method: "db/cancel-query" },
-  { path: "/api/db/query-readonly", method: "db/query-readonly" },
-  { path: "/api/db/explain", method: "db/explain" },
-  { path: "/api/db/schemas", method: "db/schemas" },
-  { path: "/api/db/tables", method: "db/tables" },
-  { path: "/api/db/columns", method: "db/columns" },
-  { path: "/api/db/indexes", method: "db/indexes" },
-  { path: "/api/db/primary-keys", method: "db/primary-keys" },
-  { path: "/api/db/unique-constraints", method: "db/unique-constraints" },
-  { path: "/api/db/foreign-keys", method: "db/foreign-keys" },
-  { path: "/api/db/data-types", method: "db/data-types" },
-  { path: "/api/db/execute-ddl", method: "db/execute-ddl" },
-  { path: "/api/db/table-ddl", method: "db/table-ddl" },
-  { path: "/api/db/function-ddl", method: "db/function-ddl" },
-  { path: "/api/db/schema-dump", method: "db/schema-dump" },
-  { path: "/api/db/database-dump", method: "db/database-dump" },
-  { path: "/api/db/import-rows", method: "db/import-rows" },
-  { path: "/api/db/table-comment", method: "db/table-comment" },
-  { path: "/api/db/check-constraints", method: "db/check-constraints" },
-  { path: "/api/db/partition-info", method: "db/partition-info" },
-  { path: "/api/db/explain-text", method: "db/explain-text" },
-  { path: "/api/db/pg-stat-overview", method: "db/pg-stat-overview" },
-  { path: "/api/db/manage-backend", method: "db/manage-backend" },
-  { path: "/api/db/installed-extensions", method: "db/installed-extensions" },
-  { path: "/api/ai/config/get", method: "ai/config/get" },
-  { path: "/api/ai/config/set", method: "ai/config/set" },
-  { path: "/api/ai/key/delete", method: "ai/key/delete" },
-  { path: "/api/ai/test-connection", method: "ai/test-connection" },
-  { path: "/api/ai/sql-edit", method: "ai/sql-edit" },
-  { path: "/api/ai/prompt-build", method: "ai/prompt-build" },
-  { path: "/api/ai/prompt-build-diff", method: "ai/prompt-build-diff" },
-  // backward-compat aliases (older/cached frontend typo or underscore variant)
-  { path: "/api/db/pg_stat-overview", method: "db/pg-stat-overview" },
-  { path: "/api/db/pg_stat-overciew", method: "db/pg-stat-overview" },
-  { path: "/api/db/pg-stat-overciew", method: "db/pg-stat-overview" },
-];
+/** 旧版路径与笔误 → 当前 `ApiMethod` */
+const LEGACY_POST_PATH_TO_METHOD: Record<string, ApiMethod> = {
+  "/api/db/pg-stat-overview": "db/session-monitor",
+  "/api/db/manage-backend": "db/session-control",
+  "/api/db/pg_stat-overview": "db/session-monitor",
+  "/api/db/pg_stat-overciew": "db/session-monitor",
+  "/api/db/pg-stat-overciew": "db/session-monitor",
+};
 
-/** 创建 HTTP 格式的 API 路由（供 Hono 使用） */
+/** `POST /api/${method}`：与前端 `HttpTransport` 一致；未知 RPC 返回 404 */
+export async function handleApiPost(req: Request): Promise<Response> {
+  const pathname = new URL(req.url).pathname;
+  const name =
+    LEGACY_POST_PATH_TO_METHOD[pathname] ??
+    (pathname.startsWith("/api/") ? pathname.slice("/api/".length) : "");
+  if (!name || !HTTP_API_METHOD_SET.has(name as HttpRpcMethod)) {
+    return new Response("Not Found", { status: 404 });
+  }
+  return postApi(name as ApiMethod)(req);
+}
+
+/** 创建 HTTP 格式的 API 路由（供 Hono / Bun `routes` 使用；POST 见 `handleApiPost`） */
 export function createApiRoutes(): Record<
   string,
   { GET?: (req: unknown) => Response | Promise<Response>; POST?: RouteHandler }
@@ -95,9 +55,13 @@ export function createApiRoutes(): Record<
     "/api/events": {
       GET: (req: unknown) => {
         const url = new URL((req as Request).url);
-        const connectionId = url.searchParams.get("connectionId");
-        if (!connectionId) return new Response("缺少 connectionId", { status: 400 });
-        const session = getSession(connectionId);
+        const connectionSessionId =
+          url.searchParams.get("connectionSessionId")?.trim() ||
+          url.searchParams.get("connectionId")?.trim();
+        if (!connectionSessionId) {
+          return new Response("缺少 connectionSessionId（旧客户端可仍传 connectionId）", { status: 400 });
+        }
+        const session = getSession(connectionSessionId);
         if (!session) return new Response("未找到数据库连接，请先连接数据库", { status: 400 });
 
 
@@ -124,7 +88,7 @@ export function createApiRoutes(): Record<
             };
             sendHeartbeat();
             heartbeatInterval = setInterval(sendHeartbeat, 10000);
-            const unsubscribe = subscribeSessionEvents(connectionId, push);
+            const unsubscribe = subscribeSessionEvents(connectionSessionId, push);
             cleanup = () => {
               clearInterval(heartbeatInterval);
               unsubscribe();
@@ -143,8 +107,5 @@ export function createApiRoutes(): Record<
     },
   };
 
-  for (const { path, method, useSucess, status200 } of POST_ROUTES) {
-    routes[path] = { POST: postApi(method, { useSucess, status200 }) };
-  }
   return routes;
 }

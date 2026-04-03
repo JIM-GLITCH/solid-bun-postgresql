@@ -19,9 +19,19 @@ export interface VscodeWebview {
 export function createVscodeMessageHandler(webview: VscodeWebview) {
   const eventUnsubscribes = new Map<string, () => void>();
 
-  return async (message: { id?: number; method?: string; payload?: unknown; type?: string; sessionId?: string; connectionId?: string }) => {
-    const { id, method, payload, type, sessionId, connectionId } = message;
-    const sid = sessionId ?? connectionId;
+  return async (message: {
+    id?: number;
+    method?: string;
+    payload?: unknown;
+    type?: string;
+    sessionId?: string;
+    /** 旧版 webview；与 `sessionId` 同义 */
+    connectionId?: string;
+    /** 与 `db/*` 载荷中的 `connectionId` 相同（会话键） */
+    connectionSessionId?: string;
+  }) => {
+    const { id, method, payload, type, sessionId, connectionId, connectionSessionId } = message;
+    const sid = sessionId ?? connectionSessionId ?? connectionId;
 
     // 订阅/取消订阅事件推送
     if (type === "subscribe-events" && sid) {

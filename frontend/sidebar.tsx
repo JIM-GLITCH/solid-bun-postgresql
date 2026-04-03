@@ -20,6 +20,7 @@ import type { ConnectionInfo } from "./app";
 import { findStoredConnection, hasStoredConnection, updateStoredConnectionMeta, reorderConnectionList, type ConnectionList, type StoredConnection } from "./connection-storage";
 import { useDialog } from "./dialog-context";
 import { vscode } from "./theme";
+import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 
 // 数据库对象类型
@@ -1452,7 +1453,7 @@ export default function Sidebar(props: SidebarProps) {
               <Show
                 when={
                   menu().node.connectionId &&
-                  getRegisteredDbType(menu().node.connectionId) === "postgres"
+                  getEffectiveDbCapabilities(menu().node.connectionId).sessionMonitor
                 }
               >
                 <div
@@ -1469,8 +1470,15 @@ export default function Sidebar(props: SidebarProps) {
                   onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
                   onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                 >
-                  <span>📈</span> pg_stat 监控
+                  <span>📈</span> 会话与锁监控
                 </div>
+              </Show>
+              <Show
+                when={
+                  menu().node.connectionId &&
+                  getEffectiveDbCapabilities(menu().node.connectionId).pgExtensionCatalog
+                }
+              >
                 <div
                   onClick={() => handleMenuAction("openExtensions")}
                   style={{

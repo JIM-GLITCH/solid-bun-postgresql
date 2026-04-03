@@ -5,73 +5,86 @@
  * 数据库相关 RPC 统一为 db/*，载荷中须带 dbType（postgres / mysql 等）。
  */
 
-import type { PostgresLoginParams, SSEMessage, ConnectDbRequest, DbKind, StoredConnectionParams } from "./types";
+import type { SSEMessage, ConnectDbRequest, DbKind, ConnectionSavePayload } from "./types";
 
 /** 需已有会话的 db 请求公共字段 */
 export type DbRpcBase = { connectionId: string; dbType: DbKind };
 
-/** API 方法名 */
-export type ApiMethod =
-  | "connections/list"
-  | "connections/save"
-  | "connections/delete"
-  | "connections/update-meta"
-  | "connections/reorder"
-  | "connections/get-params"
-  | "connections/connect"
-  | "query-history/add"
-  | "query-history/search"
-  | "query-history/delete"
-  | "query-history/clear"
-  | "db/connect"
-  | "db/disconnect"
-  | "db/query"
-  | "db/capabilities"
-  | "db/query-stream"
-  | "db/query-stream-more"
-  | "db/save-changes"
-  | "db/cancel-query"
-  | "db/query-readonly"
-  | "db/explain"
-  | "db/schemas"
-  | "db/tables"
-  | "db/columns"
-  | "db/indexes"
-  | "db/foreign-keys"
-  | "db/data-types"
-  | "db/execute-ddl"
-  | "db/table-ddl"
-  | "db/function-ddl"
-  | "db/schema-dump"
-  | "db/database-dump"
-  | "db/primary-keys"
-  | "db/unique-constraints"
-  | "db/import-rows"
-  | "db/table-comment"
-  | "db/check-constraints"
-  | "db/partition-info"
-  | "db/explain-text"
-  | "db/pg-stat-overview"
-  | "db/manage-backend"
-  | "db/installed-extensions"
-  | "ai/config/get"
-  | "ai/config/set"
-  | "ai/key/delete"
-  | "ai/test-connection"
-  | "ai/sql-edit"
-  | "ai/prompt-build"
-  | "ai/prompt-build-diff"
-  | "vscode/save-file"
-  | "vscode/read-file"
-  | "vscode/clipboard-write"
-  | "vscode/clipboard-read"
-  | "vscode/ai-key-set"
-  | "vscode/ai-key-delete";
+/** API 方法名（唯一真源：增删 RPC 时只改此数组；`ApiMethod` 由其推导） */
+export const API_METHODS = [
+  "connections/list",
+  "connections/save",
+  "connections/delete",
+  "connections/update-meta",
+  "connections/reorder",
+  "connections/get-params",
+  "connections/connect",
+  "query-history/add",
+  "query-history/search",
+  "query-history/delete",
+  "query-history/clear",
+  "db/connect",
+  "db/disconnect",
+  "db/query",
+  "db/capabilities",
+  "db/query-stream",
+  "db/query-stream-more",
+  "db/save-changes",
+  "db/cancel-query",
+  "db/query-readonly",
+  "db/explain",
+  "db/schemas",
+  "db/tables",
+  "db/columns",
+  "db/indexes",
+  "db/foreign-keys",
+  "db/data-types",
+  "db/execute-ddl",
+  "db/table-ddl",
+  "db/function-ddl",
+  "db/schema-dump",
+  "db/database-dump",
+  "db/primary-keys",
+  "db/unique-constraints",
+  "db/import-rows",
+  "db/table-comment",
+  "db/check-constraints",
+  "db/partition-info",
+  "db/explain-text",
+  "db/session-monitor",
+  "db/session-control",
+  "db/installed-extensions",
+  "ai/config/get",
+  "ai/config/set",
+  "ai/key/delete",
+  "ai/test-connection",
+  "ai/sql-edit",
+  "ai/prompt-build",
+  "ai/prompt-build-diff",
+  "vscode/save-file",
+  "vscode/read-file",
+  "vscode/clipboard-write",
+  "vscode/clipboard-read",
+  "vscode/ai-key-set",
+  "vscode/ai-key-delete",
+] as const;
+
+export type ApiMethod = (typeof API_METHODS)[number];
+
+/** Web HTTP 可调用的 RPC（不含 vscode/*） */
+export type HttpRpcMethod = Exclude<ApiMethod, `vscode/${string}`>;
+
+function isHttpRpcMethod(m: ApiMethod): m is HttpRpcMethod {
+  return !m.startsWith("vscode/");
+}
+
+/** `POST /api/${method}` 合法方法名集合 */
+export const HTTP_API_METHOD_SET: ReadonlySet<HttpRpcMethod> = new Set(API_METHODS.filter(isHttpRpcMethod));
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
   "connections/list": {};
-  "connections/save": { id: string; name?: string } & StoredConnectionParams;
+  "connections/save": ConnectionSavePayload;
   "connections/delete": { id: string };
   "connections/update-meta": { id: string; name?: string };
   "connections/reorder": { list: unknown[] };
@@ -172,8 +185,8 @@ export type ApiRequestPayload = {
   "db/check-constraints": DbRpcBase & { schema: string; table: string };
   "db/partition-info": DbRpcBase & { schema: string; table: string };
   "db/explain-text": DbRpcBase & { query: string };
-  "db/pg-stat-overview": DbRpcBase & { limit?: number };
-  "db/manage-backend": DbRpcBase & { pid: number; action: "cancel" | "terminate" };
+  "db/session-monitor": DbRpcBase & { limit?: number };
+  "db/session-control": DbRpcBase & { pid: number; action: "cancel" | "terminate" };
   "db/installed-extensions": DbRpcBase;
 };
 

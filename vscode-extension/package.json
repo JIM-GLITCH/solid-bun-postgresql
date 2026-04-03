@@ -1,8 +1,8 @@
 {
   "name": "db-player",
   "displayName": "DB Player",
-  "description": "PostgreSQL client in one webview—browse, query, and edit with less UI fragmentation than multi-panel DB extensions.",
-  "version": "0.0.12",
+  "description": "PostgreSQL and MySQL client in one webview—browse schemas, run queries, and edit with less UI fragmentation than typical multi-panel database extensions.",
+  "version": "0.1.0",
   "publisher": "lilr",
   "keywords": [
     "dbplayer",
@@ -10,6 +10,8 @@
     "database",
     "postgres",
     "postgresql",
+    "mysql",
+    "mariadb",
     "sql",
     "webview"
   ],

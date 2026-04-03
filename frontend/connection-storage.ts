@@ -5,12 +5,14 @@
 import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../shared/src";
 import { registerConnectionDbType } from "./db-session-meta";
 import { getTransport } from "./transport";
+import { prefetchDbCapabilities } from "./api";
 
 export interface StoredConnection {
   id: string;
   label: string;
   enc?: string;
   name?: string;
+  group?: string;
 }
 
 /** 连接列表：扁平结构 */
@@ -40,7 +42,7 @@ export async function loadStoredConnections(): Promise<ConnectionList> {
 export async function saveConnection(
   id: string,
   params: PostgresLoginParams | StoredConnectionParams,
-  meta?: { name?: string }
+  meta?: { name?: string; group?: string }
 ): Promise<void> {
   const dbType = (params as StoredConnectionParams).dbType ?? "postgres";
   const data = await getTransport().request("connections/save", { id, ...params, dbType, ...meta }) as { success?: boolean; error?: string };
@@ -77,16 +79,20 @@ export async function removeStoredConnection(id: string): Promise<void> {
 
 /** 使用已保存连接进行连接（服务端解密并建立连接，密码不经过前端） */
 export async function connectFromSaved(id: string, sessionId?: string): Promise<{ success: boolean; connectionId?: string; error?: string }> {
-  const data = await getTransport().request("connections/connect", { id, sessionId }) as {
-    sucess?: boolean;
-    success?: boolean;
-    connectionId?: string;
-    dbType?: DbKind;
-    error?: string;
-  };
-  if (data.sucess || data.success) {
-    if (data.connectionId) registerConnectionDbType(data.connectionId, data.dbType ?? "postgres");
-    return { success: true, connectionId: data.connectionId };
+  try {
+    const data = (await getTransport().request("connections/connect", { id, sessionId })) as {
+      success?: boolean;
+      connectionId?: string;
+      dbType?: DbKind;
+      error?: string;
+    };
+    if (data.success && data.connectionId) {
+      registerConnectionDbType(data.connectionId, data.dbType ?? "postgres");
+      void prefetchDbCapabilities(data.connectionId);
+      return { success: true, connectionId: data.connectionId };
+    }
+    return { success: false, error: data.error || "连接失败" };
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
-  return { success: false, error: data.error || "连接失败" };
 }

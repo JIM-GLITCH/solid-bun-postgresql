@@ -3,7 +3,7 @@
  */
 import type { Readable } from "node:stream";
 import type { Connection as MysqlCallbackConnection, FieldPacket } from "mysql2";
-import type { PoolConnection } from "mysql2/promise";
+import type { Pool, PoolConnection } from "mysql2/promise";
 import type {
   ConnectDbRequest,
   DbKind,
@@ -69,6 +69,170 @@ function mysqlRowLowerKeys(row: Record<string, unknown>): Record<string, unknown
     o[k.toLowerCase()] = v;
   }
   return o;
+}
+
+type MysqlSlowSource = "mysql_processlist" | "mysql_events_statements";
+
+/** MySQL 8 performance_schema.data_lock_waits，失败则回退 information_schema.innodb_lock_waits（5.7 等） */
+async function mysqlStatLockWaits(
+  pool: Pool,
+  lim: number
+): Promise<
+  Array<{
+    waiting_pid: number;
+    waiting_user: string;
+    waiting_query: string;
+    blocking_pid: number;
+    blocking_user: string;
+    blocking_query: string;
+    wait_event_type: string | null;
+    wait_event: string | null;
+  }>
+> {
+  const out: Array<{
+    waiting_pid: number;
+    waiting_user: string;
+    waiting_query: string;
+    blocking_pid: number;
+    blocking_user: string;
+    blocking_query: string;
+    wait_event_type: string | null;
+    wait_event: string | null;
+  }> = [];
+  try {
+    const [rows] = await pool.query(
+      `SELECT DISTINCT
+         pl_w.ID AS waiting_pid,
+         pl_w.USER AS waiting_user,
+         LEFT(COALESCE(pl_w.INFO, ''), 240) AS waiting_query,
+         pl_b.ID AS blocking_pid,
+         pl_b.USER AS blocking_user,
+         LEFT(COALESCE(pl_b.INFO, ''), 240) AS blocking_query,
+         'lock' AS wait_event_type,
+         'data_lock_waits' AS wait_event
+       FROM performance_schema.data_lock_waits dlw
+       INNER JOIN performance_schema.threads tw ON tw.THREAD_ID = dlw.REQUESTING_THREAD_ID
+       INNER JOIN performance_schema.threads tb ON tb.THREAD_ID = dlw.BLOCKING_THREAD_ID
+       LEFT JOIN information_schema.PROCESSLIST pl_w ON pl_w.ID = tw.PROCESSLIST_ID
+       LEFT JOIN information_schema.PROCESSLIST pl_b ON pl_b.ID = tb.PROCESSLIST_ID
+       WHERE pl_w.ID IS NOT NULL AND pl_b.ID IS NOT NULL
+       LIMIT ?`,
+      [lim]
+    );
+    for (const raw of rows as Record<string, unknown>[]) {
+      const r = mysqlRowLowerKeys(raw);
+      out.push({
+        waiting_pid: Number(r.waiting_pid ?? 0),
+        waiting_user: String(r.waiting_user ?? ""),
+        waiting_query: String(r.waiting_query ?? ""),
+        blocking_pid: Number(r.blocking_pid ?? 0),
+        blocking_user: String(r.blocking_user ?? ""),
+        blocking_query: String(r.blocking_query ?? ""),
+        wait_event_type: r.wait_event_type != null ? String(r.wait_event_type) : null,
+        wait_event: r.wait_event != null ? String(r.wait_event) : null,
+      });
+    }
+    if (out.length > 0) return out;
+  } catch {
+    /* performance_schema 未开、权限不足或版本无此表 */
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT
+         r.trx_mysql_thread_id AS waiting_pid,
+         LEFT(COALESCE(r.trx_query, ''), 240) AS waiting_query,
+         b.trx_mysql_thread_id AS blocking_pid,
+         LEFT(COALESCE(b.trx_query, ''), 240) AS blocking_query
+       FROM information_schema.innodb_lock_waits w
+       INNER JOIN information_schema.innodb_trx r ON r.trx_id = w.requesting_trx_id
+       INNER JOIN information_schema.innodb_trx b ON b.trx_id = w.blocking_trx_id
+       LIMIT ?`,
+      [lim]
+    );
+    for (const raw of rows as Record<string, unknown>[]) {
+      const r = mysqlRowLowerKeys(raw);
+      out.push({
+        waiting_pid: Number(r.waiting_pid ?? 0),
+        waiting_user: "",
+        waiting_query: String(r.waiting_query ?? ""),
+        blocking_pid: Number(r.blocking_pid ?? 0),
+        blocking_user: "",
+        blocking_query: String(r.blocking_query ?? ""),
+        wait_event_type: "innodb",
+        wait_event: "innodb_lock_waits",
+      });
+    }
+  } catch {
+    /* MySQL 8.0.13+ 已移除 innodb_lock_waits 等 */
+  }
+  return out;
+}
+
+/** 优先 performance_schema.events_statements_summary_by_digest，否则 PROCESSLIST 热门会话 */
+async function mysqlFetchSlowQueries(
+  pool: Pool,
+  lim: number
+): Promise<{ rows: Array<Record<string, unknown>>; source: MysqlSlowSource }> {
+  try {
+    const [digests] = await pool.query(
+      `SELECT
+         DIGEST_TEXT AS query,
+         COUNT_STAR AS calls,
+         ROUND(SUM_TIMER_WAIT / 1000000, 3) AS total_exec_time,
+         ROUND(SUM_TIMER_WAIT / NULLIF(COUNT_STAR, 0) / 1000000, 3) AS mean_exec_time,
+         SUM_ROWS_SENT AS stmt_rows
+       FROM performance_schema.events_statements_summary_by_digest
+       WHERE DIGEST_TEXT IS NOT NULL AND LENGTH(TRIM(DIGEST_TEXT)) > 0
+       ORDER BY SUM_TIMER_WAIT DESC
+       LIMIT ?`,
+      [lim]
+    );
+    const arr = digests as Record<string, unknown>[];
+    if (arr.length > 0) {
+      return {
+        source: "mysql_events_statements",
+        rows: arr.map((raw) => {
+          const r = mysqlRowLowerKeys(raw);
+          return {
+            query: String(r.query ?? "").slice(0, 240),
+            calls: Number(r.calls ?? 0),
+            total_exec_time: Number(r.total_exec_time ?? 0),
+            mean_exec_time: r.mean_exec_time != null && !Number.isNaN(Number(r.mean_exec_time)) ? Number(r.mean_exec_time) : null,
+            rows: Number(r.stmt_rows ?? 0),
+          };
+        }),
+      };
+    }
+  } catch {
+    /* consumer 未启用或无权限 */
+  }
+
+  const [plist] = await pool.query(
+    `SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO
+     FROM information_schema.PROCESSLIST
+     ORDER BY TIME DESC
+     LIMIT ?`,
+    [lim]
+  );
+  return {
+    source: "mysql_processlist",
+    rows: (plist as Record<string, unknown>[]).map((raw) => {
+      const r = mysqlRowLowerKeys(raw);
+      const id = Number(r.id ?? 0);
+      return {
+        id,
+        connection_id: id,
+        user: String(r.user ?? ""),
+        host: String(r.host ?? ""),
+        db: r.db != null ? String(r.db) : "",
+        command: String(r.command ?? ""),
+        time_seconds: Number(r.time ?? 0),
+        state: String(r.state ?? ""),
+        query: String(r.info ?? "").slice(0, 240),
+        total_exec_time: Number(r.time ?? 0) * 1000,
+      };
+    }),
+  };
 }
 
 function mysqlCallbackConnection(promiseConn: PoolConnection): MysqlCallbackConnection {
@@ -250,7 +414,7 @@ export async function handleMysqlDbRequest(
         ...(initialDb ? { mysqlCurrentDatabase: initialDb } : {}),
       });
       startMysqlUserClientKeepalive(cid);
-      return { sucess: true, connectionId: cid, dbType: "mysql" as const };
+      return { success: true, connectionId: cid, dbType: "mysql" as const };
     }
 
     case "db/disconnect": {
@@ -1090,49 +1254,44 @@ export async function handleMysqlDbRequest(
       return { lines };
     }
 
-    case "db/pg-stat-overview": {
+    case "db/session-monitor": {
       const cid = getConnId();
       const { limit = 20 } = payload as { connectionId: string; limit?: number };
       const lim = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 5), 200) : 20;
       const session = mysqlSession(getSWithDb, cid);
       try {
-        const [stats] = await session.backGroundPool.query(
+        const pool = session.backGroundPool;
+        const [statsRows] = await pool.query(
           `SELECT
              COUNT(*) AS total,
-             SUM(COMMAND != 'Sleep') AS active,
-             SUM(COMMAND = 'Sleep') AS idle
+             SUM(CASE WHEN COMMAND != 'Sleep' THEN 1 ELSE 0 END) AS active,
+             SUM(CASE WHEN COMMAND = 'Sleep' THEN 1 ELSE 0 END) AS idle,
+             SUM(
+               CASE
+                 WHEN STATE IS NOT NULL AND TRIM(STATE) != '' AND (
+                   LOWER(STATE) LIKE '%lock%' OR LOWER(STATE) LIKE '%wait%'
+                 ) THEN 1 ELSE 0 END
+             ) AS waiting
            FROM information_schema.PROCESSLIST`
         );
-        const s0 = (stats as Record<string, unknown>[])[0] ?? {};
+        const s0 = mysqlRowLowerKeys((statsRows as Record<string, unknown>[])[0] ?? {});
         const connectionStats = {
           total: Number(s0.total ?? 0),
           active: Number(s0.active ?? 0),
           idle: Number(s0.idle ?? 0),
-          waiting: 0,
+          waiting: Number(s0.waiting ?? 0),
         };
-        const [plist] = await session.backGroundPool.query(
-          `SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE, INFO AS query
-           FROM information_schema.PROCESSLIST
-           ORDER BY TIME DESC
-           LIMIT ?`,
-          [lim]
-        );
-        const slowQueries = (plist as Array<Record<string, unknown>>).map((r) => ({
-          query: String(r.query ?? r.INFO ?? "").slice(0, 240),
-          total_exec_time: Number(r.TIME ?? r.time ?? 0) * 1000,
-          state: String(r.STATE ?? r.state ?? ""),
-          wait_event_type: String(r.COMMAND ?? r.command ?? ""),
-          wait_event: String(r.Host ?? r.HOST ?? ""),
-        }));
+        const lockWaits = await mysqlStatLockWaits(pool, lim);
+        const { rows: slowQueries, source: slowQuerySource } = await mysqlFetchSlowQueries(pool, lim);
         return {
           connectionStats,
-          lockWaits: [],
+          lockWaits,
           slowQueries,
-          slowQuerySource: "pg_stat_activity" as const,
+          slowQuerySource,
           collectedAt: Date.now(),
         };
       } catch (e: unknown) {
-        throw new Error(`mysql-stat-overview: ${e instanceof Error ? e.message : String(e)}`);
+        throw new Error(`session-monitor: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -1149,21 +1308,22 @@ export async function handleMysqlDbRequest(
       };
     }
 
-    case "db/manage-backend": {
+    case "db/session-control": {
       const cid = getConnId();
       const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
-      if (!Number.isInteger(pid) || pid <= 0) throw new Error("pid 非法");
+      const pidInt = Math.floor(Number(pid));
+      if (!Number.isFinite(pidInt) || pidInt <= 0) throw new Error("pid 非法");
       const session = mysqlSession(getSWithDb, cid);
       const self = session.userUsedClient.threadId;
-      if (pid === self) {
+      if (pidInt === self) {
         throw new Error("不允许结束当前会话自身线程");
       }
-      const sql = action === "terminate" ? `KILL ${pid}` : `KILL QUERY ${pid}`;
+      const sql = action === "terminate" ? `KILL ${pidInt}` : `KILL QUERY ${pidInt}`;
       try {
         await session.backGroundPool.query(sql);
-        return { success: true, pid, action };
+        return { success: true, pid: pidInt, action };
       } catch {
-        return { success: false, pid, action };
+        return { success: false, pid: pidInt, action };
       }
     }
 

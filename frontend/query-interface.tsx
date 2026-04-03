@@ -33,6 +33,7 @@ import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
 import ExplainPlanViewer from "./explain-plan-viewer";
 import { convertMysqlExplainJsonToPlanNode, isMysqlExplainJsonRoot } from "./mysql-explain-json";
+import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { useDialog } from "./dialog-context";
 
 interface QueryInterfaceProps {
@@ -88,6 +89,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const s = props.mysqlDefaultSchemaFor?.(cid)?.trim();
     return s || undefined;
   }
+
+  const dbCaps = createMemo(() => getEffectiveDbCapabilities(props.activeConnectionId?.() ?? null));
 
   const AI_MODEL_PREF_KEY = "dbplayer.ai.model";
   const { openJsonbEditor } = useDialog();
@@ -483,6 +486,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const sqlToRun = overrideSql ?? sql();
     if (!sqlToRun.trim()) return;
     const statements = getStatementsFromText(sqlToRun);
+    const cap = getEffectiveDbCapabilities(cid);
     setLoading(true);
     setError(null);
     resetTableScrollForNewQuery();
@@ -495,6 +499,30 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
+      if (!cap.streamingQuery) {
+        if (statements.length !== 1) {
+          throw new Error("当前连接未启用流式结果集，请一次只执行一条语句。");
+        }
+        const ro = await queryReadonly(cid, statements[0], 1000, mysqlDefaultSchemaForConn(cid));
+        if (ro.error) throw new Error(ro.error);
+        const newCols = ro.columns || [];
+        setColumns(newCols);
+        const cur = columnWidths;
+        if (cur.length === newCols.length) {
+          setColumnWidths(cur.map((w, i) => w || 120));
+        } else {
+          setColumnWidths(newCols.map(() => 120));
+        }
+        const rows = ro.rows || [];
+        setResult(rows);
+        const colCount = newCols.length;
+        setModifiedCells(rows.map(() => Array(colCount).fill(false)));
+        setHasMore(false);
+        setQueryDuration(performance.now() - startTime);
+        addQuery(sqlToRun, cid).catch((e) => console.warn("查询历史保存失败:", e));
+        return;
+      }
+
       const data = await queryStream(cid, statements, 100, mysqlDefaultSchemaForConn(cid));
 
       if (data.error) {
@@ -537,6 +565,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (loadingMore() || !hasMore()) return;
     const cid = props.activeConnectionId?.();
     if (!cid) return;
+    if (!getEffectiveDbCapabilities(cid).streamingQuery) return;
 
     setLoadingMore(true);
     try {
@@ -623,6 +652,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   async function runExplain(overrideSql?: string) {
     const cid = props.activeConnectionId?.();
     if (!cid) return;
+    const cap = getEffectiveDbCapabilities(cid);
+    if (!cap.explainAnalyzeJson && !cap.explainText) return;
     const sqlToRun = (overrideSql ?? sql()).trim();
     if (!sqlToRun) return;
     const statements = getStatementsFromText(sqlToRun);
@@ -1914,27 +1945,29 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             >
               <span>▶</span> 执行
             </button>
-            <button
-              onClick={() => runExplain()}
-              disabled={loading() || explainLoading() || sql().trim().length === 0}
-              title="解释分析（EXPLAIN ANALYZE）"
-              style={{
-                padding: "10px 20px",
-                "font-size": "14px",
-                "font-weight": "500",
-                "background-color": loading() || explainLoading() ? vscode.buttonSecondary : vscode.buttonSecondary,
-                color: "#fff",
-                border: "none",
-                "border-radius": "6px",
-                cursor: loading() || explainLoading() ? "not-allowed" : "pointer",
-                display: "flex",
-                "align-items": "center",
-                gap: "6px",
-              }}
-            >
-              <span>📊</span> {explainLoading() ? "分析中..." : "解释分析"}
-            </button>
-            <Show when={loading()}>
+            <Show when={dbCaps().explainAnalyzeJson || dbCaps().explainText}>
+              <button
+                onClick={() => runExplain()}
+                disabled={loading() || explainLoading() || sql().trim().length === 0}
+                title="解释分析（EXPLAIN ANALYZE）"
+                style={{
+                  padding: "10px 20px",
+                  "font-size": "14px",
+                  "font-weight": "500",
+                  "background-color": loading() || explainLoading() ? vscode.buttonSecondary : vscode.buttonSecondary,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "6px",
+                  cursor: loading() || explainLoading() ? "not-allowed" : "pointer",
+                  display: "flex",
+                  "align-items": "center",
+                  gap: "6px",
+                }}
+              >
+                <span>📊</span> {explainLoading() ? "分析中..." : "解释分析"}
+              </button>
+            </Show>
+            <Show when={loading() && dbCaps().cancelQuery}>
               <button
                 onClick={doCancelQuery}
                 style={{

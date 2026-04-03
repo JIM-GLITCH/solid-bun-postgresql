@@ -19,6 +19,8 @@ export interface StoredConnectionMeta {
   label: string;
   enc: string;
   name?: string;
+  /** 侧栏分组展示用（可选） */
+  group?: string;
 }
 
 interface StoredConnectionItem {
@@ -26,6 +28,7 @@ interface StoredConnectionItem {
   label: string;
   enc: string;
   name?: string;
+  group?: string;
 }
 
 export type ConnectionList = StoredConnectionItem[];
@@ -93,6 +96,7 @@ function normalizeItem(raw: unknown): StoredConnectionItem | null {
     enc: String(o.enc),
   };
   if (o.name != null && o.name !== "") item.name = String(o.name);
+  if (o.group != null && String(o.group).trim() !== "") item.group = String(o.group).trim();
   return item;
 }
 
@@ -110,9 +114,13 @@ function loadRaw(): ConnectionList {
       const o = node as Record<string, unknown>;
       // 旧格式分组节点：展开其中的连接
       if (Array.isArray(o?.connections) && typeof o?.group === "string") {
+        const grp = String(o.group).trim();
         for (const c of o.connections as unknown[]) {
           const item = normalizeItem(c);
-          if (item) result.push(item);
+          if (item) {
+            if (grp) item.group = grp;
+            result.push(item);
+          }
         }
       } else {
         const item = normalizeItem(node);
@@ -140,17 +148,23 @@ export function listConnections(): ConnectionList {
 export function saveConnection(
   id: string,
   params: StoredConnectionParams,
-  meta?: { name?: string }
+  meta?: { name?: string; group?: string }
 ): void {
   const enc = encrypt(JSON.stringify(normalizeStoredParams(params)));
-  const label = meta?.name?.trim() || makeLabel(params);
   const list = loadRaw();
   const idx = list.findIndex((c) => c.id === id);
+  const prev = idx !== -1 ? list[idx] : undefined;
+  const name =
+    meta?.name !== undefined ? meta.name.trim() || undefined : prev?.name;
+  const group =
+    meta?.group !== undefined ? meta.group.trim() || undefined : prev?.group;
+  const label = name || makeLabel(params);
   const item: StoredConnectionItem = {
     id,
     label,
     enc,
-    ...(meta?.name?.trim() && { name: meta.name.trim() }),
+    ...(name ? { name } : {}),
+    ...(group ? { group } : {}),
   };
   if (idx !== -1) {
     list[idx] = item;

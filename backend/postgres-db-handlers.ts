@@ -96,7 +96,7 @@ export async function handlePostgresDbRequest(
         closeTunnel: db.closeTunnel,
       });
       startUserClientKeepalive(cid);
-      return { sucess: true, connectionId: cid, dbType: "postgres" as const };
+      return { success: true, connectionId: cid, dbType: "postgres" as const };
     }
 
     case "db/disconnect": {
@@ -963,7 +963,7 @@ export async function handlePostgresDbRequest(
       }
     }
 
-    case "db/pg-stat-overview": {
+    case "db/session-monitor": {
       try {
         const cid = getConnId();
         const { limit = 20 } = payload as { connectionId: string; limit?: number };
@@ -1067,7 +1067,7 @@ export async function handlePostgresDbRequest(
           client.release();
         }
       } catch (e: any) {
-        throw new Error(`pg-stat-overview: ${e?.message ?? String(e)}`);
+        throw new Error(`session-monitor: ${e?.message ?? String(e)}`);
       }
     }
 
@@ -1102,7 +1102,7 @@ export async function handlePostgresDbRequest(
       }
     }
 
-    case "db/manage-backend": {
+    case "db/session-control": {
       try {
         const cid = getConnId();
         const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
@@ -1121,7 +1121,7 @@ export async function handlePostgresDbRequest(
         const ok = !!rs.rows[0]?.ok;
         return { success: ok, pid, action };
       } catch (e: any) {
-        throw new Error(`manage-backend: ${e?.message ?? String(e)}`);
+        throw new Error(`session-control: ${e?.message ?? String(e)}`);
       }
     }    default:
       throw new Error(`未知 API 方法: ${method}`);

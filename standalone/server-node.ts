@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { createApiRoutes } from "../backend/api-handlers-http";
+import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
@@ -17,7 +17,7 @@ const __dirname = dirname(__filename);
 const app = new Hono();
 const apiRoutes = createApiRoutes();
 
-// API 路由
+// API 路由：GET 逐项注册；POST 统一 `/api/*` → handleApiPost（与 `HttpTransport` 路径规则一致）
 for (const [path, handlers] of Object.entries(apiRoutes)) {
   if (handlers.GET) {
     app.get(path, (c) => handlers.GET!(c.req.raw));
@@ -26,6 +26,7 @@ for (const [path, handlers] of Object.entries(apiRoutes)) {
     app.post(path, (c) => handlers.POST!(c.req.raw));
   }
 }
+app.post("/api/*", (c) => handleApiPost(c.req.raw));
 
 function frontendBaseUri() {
   const bundled = __filename.endsWith(".js");

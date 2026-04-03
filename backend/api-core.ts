@@ -9,10 +9,11 @@ import {
   type ApiMethod,
   type ApiRequestPayload,
   type ConnectDbRequest,
+  type ConnectionSavePayload,
   type DbKind,
-  type DatabaseCapabilities,
   type StoredConnectionParams,
   type SSEMessage,
+  defaultDatabaseCapabilities,
 } from "../shared/src";
 import { connectPostgres, getDbConfig, type GetDbConfigResult } from "./connect-postgres";
 import type { SessionConnection } from "./session-connection";
@@ -37,33 +38,8 @@ function assertSessionDbType(session: SessionConnection, dbType: DbKind | undefi
   void dbType;
 }
 
-function capabilitiesForKind(kind: DbKind): DatabaseCapabilities {
-  if (kind === "postgres") {
-    return {
-      dialect: "postgres",
-      adhocSql: true,
-      streamingQuery: true,
-      cancelQuery: true,
-      explainAnalyzeJson: true,
-      explainText: true,
-      metadataBrowser: true,
-      postgresAdmin: true,
-    };
-  }
-  if (kind === "mysql") {
-    return {
-      dialect: "mysql",
-      adhocSql: true,
-      streamingQuery: true,
-      cancelQuery: false,
-      explainAnalyzeJson: true,
-      explainText: true,
-      metadataBrowser: true,
-      postgresAdmin: false,
-    };
-  }
-  const _never: never = kind;
-  throw new Error(`未实现的数据库类型: ${String(_never)}`);
+function capabilitiesForKind(kind: DbKind) {
+  return defaultDatabaseCapabilities(kind);
 }
 
 function isPgUserClientDeadError(e: unknown): boolean {
@@ -147,6 +123,20 @@ function getStatements(sql: string): string[] {
 
 /** 以 connectionId 为 key 存储多个连接 */
 const connectionMap = new Map<string, SessionConnection>();
+
+/**
+ * `db/*` 是否交给 MySQL 处理器（与 PostgreSQL 二选一）。
+ * 建连看载荷 `dbType`；已建连看会话 `connectionMap` 中 `dbKind`。
+ */
+function shouldRouteDbRequestToMysql(method: string, payload: unknown): boolean {
+  if (!method.startsWith("db/")) return false;
+  if (method === "db/connect") {
+    return (payload as ConnectDbRequest).dbType === "mysql";
+  }
+  const cid = (payload as { connectionId?: string }).connectionId;
+  if (cid == null || String(cid) === "") return false;
+  return connectionMap.get(String(cid))?.dbKind === "mysql";
+}
 const aiKeyStore = new Map<string, string>();
 
 /** 探活间隔：略小于常见 idle 超时，避免首条 Monaco 查询才暴露死连接 */
@@ -575,12 +565,7 @@ export async function handleApiRequest<M extends ApiMethod>(
   };
 
   if (typeof method === "string" && method.startsWith("db/")) {
-    const routeMysql =
-      (method === "db/connect" && (payload as ConnectDbRequest).dbType === "mysql") ||
-      (!!(payload as { connectionId?: string }).connectionId &&
-        connectionMap.get(String((payload as { connectionId: string }).connectionId))?.dbKind === "mysql");
-
-    if (routeMysql) {
+    if (shouldRouteDbRequestToMysql(method, payload)) {
       const mysqlCtx: MysqlDbHandlerContext = {
         connectionMap,
         getConnId,
@@ -624,7 +609,7 @@ export async function handleApiRequest<M extends ApiMethod>(
     }
 
     case "connections/save": {
-      const { id, name, dbType, ...params } = payload as { id: string; name?: string; dbType?: DbKind } & PostgresLoginParams;
+      const { id, name, group, dbType, ...params } = payload as ConnectionSavePayload;
       if (!id || !String(params.host ?? "").trim() || !String(params.username ?? "").trim()) {
         throw new Error("缺少必填字段");
       }
@@ -649,7 +634,7 @@ export async function handleApiRequest<M extends ApiMethod>(
           toSave.connectionTimeoutSec = params.connectionTimeoutSec;
         }
       }
-      saveConnection(id, toSave, { name });
+      saveConnection(id, toSave, { name, group });
       return { success: true };
     }
 
@@ -670,7 +655,7 @@ export async function handleApiRequest<M extends ApiMethod>(
     case "connections/connect": {
       const { id, sessionId } = payload as { id: string; sessionId?: string };
       const params = getConnectionParams(id);
-      if (!params) return { sucess: false, error: "未找到已保存的连接" };
+      if (!params) throw new Error("未找到已保存的连接");
       const { id: storedId, dbType, ...loginParams } = params;
       // 使用 sessionId 区分不同浏览器标签页，关闭标签页时可通过 SSE 断开释放资源
       const connectionId = sessionId ? `${storedId}-${sessionId}` : storedId;

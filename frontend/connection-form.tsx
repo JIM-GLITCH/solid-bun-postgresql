@@ -16,19 +16,47 @@ function generateConnectionId(): string {
   });
 }
 
-const fields: Array<{ key: keyof PostgresLoginParams; label: string; desc: string; example: string }> = [
-  { key: 'host', label: 'host', desc: '数据库主机名或 IP', example: 'localhost' },
-  { key: 'port', label: 'port', desc: '数据库端口', example: '5432' },
-  { key: 'database', label: 'database', desc: '数据库名（可空）。PostgreSQL 未填时默认同名库；MySQL 未填时请在侧栏单击要用的库作默认库，或在此填写库名', example: 'mydb' },
-  { key: 'username', label: 'username', desc: '数据库用户', example: 'postgres' },
-  { key: 'password', label: 'password', desc: '数据库密码', example: 'secret' },
-];
+type ConnFieldRow = { key: keyof PostgresLoginParams; label: string; desc: string; example: string };
 
-const initForm = (): PostgresLoginParams =>
-  fields.reduce<PostgresLoginParams>((acc, f) => {
-    acc[f.key] = f.example ?? '';
-    return acc;
-  }, {} as PostgresLoginParams);
+/** 与 StoredConnectionParams / ConnectDbRequest 共用形状，按方言切换说明与占位 */
+function connectionFieldRows(kind: DbKind): ConnFieldRow[] {
+  return [
+    { key: 'host', label: 'host', desc: '数据库主机名或 IP（SSH 开启时为跳板机可访问的地址）', example: 'localhost' },
+    {
+      key: 'port',
+      label: 'port',
+      desc: kind === 'mysql' ? 'MySQL 监听端口，常用 3306' : 'PostgreSQL 监听端口，常用 5432',
+      example: kind === 'mysql' ? '3306' : '5432',
+    },
+    {
+      key: 'database',
+      label: kind === 'mysql' ? 'database（默认库）' : 'database',
+      desc:
+        kind === 'mysql'
+          ? '可选。留空时连接后无默认库，请在侧栏单击要使用的「库」；也可在此填写库名避免 No database selected。'
+          : '可选。留空时若存在与用户名同名的库则使用该库；否则需在查询或侧栏中指定 schema。',
+      example: kind === 'mysql' ? 'myapp' : 'mydb',
+    },
+    {
+      key: 'username',
+      label: 'username',
+      desc: kind === 'mysql' ? 'MySQL 账号（常见如 root 或应用用户）' : 'PostgreSQL 账号',
+      example: kind === 'mysql' ? 'root' : 'postgres',
+    },
+    { key: 'password', label: 'password', desc: '数据库密码', example: '' },
+  ];
+}
+
+const initForm = (): PostgresLoginParams => {
+  const ex = (k: ConnFieldRow['key']) => connectionFieldRows('postgres').find((r) => r.key === k)?.example ?? '';
+  return {
+    host: ex('host'),
+    port: ex('port'),
+    database: ex('database'),
+    username: ex('username'),
+    password: ex('password'),
+  };
+};
 
 /** 将后端返回的参数规范化为表单所需格式（确保字符串类型等） */
 function normalizeParamsForForm(p: PostgresLoginParams): PostgresLoginParams {
@@ -118,8 +146,8 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     try {
       const testId = `__test_${generateConnectionId()}`;
       const payload = buildPayload();
-      const { sucess, error: err } = await connectPostgres(testId, payload, dbType());
-      if (sucess) {
+      const { success, error: err } = await connectPostgres(testId, payload, dbType());
+      if (success) {
         try {
           await disconnectPostgres(testId);
         } catch {
@@ -256,6 +284,42 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           <option value="mysql">MySQL</option>
         </select>
       </div>
+      <Show when={dbType() === 'mysql'}>
+        <div
+          style={{
+            'margin-bottom': '12px',
+            padding: '10px 12px',
+            'font-size': '12px',
+            color: vscode.foregroundDim,
+            'background-color': vscode.inputBg,
+            border: `1px solid ${vscode.border}`,
+            'border-radius': '6px',
+            'line-height': '1.5',
+          }}
+        >
+          <strong style={{ color: vscode.foreground }}>MySQL</strong>
+          ：表单字段与 PostgreSQL 共用同一套存储结构（host / port / database / 用户密码）。「database」即 MySQL
+          的库名；未填库时请连接后在侧栏点击目标库。当前版本连接串侧未单独暴露 SSL/TLS 开关（与多数内网/Dev
+          场景一致），如需可后续在类型与建连层扩展。
+        </div>
+      </Show>
+      <Show when={dbType() === 'postgres'}>
+        <div
+          style={{
+            'margin-bottom': '12px',
+            padding: '10px 12px',
+            'font-size': '12px',
+            color: vscode.foregroundDim,
+            'background-color': vscode.inputBg,
+            border: `1px solid ${vscode.border}`,
+            'border-radius': '6px',
+            'line-height': '1.5',
+          }}
+        >
+          <strong style={{ color: vscode.foreground }}>PostgreSQL</strong>
+          ：通知类消息通过 SSE 推送到界面。「database」为初始连接库；查询中可直接使用带 schema 限定名的对象。
+        </div>
+      </Show>
       <table style={{ 'border-collapse': 'collapse', width: '100%', 'max-width': '600px' }}>
         <thead>
           <tr>
@@ -265,7 +329,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </tr>
         </thead>
         <tbody>
-          <For each={fields}>
+          <For each={connectionFieldRows(dbType())}>
             {(field) => (
               <tr>
                 <td style={{ padding: '8px 12px 8px 0', color: vscode.foreground }}>{field.label}</td>
@@ -275,7 +339,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
                     type={field.key === 'password' ? 'password' : 'text'}
                     value={String(form()[field.key] ?? '')}
                     onInput={(e) => onChange(field.key, e.currentTarget.value)}
-                    placeholder={field.example}
+                    placeholder={field.example || (field.key === 'password' ? '••••••••' : '')}
                     aria-label={`${field.label} 输入`}
                     style={{
                       width: '100%',
@@ -299,7 +363,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           checked={form().sshEnabled ?? false}
           onInput={(e) => setSshEnabled(e.currentTarget.checked)}
         />
-        启用 SSH 隧道（通过跳板机连接）
+        启用 SSH 隧道（PostgreSQL / MySQL 均支持；通过跳板机访问内网数据库端口）
       </label>
       <Show when={form().sshEnabled}>
         <div style={{ 'margin-top': '6px', 'font-size': '12px', color: vscode.foregroundDim }}>

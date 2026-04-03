@@ -7,7 +7,7 @@
 import { serve } from "bun";
 import { join } from "path";
 import index from "../index.html";
-import { createApiRoutes } from "../backend/api-handlers-http";
+import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
 
 // Monaco workers - 用 import file 嵌入，bun build --compile 时打包进 exe（worker 为 .js 无 d.ts）
 // @ts-expect-error import with type file
@@ -41,6 +41,10 @@ const server = serve({
   async fetch(req) {
     const url = new URL(req.url);
     const pathname = url.pathname;
+
+    if (req.method === "POST" && pathname.startsWith("/api/")) {
+      return handleApiPost(req);
+    }
 
     // Monaco 其他资源（loader、base 等）- 开发时从 node_modules 读取
     if (pathname.startsWith("/vs/")) {
