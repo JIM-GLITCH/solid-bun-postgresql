@@ -8,7 +8,7 @@ import App from "./app";
 import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 import { readClipboardText } from "./clipboard";
-import { getSqlEditorForElement } from "./monaco-paste-registry";
+import { resolveMonacoEditorForPaste } from "./monaco-paste-registry";
 
 setTransport(new VsCodeTransport());
 
@@ -20,53 +20,55 @@ document.addEventListener(
   "paste",
   (e) => {
     const target = e.target as HTMLElement;
-    const inMonaco = target.closest("[data-sql-editor]") || target.closest(".monaco-editor");
-    if (inMonaco) {
-      e.preventDefault();
-      e.stopPropagation();
-      const editor =
-        getSqlEditorForElement(target) ??
-        (document.activeElement && getSqlEditorForElement(document.activeElement as HTMLElement));
-      if (editor) {
-        const model = editor.getModel();
-        const sel = editor.getSelection();
-        if (model && sel) {
-          readClipboardText().then((text) => {
-            if (!text) return;
-            if (sel.isEmpty()) {
-              const lineNumber = sel.startLineNumber;
-              const endCol = model.getLineMaxColumn(lineNumber);
-              editor.executeEdits("paste", [
-                {
-                  range: {
-                    startLineNumber: lineNumber,
-                    startColumn: endCol,
-                    endLineNumber: lineNumber,
-                    endColumn: endCol,
-                  },
-                  text: "\n" + text,
+    const editor =
+      resolveMonacoEditorForPaste(target) ??
+      (document.activeElement instanceof HTMLElement
+        ? resolveMonacoEditorForPaste(document.activeElement)
+        : null);
+    if (editor) {
+      const model = editor.getModel();
+      const sel = editor.getSelection();
+      if (model && sel) {
+        e.preventDefault();
+        e.stopPropagation();
+        readClipboardText().then((text) => {
+          if (!text) return;
+          if (sel.isEmpty()) {
+            const lineNumber = sel.startLineNumber;
+            const endCol = model.getLineMaxColumn(lineNumber);
+            editor.executeEdits("paste", [
+              {
+                range: {
+                  startLineNumber: lineNumber,
+                  startColumn: endCol,
+                  endLineNumber: lineNumber,
+                  endColumn: endCol,
                 },
-              ]);
-              editor.setPosition({ lineNumber: lineNumber + 1, column: 1 });
-              editor.revealLineInCenter(lineNumber + 1);
-            } else {
-              editor.executeEdits("paste", [
-                {
-                  range: {
-                    startLineNumber: sel.startLineNumber,
-                    startColumn: sel.startColumn,
-                    endLineNumber: sel.endLineNumber,
-                    endColumn: sel.endColumn,
-                  },
-                  text,
+                text: "\n" + text,
+              },
+            ]);
+            editor.setPosition({ lineNumber: lineNumber + 1, column: 1 });
+            editor.revealLineInCenter(lineNumber + 1);
+          } else {
+            editor.executeEdits("paste", [
+              {
+                range: {
+                  startLineNumber: sel.startLineNumber,
+                  startColumn: sel.startColumn,
+                  endLineNumber: sel.endLineNumber,
+                  endColumn: sel.endColumn,
                 },
-              ]);
-            }
-          });
-        }
+                text,
+              },
+            ]);
+          }
+        });
       }
       return;
     }
+    // 仍在 Monaco 内但未解析到 editor 时勿走下方 input/textarea 分支，避免改到隐藏的 inputarea
+    if (target.closest(".monaco-editor")) return;
+
     const editable =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||

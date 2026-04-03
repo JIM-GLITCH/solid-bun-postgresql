@@ -2001,6 +2001,8 @@ export default function SqlEditor(props: SqlEditorProps) {
     let keyDownDispose: monaco.IDisposable | undefined;
     let pasteDom: HTMLElement | null = null;
     const onPaste = (ev: ClipboardEvent) => {
+      // AI 指令框在编辑器 DOM 内；捕获阶段否则会一律 doPaste 进 Monaco，导致无法粘贴到输入框
+      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) return;
       ev.preventDefault();
       ev.stopPropagation();
       doPaste();
@@ -2016,11 +2018,13 @@ export default function SqlEditor(props: SqlEditorProps) {
     if (typeof (window as any).acquireVsCodeApi === "function") {
       keyDownDispose = editor.onKeyDown((e) => {
         if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "v" || e.keyCode === monaco.KeyCode.KeyV)) {
+          if (aiPanelPhase === "instruct" && isFocusInsideAiPanel()) return;
           e.preventDefault();
           e.stopPropagation();
           doPaste();
         }
         if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "x" || e.keyCode === monaco.KeyCode.KeyX)) {
+          if (aiPanelPhase === "instruct" && isFocusInsideAiPanel()) return;
           e.preventDefault();
           e.stopPropagation();
           const model = editor?.getModel();
