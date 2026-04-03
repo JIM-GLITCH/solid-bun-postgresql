@@ -495,6 +495,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setLoading(true);
     setError(null);
     resetTableScrollForNewQuery();
+    setSelection(null);
+    setSelectionOrigin(null);
+    setSelectionAnchor(null);
     setResult([]);  // 清空 store
     setPendingUpdates([]);  // 清空待执行的更新
     setPendingDeletes([]);  // 清空待执行的删除
@@ -996,7 +999,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (!dbCaps().resultCellEdit) return;
     const cols = columns();
     if (cols.length === 0) return;
-    const insertAt = Math.max(0, belowRowIndex + 1);
+    // 选区可能仍指向上一结果集的行号；空表时 belowRow+1 会大于 result.length，导致新行落在索引 0 而 pendingInserts 记成 1，插入行「消失」
+    const insertAt = Math.min(Math.max(0, belowRowIndex + 1), result.length);
     const newRow = cols.map(() => null);
     const newModifiedRow = cols.map(() => false);
     // 使用不可变更新，兼容空表（produce 对空数组可能有兼容问题）
@@ -1879,6 +1883,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setLoading(true);
     setError(null);
     resetTableScrollForNewQuery();
+    setSelection(null);
+    setSelectionOrigin(null);
+    setSelectionAnchor(null);
     setResult([]);
     setPendingUpdates([]);
     setPendingDeletes([]);
