@@ -147,6 +147,12 @@ import "./monaco-environment";
 import { getSqlSegments } from "../shared/src";
 import { registerSqlEditor } from "./monaco-paste-registry";
 import { readClipboardText, writeClipboardText } from "./clipboard";
+import {
+  clearEmptySelectionLineCopyMeta,
+  normalizeClipboardNewlines,
+  recordEmptySelectionLineCopyForWebview,
+  tryVsCodeStyleEmptySelectionLinePaste,
+} from "./vscode-line-clipboard-meta";
 import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
 import {
   applyCursorStyleHunkToBase,
@@ -1963,19 +1969,22 @@ export default function SqlEditor(props: SqlEditorProps) {
       if (!model || !sel) return;
       readClipboardText().then((text) => {
         if (!text) return;
+        if (tryVsCodeStyleEmptySelectionLinePaste(editor!, model, sel, text)) return;
         if (sel.isEmpty()) {
-          // 无选区：与 VSCode 一致，粘贴到下一行并自动加换行
-          const lineNumber = sel.startLineNumber;
-          const endCol = model.getLineMaxColumn(lineNumber);
+          const line = sel.startLineNumber;
+          const col = sel.startColumn;
+          const startOffset = model.getOffsetAt({ lineNumber: line, column: col });
+          const norm = normalizeClipboardNewlines(text);
           const range = {
-            startLineNumber: lineNumber,
-            startColumn: endCol,
-            endLineNumber: lineNumber,
-            endColumn: endCol,
+            startLineNumber: line,
+            startColumn: col,
+            endLineNumber: line,
+            endColumn: col,
           };
-          editor!.executeEdits("paste", [{ range, text: "\n" + text }]);
-          editor!.setPosition({ lineNumber: lineNumber + 1, column: 1 });
-          editor!.revealLineInCenter(lineNumber + 1);
+          editor!.executeEdits("paste", [{ range, text: norm }]);
+          const endPos = model.getPositionAt(startOffset + norm.length);
+          editor!.setPosition(endPos);
+          editor!.revealPositionInCenter(endPos);
         } else {
           // 有选区：在光标处替换选区
           const range = {
@@ -1988,15 +1997,20 @@ export default function SqlEditor(props: SqlEditorProps) {
         }
       });
     };
-    // copy/cut：仅同步到 vscode 剪贴板（副作用），不阻止 Monaco 默认行为
+    // copy/cut：同步到 vscode 剪贴板（副作用），不阻止 Monaco 默认行为。
+    // 无选区复制：整行 + 尾随 \\n，并记录元数据，供粘贴时走 VS Code 式「整行贴到当前行行首」。
     const syncCopyToVscode = () => {
       const model = editor?.getModel();
       const sel = editor?.getSelection();
       if (!model || !sel) return;
-      const text = sel.isEmpty()
-        ? model.getLineContent(sel.startLineNumber)
-        : model.getValueInRange(sel);
-      writeClipboardText(text);
+      if (sel.isEmpty()) {
+        const t = normalizeClipboardNewlines(`${model.getLineContent(sel.startLineNumber)}\n`);
+        recordEmptySelectionLineCopyForWebview(t);
+        void writeClipboardText(t);
+      } else {
+        clearEmptySelectionLineCopyMeta();
+        void writeClipboardText(model.getValueInRange(sel));
+      }
     };
     let keyDownDispose: monaco.IDisposable | undefined;
     let pasteDom: HTMLElement | null = null;
@@ -2008,10 +2022,44 @@ export default function SqlEditor(props: SqlEditorProps) {
       doPaste();
     };
     const onCopy = (ev: ClipboardEvent) => {
+      // AI 指令框在编辑器 DOM 内；捕获阶段否则会先 syncCopyToVscode 把 Monaco 选区写入剪贴板，盖住 input 内复制
+      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) {
+        const t = ev.target;
+        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
+          const start = t.selectionStart ?? 0;
+          const end = t.selectionEnd ?? 0;
+          if (start !== end) {
+            const text = t.value.slice(start, end);
+            ev.preventDefault();
+            ev.stopPropagation();
+            clearEmptySelectionLineCopyMeta();
+            void writeClipboardText(text);
+          }
+          return;
+        }
+      }
       syncCopyToVscode();
       // 不 preventDefault，让 Monaco 保持默认复制行为
     };
     const onCut = (ev: ClipboardEvent) => {
+      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) {
+        const t = ev.target;
+        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
+          const start = t.selectionStart ?? 0;
+          const end = t.selectionEnd ?? 0;
+          if (start !== end) {
+            const text = t.value.slice(start, end);
+            ev.preventDefault();
+            ev.stopPropagation();
+            clearEmptySelectionLineCopyMeta();
+            void writeClipboardText(text);
+            t.value = t.value.slice(0, start) + t.value.slice(end);
+            t.selectionStart = t.selectionEnd = start;
+            t.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          return;
+        }
+      }
       syncCopyToVscode();
       // 不 preventDefault，让 Monaco 保持默认剪切行为（删除选区）
     };
@@ -2030,9 +2078,14 @@ export default function SqlEditor(props: SqlEditorProps) {
           const model = editor?.getModel();
           const sel = editor?.getSelection();
           if (!model || !sel) return;
-          const text = sel.isEmpty()
-            ? model.getLineContent(sel.startLineNumber)
-            : model.getValueInRange(sel);
+          let text: string;
+          if (sel.isEmpty()) {
+            text = normalizeClipboardNewlines(`${model.getLineContent(sel.startLineNumber)}\n`);
+            recordEmptySelectionLineCopyForWebview(text);
+          } else {
+            clearEmptySelectionLineCopyMeta();
+            text = model.getValueInRange(sel);
+          }
           writeClipboardText(text);
           if (sel.isEmpty()) {
             // cut whole line: delete line including newline

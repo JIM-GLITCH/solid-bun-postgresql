@@ -9,6 +9,7 @@ import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 import { readClipboardText } from "./clipboard";
 import { resolveMonacoEditorForPaste } from "./monaco-paste-registry";
+import { normalizeClipboardNewlines, tryVsCodeStyleEmptySelectionLinePaste } from "./vscode-line-clipboard-meta";
 
 setTransport(new VsCodeTransport());
 
@@ -33,22 +34,26 @@ document.addEventListener(
         e.stopPropagation();
         readClipboardText().then((text) => {
           if (!text) return;
+          if (tryVsCodeStyleEmptySelectionLinePaste(editor, model, sel, text)) return;
+          const norm = normalizeClipboardNewlines(text);
           if (sel.isEmpty()) {
-            const lineNumber = sel.startLineNumber;
-            const endCol = model.getLineMaxColumn(lineNumber);
+            const line = sel.startLineNumber;
+            const col = sel.startColumn;
+            const startOffset = model.getOffsetAt({ lineNumber: line, column: col });
             editor.executeEdits("paste", [
               {
                 range: {
-                  startLineNumber: lineNumber,
-                  startColumn: endCol,
-                  endLineNumber: lineNumber,
-                  endColumn: endCol,
+                  startLineNumber: line,
+                  startColumn: col,
+                  endLineNumber: line,
+                  endColumn: col,
                 },
-                text: "\n" + text,
+                text: norm,
               },
             ]);
-            editor.setPosition({ lineNumber: lineNumber + 1, column: 1 });
-            editor.revealLineInCenter(lineNumber + 1);
+            const endPos = model.getPositionAt(startOffset + norm.length);
+            editor.setPosition(endPos);
+            editor.revealPositionInCenter(endPos);
           } else {
             editor.executeEdits("paste", [
               {
@@ -58,7 +63,7 @@ document.addEventListener(
                   endLineNumber: sel.endLineNumber,
                   endColumn: sel.endColumn,
                 },
-                text,
+                text: norm,
               },
             ]);
           }
@@ -66,8 +71,15 @@ document.addEventListener(
       }
       return;
     }
-    // 仍在 Monaco 内但未解析到 editor 时勿走下方 input/textarea 分支，避免改到隐藏的 inputarea
-    if (target.closest(".monaco-editor")) return;
+    // 仅 Monaco 自带隐藏 inputarea 在未命中 editor 路径时跳过：勿 splice 破坏输入层。
+    // AI 指令框等落在 .monaco-editor 内的原生 input 仍应走下方剪贴板桥接。
+    if (
+      target instanceof HTMLTextAreaElement &&
+      target.classList.contains("inputarea") &&
+      target.closest(".monaco-editor")
+    ) {
+      return;
+    }
 
     const editable =
       target instanceof HTMLInputElement ||
