@@ -38,7 +38,7 @@ export function defaultDatabaseCapabilities(kind: DbKind): DatabaseCapabilities 
   if (kind === "sqlserver") {
     return {
       dialect: "sqlserver",
-      streamingQuery: false,
+      streamingQuery: true,
       cancelQuery: false,
       explainAnalyzeJson: false,
       explainText: false,

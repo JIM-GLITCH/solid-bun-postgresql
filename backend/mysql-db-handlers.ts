@@ -437,34 +437,6 @@ export async function handleMysqlDbRequest(
       return { capabilities: capabilitiesForKind(session.dbKind) };
     }
 
-    case "db/query-readonly": {
-      const cid = getConnId();
-      const { query, limit = 1000, defaultSchema } = payload as {
-        connectionId: string;
-        query: string;
-        limit?: number;
-        defaultSchema?: string;
-      };
-      const session = mysqlSession(getSWithDb, cid);
-      const q = query.trim();
-      const lowered = q.toLowerCase();
-      const limitedQuery = /\blimit\b/i.test(lowered) ? q : `${q} LIMIT ${limit}`;
-
-      const poolConn = await session.backGroundPool.getConnection();
-      try {
-        await ensureMysqlDefaultDatabase(session, poolConn, defaultSchema);
-        const [rows, fields] = await poolConn.query({ sql: limitedQuery, rowsAsArray: true });
-        const fp = fields as FieldPacket[] | undefined;
-        const columns =
-          fp?.length && fp.length > 0
-            ? await calculateMysqlColumnEditable(session.backGroundPool, fp, session.mysqlCurrentDatabase)
-            : [];
-        return { rows: rows as unknown[][], columns, hasMore: false };
-      } finally {
-        poolConn.release();
-      }
-    }
-
     case "db/query-stream": {
       const cid = getConnId();
       const { query, statements: payloadStatements, batchSize = 100, defaultSchema } = payload as {

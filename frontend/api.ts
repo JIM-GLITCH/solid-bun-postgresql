@@ -159,22 +159,6 @@ export async function saveChanges(connectionId: string, sql: string) {
   return api().request("db/save-changes", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
-/** 只读查询（Sidebar 等） */
-export async function queryReadonly(connectionId: string, query: string, limit = 1000, defaultSchema?: string) {
-  const ds = defaultSchema?.trim();
-  return api().request("db/query-readonly", {
-    ...dbConn(connectionId),
-    query,
-    limit,
-    ...(ds ? { defaultSchema: ds } : {}),
-  }) as Promise<{
-    rows: any[][];
-    columns: ColumnEditableInfo[];
-    hasMore: boolean;
-    error?: string;
-  }>;
-}
-
 /** 执行 EXPLAIN ANALYZE，返回 JSON 格式执行计划 */
 export async function explainQuery(connectionId: string, query: string, defaultSchema?: string) {
   const ds = defaultSchema?.trim();

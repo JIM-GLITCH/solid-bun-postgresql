@@ -11,7 +11,6 @@ import {
   queryStreamMore,
   cancelQuery,
   saveChanges,
-  queryReadonly,
   subscribeEvents,
   explainQuery,
   getAiConfig,
@@ -491,7 +490,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const sqlToRun = overrideSql ?? sql();
     if (!sqlToRun.trim()) return;
     const statements = getStatementsFromText(sqlToRun);
-    const cap = getEffectiveDbCapabilities(cid);
     setLoading(true);
     setError(null);
     resetTableScrollForNewQuery();
@@ -507,30 +505,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      if (!cap.streamingQuery) {
-        if (statements.length !== 1) {
-          throw new Error("当前连接未启用流式结果集，请一次只执行一条语句。");
-        }
-        const ro = await queryReadonly(cid, statements[0], 1000, mysqlDefaultSchemaForConn(cid));
-        if (ro.error) throw new Error(ro.error);
-        const newCols = ro.columns || [];
-        setColumns(newCols);
-        const cur = columnWidths;
-        if (cur.length === newCols.length) {
-          setColumnWidths(cur.map((w, i) => w || 120));
-        } else {
-          setColumnWidths(newCols.map(() => 120));
-        }
-        const rows = ro.rows || [];
-        setResult(rows);
-        const colCount = newCols.length;
-        setModifiedCells(rows.map(() => Array(colCount).fill(false)));
-        setHasMore(false);
-        setQueryDuration(performance.now() - startTime);
-        addQuery(sqlToRun, cid).catch((e) => console.warn("查询历史保存失败:", e));
-        return;
-      }
-
       const data = await queryStream(cid, statements, 100, mysqlDefaultSchemaForConn(cid));
 
       if (data.error) {
@@ -573,7 +547,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (loadingMore() || !hasMore()) return;
     const cid = props.activeConnectionId?.();
     if (!cid) return;
-    if (!getEffectiveDbCapabilities(cid).streamingQuery) return;
 
     setLoadingMore(true);
     try {
@@ -1877,7 +1850,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     );
   }
 
-  // 处理从 Sidebar 发来的查询请求（使用只读 API，不阻塞用户操作）
+  // 处理从 Sidebar 发来的查询请求（与编辑器一致走流式，首批 1000 行对齐原只读上限）
   async function handleQueryRequest(connectionId: string, querySql: string) {
     setSql(querySql);
     setLoading(true);
@@ -1896,7 +1869,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     
     const startTime = performance.now();
     try {
-      const data = await queryReadonly(connectionId, querySql, 1000, mysqlDefaultSchemaForConn(connectionId));
+      const statements = getStatementsFromText(querySql);
+      const data = await queryStream(connectionId, statements, 1000, mysqlDefaultSchemaForConn(connectionId));
       if (data.error) {
         throw new Error(data.error);
       }

@@ -9,7 +9,9 @@ import type { Pool as MysqlPool, PoolConnection } from "mysql2/promise";
 import type { DbKind, SSEMessage } from "../shared/src";
 import type { GetDbConfigResult } from "./connect-postgres";
 import type { GetMysqlDbConfigResult } from "./connect-mysql";
+import type { ConnectionPool as MssqlConnectionPool } from "mssql";
 import type { GetSqlServerDbConfigResult } from "./connect-sqlserver";
+import type { SqlServerStreamingQueryHandle } from "./sqlserver-mssql-stream";
 
 export interface PostgresSessionConnection {
   dbKind: "postgres";
@@ -46,15 +48,15 @@ export interface MysqlSessionConnection {
 /** SQL Server：查询与侧栏共用同一 ConnectionPool（无独立「长连接」句柄） */
 export interface SqlServerSessionConnection {
   dbKind: "sqlserver";
-  /** node-mssql ConnectionPool（`mssql` 包无官方 .d.ts） */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  userUsedClient: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  backGroundPool: any;
+  /** node-mssql `ConnectionPool`（类型见 `@types/mssql`） */
+  userUsedClient: MssqlConnectionPool;
+  backGroundPool: MssqlConnectionPool;
   dbForReconnect: GetSqlServerDbConfigResult;
   eventPushers: Set<(msg: SSEMessage) => void>;
   closeTunnel?: () => Promise<void>;
   keepAliveTimer?: ReturnType<typeof setInterval>;
+  /** db/query-stream 未读完时的 mssql 流式请求 + 事务，须 teardown 后归还池 */
+  sqlServerRowStream?: SqlServerStreamingQueryHandle;
 }
 
 export type SessionConnection = PostgresSessionConnection | MysqlSessionConnection | SqlServerSessionConnection;

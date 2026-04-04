@@ -4,7 +4,7 @@
 import type { ConnectDbRequest, DbKind, DatabaseCapabilities, PostgresLoginParams, SSEMessage } from "../shared/src";
 import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
 import { calculateColumnEditable } from "./column-editable";
-import type { Client } from "pg";
+import type { Client, PoolClient } from "pg";
 import Cursor from "pg-cursor";
 import type { SessionConnection, PostgresSessionConnection } from "./session-connection";
 
@@ -352,24 +352,6 @@ export async function handlePostgresDbRequest(
       } catch (e: any) {
         sendSSEMessage(cid, { type: "ERROR", message: `EXPLAIN 错误: ${e.message}`, timestamp: Date.now() });
         throw e;
-      }
-    }
-
-    case "db/query-readonly": {
-      const cid = getConnId();
-      const { query, limit = 1000 } = payload as { connectionId: string; query: string; limit?: number };
-      const session = pgSession(getSWithDb, cid);
-      const limitedQuery = query.trim().toLowerCase().includes("limit") ? query : `${query} LIMIT ${limit}`;
-      const poolClient = await session.backGroundPool.connect();
-      try {
-        const pidRes = await poolClient.query("SELECT pg_backend_pid() as pid");
-        session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
-        const result = await poolClient.query({ text: limitedQuery, rowMode: "array" });
-        const columnsInfo = await calculateColumnEditable(session.backGroundPool, result.fields, limitedQuery);
-        return { rows: result.rows, columns: columnsInfo, hasMore: false };
-      } finally {
-        session.runningQueryPid = undefined;
-        poolClient.release();
       }
     }
 

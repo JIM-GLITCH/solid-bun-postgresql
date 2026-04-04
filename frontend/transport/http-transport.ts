@@ -12,11 +12,25 @@ export class HttpTransport implements IApiTransport {
     payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     const path = `/api/${method}`;
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    let res: Response;
+    try {
+      res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      const isNet =
+        e instanceof TypeError &&
+        (e.message === "Failed to fetch" || e.message.includes("fetch"));
+      throw new Error(
+        isNet
+          ? `网络请求失败（${method}）：无法连接 API。请确认后端已启动（如 127.0.0.1:3001），且开发服务器已将 /api 代理到该地址。`
+          : e instanceof Error
+            ? e.message
+            : String(e)
+      );
+    }
     const raw = await res.text();
     let data: any;
     try {

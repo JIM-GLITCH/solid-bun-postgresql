@@ -499,16 +499,19 @@ export default function Sidebar(props: SidebarProps) {
       const data = await getIndexes(connectionId, schema, table);
 
       const indexesId = `indexes:${connectionId}:${schema}.${table}`;
-      const indexChildren: TreeNode[] = (data.indexes || []).map((idx: any) => ({
-        id: `index:${connectionId}:${schema}.${table}.${idx.indexname}`,
-        name: idx.indexname,
+      const indexChildren: TreeNode[] = (data.indexes || []).map((idx: any) => {
+        const iname = String(idx.index_name ?? idx.indexname ?? "").trim() || "(unnamed)";
+        return {
+        id: `index:${connectionId}:${schema}.${table}.${iname}`,
+        name: iname,
         type: "index" as NodeType,
         schema,
         table,
         connectionId,
         children: [],
         meta: idx,
-      }));
+      };
+      });
       updateNodeChildren(indexesId, indexChildren);
     } catch (e) {
       console.error("加载索引失败:", e);

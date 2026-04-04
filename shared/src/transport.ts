@@ -31,7 +31,6 @@ export const API_METHODS = [
   "db/query-stream-more",
   "db/save-changes",
   "db/cancel-query",
-  "db/query-readonly",
   "db/explain",
   "db/schemas",
   "db/tables",
@@ -108,7 +107,6 @@ export type ApiRequestPayload = {
   "db/query-stream-more": DbRpcBase & { batchSize?: number; defaultSchema?: string };
   "db/save-changes": DbRpcBase & { sql: string };
   "db/cancel-query": DbRpcBase;
-  "db/query-readonly": DbRpcBase & { query: string; limit?: number; defaultSchema?: string };
   "db/explain": DbRpcBase & { query: string; defaultSchema?: string };
   "db/schemas": DbRpcBase;
   "db/tables": DbRpcBase & { schema: string };

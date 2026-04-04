@@ -1,8 +1,7 @@
 /**
- * Microsoft SQL Server：node-mssql（tedious）
+ * Microsoft SQL Server：node-mssql
  */
 import sql from "mssql";
-import { TYPES as TediousTYPES } from "tedious";
 import type {
   ColumnEditableInfo,
   ConnectDbRequest,
@@ -14,7 +13,16 @@ import type {
 import { getSqlSegments } from "../shared/src";
 import { getSqlServerDbConfig, openSqlServerPool } from "./connect-sqlserver";
 import type { SessionConnection, SqlServerSessionConnection } from "./session-connection";
-import { runSqlServerQueryWithTdsMetadata, type SqlServerTdsColumnMeta } from "./sqlserver-tedious-query";
+import {
+  normalizeMssqlJsType,
+  runSqlServerQueryWithColumnMetadata,
+  type SqlServerColumnMeta,
+} from "./sqlserver-mssql-query";
+import {
+  drainSqlServerStreamBatch,
+  startSqlServerStreamingQuery,
+  teardownSqlServerRowStream,
+} from "./sqlserver-mssql-stream";
 
 function sqlServerSession(getSWithDb: (cid: string) => SessionConnection, cid: string): SqlServerSessionConnection {
   const s = getSWithDb(cid);
@@ -30,41 +38,20 @@ function getStatementsFromSql(sql: string): string[] {
     .filter(Boolean);
 }
 
-/** node-mssql（tedious）挂在 recordset.columns 上的单列元数据 */
-type MssqlRecordsetColumnMeta = {
-  index?: number;
-  name?: string;
-  length?: number;
-  type?: unknown;
-  scale?: number;
-  precision?: number;
-  nullable?: boolean;
-  udt?: { name?: string; database?: string; schema?: string; assembly?: string };
-};
-
-function resolveMssqlColumnMeta(
-  colMeta: Record<string, MssqlRecordsetColumnMeta> | MssqlRecordsetColumnMeta[] | undefined,
-  name: string,
-  idx: number
-): MssqlRecordsetColumnMeta {
-  if (!colMeta) return {};
-  if (Array.isArray(colMeta)) return colMeta[idx] ?? {};
-  const m = colMeta[name];
-  return m != null && typeof m === "object" ? m : {};
-}
-
 /**
  * 与 `mssql/lib/datatypes` 中 `declare()` 规则一致，生成表头展示用类型字符串。
+ * 直接读 `SqlServerColumnMeta`（驱动列经 `mssqlRecordsetColumnsToSqlServerMeta` 一次转换即可）。
  */
-function mssqlColumnDataTypeLabel(col: MssqlRecordsetColumnMeta): string {
+function mssqlColumnDataTypeLabel(col: SqlServerColumnMeta): string {
   const udtName = col.udt?.name != null ? String(col.udt.name).trim() : "";
-  const t = col.type as ({ declaration?: string } & ((...args: unknown[]) => unknown)) | undefined;
-  const decl = t?.declaration != null ? String(t.declaration) : "";
-  const L = col.length;
+  const tRaw = col.mssqlType as ({ declaration?: string } & ((...args: unknown[]) => unknown)) | undefined;
+  const decl = tRaw?.declaration != null ? String(tRaw.declaration) : "";
+  const t = normalizeMssqlJsType(col.mssqlType);
+  const L = col.dataLength;
   const prec = col.precision;
   const sc = col.scale;
 
-  if (t == null) return udtName || "unknown";
+  if (t == null) return decl || udtName || "unknown";
 
   if (t === sql.TYPES.VarChar || t === sql.TYPES.VarBinary) {
     const len = L == null || L > 8000 ? "MAX" : String(L);
@@ -91,21 +78,17 @@ function mssqlColumnDataTypeLabel(col: MssqlRecordsetColumnMeta): string {
   return udtName || "unknown";
 }
 
-function columnEditableFromMssqlMeta(
-  name: string,
-  columnID: number,
-  meta: MssqlRecordsetColumnMeta
-): ColumnEditableInfo {
-  const col: ColumnEditableInfo = {
-    name,
+function columnEditableFromSqlServerMeta(col: SqlServerColumnMeta, columnID: number): ColumnEditableInfo {
+  const out: ColumnEditableInfo = {
+    name: col.colName,
     tableID: 0,
     columnID,
     isEditable: false,
-    dataTypeLabel: mssqlColumnDataTypeLabel(meta),
+    dataTypeLabel: mssqlColumnDataTypeLabel(col),
     sqlDialect: "sqlserver",
   };
-  if (typeof meta.nullable === "boolean") col.nullable = meta.nullable;
-  return col;
+  out.nullable = !!(col.flags & 0x01);
+  return out;
 }
 
 const TDS_INST_SEP = "\x1e";
@@ -114,135 +97,7 @@ function bracketIdentSqlServer(id: string): string {
   return "[" + id.replace(/\]/g, "]]") + "]";
 }
 
-/** tedious 列元数据 → 与 node-mssql recordset.columns 一致的 type 映射（用于 dataTypeLabel） */
-function tediousColumnToMssqlRecordsetMeta(col: SqlServerTdsColumnMeta): MssqlRecordsetColumnMeta {
-  const t = col.type;
-  const L = col.dataLength;
-  let mssqlType: unknown;
-  if (typeof t === "object" && t !== null) {
-    const T = TediousTYPES;
-    switch (t) {
-      case T.Char:
-        mssqlType = sql.TYPES.Char;
-        break;
-      case T.NChar:
-        mssqlType = sql.TYPES.NChar;
-        break;
-      case T.VarChar:
-        mssqlType = sql.TYPES.VarChar;
-        break;
-      case T.NVarChar:
-        mssqlType = sql.TYPES.NVarChar;
-        break;
-      case T.Text:
-        mssqlType = sql.TYPES.Text;
-        break;
-      case T.NText:
-        mssqlType = sql.TYPES.NText;
-        break;
-      case T.Int:
-        mssqlType = sql.TYPES.Int;
-        break;
-      case T.BigInt:
-        mssqlType = sql.TYPES.BigInt;
-        break;
-      case T.TinyInt:
-        mssqlType = sql.TYPES.TinyInt;
-        break;
-      case T.SmallInt:
-        mssqlType = sql.TYPES.SmallInt;
-        break;
-      case T.Bit:
-        mssqlType = sql.TYPES.Bit;
-        break;
-      case T.Float:
-        mssqlType = sql.TYPES.Float;
-        break;
-      case T.Real:
-        mssqlType = sql.TYPES.Real;
-        break;
-      case T.Money:
-        mssqlType = sql.TYPES.Money;
-        break;
-      case T.SmallMoney:
-        mssqlType = sql.TYPES.SmallMoney;
-        break;
-      case T.Numeric:
-        mssqlType = sql.TYPES.Numeric;
-        break;
-      case T.Decimal:
-        mssqlType = sql.TYPES.Decimal;
-        break;
-      case T.DateTime:
-        mssqlType = sql.TYPES.DateTime;
-        break;
-      case T.Time:
-        mssqlType = sql.TYPES.Time;
-        break;
-      case T.Date:
-        mssqlType = sql.TYPES.Date;
-        break;
-      case T.DateTime2:
-        mssqlType = sql.TYPES.DateTime2;
-        break;
-      case T.DateTimeOffset:
-        mssqlType = sql.TYPES.DateTimeOffset;
-        break;
-      case T.SmallDateTime:
-        mssqlType = sql.TYPES.SmallDateTime;
-        break;
-      case T.UniqueIdentifier:
-        mssqlType = sql.TYPES.UniqueIdentifier;
-        break;
-      case T.Image:
-        mssqlType = sql.TYPES.Image;
-        break;
-      case T.Binary:
-        mssqlType = sql.TYPES.Binary;
-        break;
-      case T.VarBinary:
-        mssqlType = sql.TYPES.VarBinary;
-        break;
-      case T.Xml:
-        mssqlType = sql.TYPES.Xml;
-        break;
-      case T.UDT:
-        mssqlType = sql.TYPES.UDT;
-        break;
-      case T.TVP:
-        mssqlType = sql.TYPES.TVP;
-        break;
-      case T.Variant:
-        mssqlType = sql.TYPES.Variant;
-        break;
-      default: {
-        const id = (t as { id?: number }).id;
-        if (id === 0x68) mssqlType = sql.TYPES.Bit;
-        else if (id === 0x6c) mssqlType = sql.TYPES.Numeric;
-        else if (id === 0x6a) mssqlType = sql.TYPES.Decimal;
-        else if (id === 0x26) {
-          if (L === 8) mssqlType = sql.TYPES.BigInt;
-          else if (L === 4) mssqlType = sql.TYPES.Int;
-          else if (L === 2) mssqlType = sql.TYPES.SmallInt;
-          else mssqlType = sql.TYPES.TinyInt;
-        } else if (id === 0x6d) mssqlType = L === 8 ? sql.TYPES.Float : sql.TYPES.Real;
-        else if (id === 0x6e) mssqlType = L === 8 ? sql.TYPES.Money : sql.TYPES.SmallMoney;
-        else if (id === 0x6f) mssqlType = L === 8 ? sql.TYPES.DateTime : sql.TYPES.SmallDateTime;
-        break;
-      }
-    }
-  }
-  return {
-    length: L,
-    type: mssqlType,
-    precision: col.precision,
-    scale: col.scale,
-    nullable: !!(col.flags & 0x01),
-    udt: col.udtInfo ? { name: col.udtInfo.typeName } : undefined,
-  };
-}
-
-function parseTdsTableParts(col: SqlServerTdsColumnMeta): { schema: string; table: string } | undefined {
+function parseTdsTableParts(col: SqlServerColumnMeta): { schema: string; table: string } | undefined {
   const tn = col.tableName;
   const parts = Array.isArray(tn)
     ? tn.filter(Boolean).map((x) => String(x))
@@ -332,7 +187,7 @@ function indexBrowseMetadataByResultColumn(
 }
 
 function resolveSqlServerBaseTable(
-  tcol: SqlServerTdsColumnMeta,
+  tcol: SqlServerColumnMeta,
   browse: SqlServerBrowseColumnMeta | undefined
 ): { schema: string; table: string } | undefined {
   const tds = parseTdsTableParts(tcol);
@@ -344,7 +199,7 @@ function resolveSqlServerBaseTable(
 }
 
 function sqlServerPhysicalColumnName(
-  tcol: SqlServerTdsColumnMeta,
+  tcol: SqlServerColumnMeta,
   browse: SqlServerBrowseColumnMeta | undefined
 ): string {
   const sc = browse?.sourceColumn?.trim();
@@ -356,16 +211,16 @@ function sqlServerPhysicalColumnName(
 async function enrichSqlServerQueryColumnsEditable(
   pool: sql.ConnectionPool,
   base: ColumnEditableInfo[],
-  tdsColumns: SqlServerTdsColumnMeta[],
+  columnMeta: SqlServerColumnMeta[],
   browseRows?: SqlServerBrowseColumnMeta[]
 ): Promise<ColumnEditableInfo[]> {
-  if (base.length !== tdsColumns.length || base.length === 0) return base;
+  if (base.length !== columnMeta.length || base.length === 0) return base;
 
-  const browseByIndex = indexBrowseMetadataByResultColumn(tdsColumns.length, browseRows);
+  const browseByIndex = indexBrowseMetadataByResultColumn(columnMeta.length, browseRows);
 
   const instances = new Map<string, Map<string, number[]>>();
-  for (let i = 0; i < tdsColumns.length; i++) {
-    const tcol = tdsColumns[i]!;
+  for (let i = 0; i < columnMeta.length; i++) {
+    const tcol = columnMeta[i]!;
     const tab = resolveSqlServerBaseTable(tcol, browseByIndex[i]);
     if (!tab) continue;
     const orgName = sqlServerPhysicalColumnName(tcol, browseByIndex[i]);
@@ -378,8 +233,8 @@ async function enrichSqlServerQueryColumnsEditable(
   }
 
   const tableKeys = new Set<string>();
-  for (let i = 0; i < tdsColumns.length; i++) {
-    const tab = resolveSqlServerBaseTable(tdsColumns[i]!, browseByIndex[i]);
+  for (let i = 0; i < columnMeta.length; i++) {
+    const tab = resolveSqlServerBaseTable(columnMeta[i]!, browseByIndex[i]);
     if (tab) tableKeys.add(tdsTableKey(tab.schema, tab.table));
   }
 
@@ -458,8 +313,8 @@ async function enrichSqlServerQueryColumnsEditable(
     }
   }
 
-  for (let i = 0; i < tdsColumns.length; i++) {
-    const tcol = tdsColumns[i]!;
+  for (let i = 0; i < columnMeta.length; i++) {
+    const tcol = columnMeta[i]!;
     const tab = resolveSqlServerBaseTable(tcol, browseByIndex[i]);
     if (!tab) continue;
     const tk = tdsTableKey(tab.schema, tab.table);
@@ -499,8 +354,8 @@ async function enrichSqlServerQueryColumnsEditable(
 
   // TDS usUpdateable（flags bit 2–3，即 0x0c）在即席 SELECT 结果里常为 ReadOnly；
   // 网格编辑走带唯一键的 UPDATE，不依赖可更新游标，故不能据此关掉 isEditable。
-  for (let i = 0; i < tdsColumns.length; i++) {
-    const f = tdsColumns[i]!.flags;
+  for (let i = 0; i < columnMeta.length; i++) {
+    const f = columnMeta[i]!.flags;
     const br = browseByIndex[i];
     if (f & 0x20 || br?.isComputedColumn) base[i].isEditable = false; // fComputed（TDS 7.2+）
     if (f & 0x20 || br?.isComputedColumn === true) base[i].omitFromInsert = true;
@@ -519,74 +374,13 @@ async function buildSqlServerGridQueryResult(
   sqlText: string,
   browseSourceSql?: string
 ): Promise<{ rows: unknown[][]; columns: ColumnEditableInfo[] }> {
-  const { rows, tdsColumns } = await runSqlServerQueryWithTdsMetadata(pool, sqlText);
-  const base: ColumnEditableInfo[] = tdsColumns.map((tdsCol, idx) =>
-    columnEditableFromMssqlMeta(tdsCol.colName, idx + 1, tediousColumnToMssqlRecordsetMeta(tdsCol))
-  );
+  const { rows, columnMeta } = await runSqlServerQueryWithColumnMetadata(pool, sqlText);
+  const base: ColumnEditableInfo[] = columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
   const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, browseSourceSql ?? sqlText);
-  const columns = await enrichSqlServerQueryColumnsEditable(pool, base, tdsColumns, browseRows);
+  const columns = await enrichSqlServerQueryColumnsEditable(pool, base, columnMeta, browseRows);
   return { rows, columns };
 }
 
-/**
- * node-mssql 的 recordset 为空行时仍带 `columns`（TDS 列元数据），否则前端拿不到表头。
- */
-function recordsetToRowsAndColumns(recordset: unknown): {
-  rows: unknown[][];
-  columns: ColumnEditableInfo[];
-} {
-  const rs = (Array.isArray(recordset) ? recordset : []) as Record<string, unknown>[];
-  const colMetaRaw =
-    recordset != null && typeof recordset === "object" && "columns" in recordset
-      ? (recordset as { columns?: unknown }).columns
-      : undefined;
-
-  const colMeta =
-    colMetaRaw != null && typeof colMetaRaw === "object"
-      ? (colMetaRaw as Record<string, MssqlRecordsetColumnMeta> | MssqlRecordsetColumnMeta[])
-      : undefined;
-
-  if (rs.length > 0) {
-    const names = Object.keys(rs[0]);
-    const columns: ColumnEditableInfo[] = names.map((name, idx) =>
-      columnEditableFromMssqlMeta(name, idx + 1, resolveMssqlColumnMeta(colMeta, name, idx))
-    );
-    const rows = rs.map((row) => names.map((n) => row[n]));
-    return { rows, columns };
-  }
-
-  if (colMeta && typeof colMeta === "object" && !Array.isArray(colMeta)) {
-    const entries = Object.values(colMeta).filter(
-      (c): c is MssqlRecordsetColumnMeta => c != null && typeof c === "object"
-    );
-    if (entries.length > 0) {
-      const names = entries
-        .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
-        .map((c) => String(c.name ?? ""));
-      const columns: ColumnEditableInfo[] = names.map((name, idx) =>
-        columnEditableFromMssqlMeta(name, idx + 1, entries[idx] ?? {})
-      );
-      return { rows: [], columns };
-    }
-  }
-
-  if (Array.isArray(colMeta) && colMeta.length > 0) {
-    const names = colMeta.map((c, i) => String(c.name ?? `col${i + 1}`));
-    const columns: ColumnEditableInfo[] = names.map((name, idx) =>
-      columnEditableFromMssqlMeta(name, idx + 1, colMeta[idx] ?? {})
-    );
-    return { rows: [], columns };
-  }
-
-  return { rows: [], columns: [] };
-}
-
-/** 只读查询行数上限：SET ROWCOUNT（单批次内有效） */
-function wrapReadonlyWithRowCount(innerSql: string, limit: number): string {
-  const lim = Math.max(1, Math.min(100_000, Math.floor(limit)));
-  // 池化连接上可能残留上次失败批处理未执行的 SET ROWCOUNT 0，先清零再限制行数
-  return `SET ROWCOUNT 0;\nSET ROWCOUNT ${lim};\n${innerSql}\nSET ROWCOUNT 0;`;
-}
 
 function sumRowsAffected(rowsAffected: number[] | undefined): number {
   if (!rowsAffected?.length) return 0;
@@ -1179,6 +973,11 @@ export async function handleSqlServerDbRequest(
           await existing.userUsedClient.end().catch(() => {});
           await existing.backGroundPool.end().catch(() => {});
         } else if (existing.dbKind === "sqlserver") {
+          const ex = existing as SqlServerSessionConnection;
+          if (ex.sqlServerRowStream) {
+            await teardownSqlServerRowStream(ex.sqlServerRowStream);
+            ex.sqlServerRowStream = undefined;
+          }
           await existing.userUsedClient.close().catch(() => {});
         } else {
           try {
@@ -1220,27 +1019,91 @@ export async function handleSqlServerDbRequest(
       return { capabilities: capabilitiesForKind(session.dbKind) };
     }
 
-    case "db/query-readonly": {
+    case "db/query-stream": {
       const cid = getConnId();
-      const { query, limit = 1000 } = payload as {
+      const { query, statements: payloadStatements, batchSize = 100 } = payload as {
         connectionId: string;
-        query: string;
-        limit?: number;
+        query?: string;
+        statements?: string[];
+        batchSize?: number;
         defaultSchema?: string;
       };
-      const session = sqlServerSession(getSWithDb, cid);
-      const q = query.trim();
-      const statements = getStatementsFromSql(q);
-      if (statements.length !== 1) {
-        throw new Error("SQL Server 只读查询当前仅支持单条语句");
+      const statements = payloadStatements?.length ? payloadStatements : getStatementsFromSql(query ?? "");
+      if (statements.length === 0) {
+        return { rows: [], columns: [], hasMore: false };
       }
-      const innerSelect = statements[0]!;
-      const limited = wrapReadonlyWithRowCount(innerSelect, limit);
+
+      const bs = Math.max(1, batchSize ?? 100);
+      const session = sqlServerSession(getSWithDb, cid);
       const pool = session.backGroundPool;
+
+      if (session.sqlServerRowStream) {
+        await teardownSqlServerRowStream(session.sqlServerRowStream);
+        session.sqlServerRowStream = undefined;
+      }
+
+      const preamble = statements.slice(0, -1);
+      const lastStatement = statements[statements.length - 1]!;
+
+      let h;
       try {
-        const { rows, columns } = await buildSqlServerGridQueryResult(pool, limited, innerSelect);
-        return { rows, columns, hasMore: false };
+        h = await startSqlServerStreamingQuery(pool, {
+          preambleBatches: preamble,
+          selectSql: lastStatement,
+          browseSourceSql: lastStatement,
+          batchSize: bs,
+        });
       } catch (e: unknown) {
+        throw new Error(formatMssqlErrorChain(e));
+      }
+
+      const base: ColumnEditableInfo[] = h.columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
+      let columns: ColumnEditableInfo[];
+      try {
+        const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, lastStatement);
+        columns = await enrichSqlServerQueryColumnsEditable(pool, base, h.columnMeta, browseRows);
+      } catch (e: unknown) {
+        await teardownSqlServerRowStream(h);
+        throw new Error(formatMssqlErrorChain(e));
+      }
+
+      let rows: unknown[][];
+      let hasMore: boolean;
+      try {
+        ({ rows, hasMore } = await drainSqlServerStreamBatch(h, bs));
+      } catch (e: unknown) {
+        await teardownSqlServerRowStream(h);
+        throw new Error(formatMssqlErrorChain(e));
+      }
+
+      if (hasMore) {
+        session.sqlServerRowStream = h;
+      } else {
+        await teardownSqlServerRowStream(h);
+      }
+
+      return { rows, columns, hasMore };
+    }
+
+    case "db/query-stream-more": {
+      const cid = getConnId();
+      const { batchSize = 100 } = payload as { connectionId: string; batchSize?: number; defaultSchema?: string };
+      const bs = Math.max(1, batchSize ?? 100);
+      const session = sqlServerSession(getSWithDb, cid);
+      const h = session.sqlServerRowStream;
+      if (!h) {
+        return { rows: [], hasMore: false };
+      }
+      try {
+        const { rows, hasMore } = await drainSqlServerStreamBatch(h, bs);
+        if (!hasMore) {
+          session.sqlServerRowStream = undefined;
+          await teardownSqlServerRowStream(h);
+        }
+        return { rows, hasMore };
+      } catch (e: unknown) {
+        session.sqlServerRowStream = undefined;
+        await teardownSqlServerRowStream(h);
         throw new Error(formatMssqlErrorChain(e));
       }
     }
@@ -1249,6 +1112,10 @@ export async function handleSqlServerDbRequest(
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string; defaultSchema?: string };
       const session = sqlServerSession(getSWithDb, cid);
+      if (session.sqlServerRowStream) {
+        await teardownSqlServerRowStream(session.sqlServerRowStream);
+        session.sqlServerRowStream = undefined;
+      }
       const pool = session.userUsedClient;
       try {
         sendSSEMessage(cid, {

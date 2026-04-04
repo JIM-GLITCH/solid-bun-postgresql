@@ -27,6 +27,7 @@ import {
   type SqlServerDbHandlerContext,
 } from "./sqlserver-db-handlers";
 import { openSqlServerPool } from "./connect-sqlserver";
+import { teardownSqlServerRowStream } from "./sqlserver-mssql-stream";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
@@ -131,6 +132,10 @@ async function recreateSqlServerPool(cid: string): Promise<void> {
   if (!session) throw new Error("连接不存在");
   if (session.dbKind !== "sqlserver") throw new Error("内部错误：非 SQL Server 会话");
   const s = session as SqlServerSessionConnection;
+  if (s.sqlServerRowStream) {
+    await teardownSqlServerRowStream(s.sqlServerRowStream);
+    s.sqlServerRowStream = undefined;
+  }
   await s.userUsedClient.close().catch(() => {});
   const pool = await openSqlServerPool(s.dbForReconnect);
   s.userUsedClient = pool;
@@ -205,6 +210,7 @@ function startUserClientKeepalive(cid: string): void {
           }
         }
       } else if (s.dbKind === "sqlserver") {
+        if (s.sqlServerRowStream) return;
         try {
           await s.userUsedClient.request().query("SELECT 1");
         } catch (e) {
@@ -553,6 +559,10 @@ export async function disconnectConnection(connectionId: string): Promise<void> 
       await conn.userUsedClient.end().catch(() => {});
       await conn.backGroundPool.end().catch(() => {});
     } else if (conn.dbKind === "sqlserver") {
+      if (conn.sqlServerRowStream) {
+        await teardownSqlServerRowStream(conn.sqlServerRowStream);
+        conn.sqlServerRowStream = undefined;
+      }
       await conn.userUsedClient.close().catch(() => {});
     } else {
       if (isMysqlFamily(conn.dbKind)) {

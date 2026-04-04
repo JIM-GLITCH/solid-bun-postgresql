@@ -39,10 +39,10 @@ describe("defaultDatabaseCapabilities", () => {
     expect(c.fakeDataImport).toBe(true);
   });
 
-  test("sqlserver 保守能力：无流式、无会话监控", () => {
+  test("sqlserver：流式查询开启，无会话监控", () => {
     const c = defaultDatabaseCapabilities("sqlserver");
     expect(c.dialect).toBe("sqlserver");
-    expect(c.streamingQuery).toBe(false);
+    expect(c.streamingQuery).toBe(true);
     expect(c.cancelQuery).toBe(false);
     expect(c.sessionMonitor).toBe(false);
     expect(c.pgExtensionCatalog).toBe(false);

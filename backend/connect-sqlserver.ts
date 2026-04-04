@@ -10,7 +10,7 @@ function getConnectionTimeoutMs(params: PostgresLoginParams): number {
   return sec != null && sec > 0 ? sec * 1000 : DEFAULT_SSH_CONNECTION_TIMEOUT_MS;
 }
 
-/** tedious / node-mssql 连接池配置（隧道模式下 server 为本机、port 为本地映射端口） */
+/** node-mssql 连接池配置（隧道模式下 server 为本机、port 为本地映射端口） */
 export interface SqlServerPoolConfig {
   server: string;
   port: number;
