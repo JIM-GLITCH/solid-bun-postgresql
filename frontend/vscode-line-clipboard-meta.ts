@@ -3,6 +3,7 @@
  * 见 monaco `PasteOperation._simplePaste`（pasteOnNewLine + 唯一换行在末尾）及 vscode `InMemoryClipboardMetadataManager`。
  */
 import type * as monaco from "monaco-editor";
+import { Range } from "monaco-editor";
 
 export function normalizeClipboardNewlines(s: string): string {
   return s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -29,7 +30,7 @@ function isPasteAsLineFromRecordedEmptyCopy(textNormalized: string): boolean {
 /**
  * 若满足 VS Code 式整行粘贴，在**当前行行首**插入并返回 true；否则返回 false（由调用方走普通粘贴）。
  */
-export function tryVsCodeStyleEmptySelectionLinePaste(
+function tryVsCodeStyleEmptySelectionLinePaste(
   editor: monaco.editor.IStandaloneCodeEditor,
   model: monaco.editor.ITextModel,
   sel: monaco.Selection,
@@ -55,4 +56,83 @@ export function tryVsCodeStyleEmptySelectionLinePaste(
   editor.setPosition(pos);
   editor.revealPositionInCenter(pos);
   return true;
+}
+
+function applySingleMonacoPasteEdit(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  model: monaco.editor.ITextModel,
+  sel: monaco.Selection,
+  norm: string
+): void {
+  if (sel.isEmpty()) {
+    const line = sel.startLineNumber;
+    const col = sel.startColumn;
+    const startOffset = model.getOffsetAt({ lineNumber: line, column: col });
+    editor.executeEdits("paste", [
+      {
+        range: { startLineNumber: line, startColumn: col, endLineNumber: line, endColumn: col },
+        text: norm,
+      },
+    ]);
+    const endPos = model.getPositionAt(startOffset + norm.length);
+    editor.setPosition(endPos);
+    editor.revealPositionInCenter(endPos);
+  } else {
+    editor.executeEdits("paste", [
+      {
+        range: {
+          startLineNumber: sel.startLineNumber,
+          startColumn: sel.startColumn,
+          endLineNumber: sel.endLineNumber,
+          endColumn: sel.endColumn,
+        },
+        text: norm,
+      },
+    ]);
+  }
+}
+
+/**
+ * Webview 剪贴板桥接：必须用 `getSelections()`，否则多光标时只会处理主选区。
+ * 多光标按文档位置从后往前一次 executeEdits，避免偏移错乱；单光标仍支持 VS Code 式行首整行粘贴。
+ */
+export function applyWebviewMonacoPaste(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  model: monaco.editor.ITextModel,
+  textRaw: string
+): void {
+  const norm = normalizeClipboardNewlines(textRaw);
+  const sels = editor.getSelections();
+  if (!sels?.length) return;
+
+  if (sels.length === 1) {
+    const sel = sels[0]!;
+    if (tryVsCodeStyleEmptySelectionLinePaste(editor, model, sel, textRaw)) return;
+    applySingleMonacoPasteEdit(editor, model, sel, norm);
+    return;
+  }
+
+  const sorted = [...sels].sort((a, b) => Range.compareRangesUsingStarts(b, a));
+  const edits = sorted.map((s) =>
+    s.isEmpty()
+      ? {
+          range: {
+            startLineNumber: s.startLineNumber,
+            startColumn: s.startColumn,
+            endLineNumber: s.startLineNumber,
+            endColumn: s.startColumn,
+          },
+          text: norm,
+        }
+      : {
+          range: {
+            startLineNumber: s.startLineNumber,
+            startColumn: s.startColumn,
+            endLineNumber: s.endLineNumber,
+            endColumn: s.endColumn,
+          },
+          text: norm,
+        }
+  );
+  editor.executeEdits("paste", edits);
 }

@@ -148,10 +148,10 @@ import { getSqlSegments } from "../shared/src";
 import { registerSqlEditor } from "./monaco-paste-registry";
 import { readClipboardText, writeClipboardText } from "./clipboard";
 import {
+  applyWebviewMonacoPaste,
   clearEmptySelectionLineCopyMeta,
   normalizeClipboardNewlines,
   recordEmptySelectionLineCopyForWebview,
-  tryVsCodeStyleEmptySelectionLinePaste,
 } from "./vscode-line-clipboard-meta";
 import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
 import {
@@ -1964,37 +1964,12 @@ export default function SqlEditor(props: SqlEditorProps) {
 
     // Webview 中 clipboard 受限：统一用 vscode.env.clipboard 桥接，保持单一剪贴板状态
     const doPaste = () => {
-      const model = editor?.getModel();
-      const sel = editor?.getSelection();
-      if (!model || !sel) return;
+      const ed = editor;
+      const model = ed?.getModel();
+      if (!model || !ed) return;
       readClipboardText().then((text) => {
         if (!text) return;
-        if (tryVsCodeStyleEmptySelectionLinePaste(editor!, model, sel, text)) return;
-        if (sel.isEmpty()) {
-          const line = sel.startLineNumber;
-          const col = sel.startColumn;
-          const startOffset = model.getOffsetAt({ lineNumber: line, column: col });
-          const norm = normalizeClipboardNewlines(text);
-          const range = {
-            startLineNumber: line,
-            startColumn: col,
-            endLineNumber: line,
-            endColumn: col,
-          };
-          editor!.executeEdits("paste", [{ range, text: norm }]);
-          const endPos = model.getPositionAt(startOffset + norm.length);
-          editor!.setPosition(endPos);
-          editor!.revealPositionInCenter(endPos);
-        } else {
-          // 有选区：在光标处替换选区
-          const range = {
-            startLineNumber: sel.startLineNumber,
-            startColumn: sel.startColumn,
-            endLineNumber: sel.endLineNumber,
-            endColumn: sel.endColumn,
-          };
-          editor!.executeEdits("paste", [{ range, text }]);
-        }
+        applyWebviewMonacoPaste(ed, model, text);
       });
     };
     // copy/cut：同步到 vscode 剪贴板（副作用），不阻止 Monaco 默认行为。

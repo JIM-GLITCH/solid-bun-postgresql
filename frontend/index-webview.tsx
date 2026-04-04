@@ -9,7 +9,7 @@ import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 import { readClipboardText } from "./clipboard";
 import { resolveMonacoEditorForPaste } from "./monaco-paste-registry";
-import { normalizeClipboardNewlines, tryVsCodeStyleEmptySelectionLinePaste } from "./vscode-line-clipboard-meta";
+import { applyWebviewMonacoPaste } from "./vscode-line-clipboard-meta";
 
 setTransport(new VsCodeTransport());
 
@@ -28,45 +28,12 @@ document.addEventListener(
         : null);
     if (editor) {
       const model = editor.getModel();
-      const sel = editor.getSelection();
-      if (model && sel) {
+      if (model) {
         e.preventDefault();
         e.stopPropagation();
         readClipboardText().then((text) => {
           if (!text) return;
-          if (tryVsCodeStyleEmptySelectionLinePaste(editor, model, sel, text)) return;
-          const norm = normalizeClipboardNewlines(text);
-          if (sel.isEmpty()) {
-            const line = sel.startLineNumber;
-            const col = sel.startColumn;
-            const startOffset = model.getOffsetAt({ lineNumber: line, column: col });
-            editor.executeEdits("paste", [
-              {
-                range: {
-                  startLineNumber: line,
-                  startColumn: col,
-                  endLineNumber: line,
-                  endColumn: col,
-                },
-                text: norm,
-              },
-            ]);
-            const endPos = model.getPositionAt(startOffset + norm.length);
-            editor.setPosition(endPos);
-            editor.revealPositionInCenter(endPos);
-          } else {
-            editor.executeEdits("paste", [
-              {
-                range: {
-                  startLineNumber: sel.startLineNumber,
-                  startColumn: sel.startColumn,
-                  endLineNumber: sel.endLineNumber,
-                  endColumn: sel.endColumn,
-                },
-                text: norm,
-              },
-            ]);
-          }
+          applyWebviewMonacoPaste(editor, model, text);
         });
       }
       return;
