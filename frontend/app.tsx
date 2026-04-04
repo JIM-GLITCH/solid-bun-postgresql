@@ -82,7 +82,7 @@ export default function App() {
   const [tabs, setTabs] = createSignal<Tab[]>([]);
   const [activeTabId, setActiveTabId] = createSignal<string | null>(null);
   const [refreshSidebarRequest, setRefreshSidebarRequest] = createSignal<{ connectionId: string; schema: string } | null>(null);
-  /** MySQL：侧栏单击 schema 后作为查询/EXPLAIN 的默认库（USE） */
+  /** MySQL：侧栏单击 schema 后作为查询/EXPLAIN 的默认库；有值时后端才执行 USE */
   const [mysqlDefaultSchemaByConn, setMysqlDefaultSchemaByConn] = createStore<Record<string, string>>({});
   const [connectionSwitcherOpen, setConnectionSwitcherOpen] = createSignal(false);
   const [sessionId] = createSignal(crypto.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
@@ -654,7 +654,18 @@ export default function App() {
                             schema={tab.schema}
                             table={tab.table}
                             mode={tab.mode}
-                            onSuccess={(connectionId, schema) => setRefreshSidebarRequest({ connectionId, schema })}
+                            onSuccess={(connectionId, schema, savedTable) => {
+                              setRefreshSidebarRequest({ connectionId, schema });
+                              if (savedTable) {
+                                setTabs((prev) =>
+                                  prev.map((t) =>
+                                    t.id === tab.id && t.type === "design" && t.mode === "create"
+                                      ? { ...t, mode: "edit", table: savedTable }
+                                      : t
+                                  )
+                                );
+                              }
+                            }}
                           />
                         )}
                         </div>

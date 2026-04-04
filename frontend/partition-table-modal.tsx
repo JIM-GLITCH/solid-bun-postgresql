@@ -224,7 +224,7 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
             {isMysqlFamily(getRegisteredDbType(props.connectionId))
               ? "修改 WHERE 等条件后点「EXPLAIN 预览」：结果里 partitions 列会显示可能扫描的分区。需要树形/JSON 计划时，把上方内容改成 `FORMAT=TREE SELECT …` 或 `FORMAT=JSON SELECT …`（不要写开头的 EXPLAIN，后端会自动加）。"
               : isSqlServer(getRegisteredDbType(props.connectionId))
-                ? "SQL Server 当前未接线文本/JSON 执行计划预览；可在此编辑 SELECT 用于手工分析。"
+                ? "使用 SHOWPLAN_ALL 文本计划（不执行查询）。可修改 WHERE 后点「EXPLAIN 预览」查看估算计划。"
                 : "修改 WHERE / JOIN 等条件后执行 EXPLAIN，从计划中可观察实际会扫描的分区（如 Append 下的子计划）。复杂场景可配合 PostgreSQL 分区裁剪规则理解。"}
           </div>
           <textarea

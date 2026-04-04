@@ -9,7 +9,7 @@ import type { Pool as MysqlPool, PoolConnection } from "mysql2/promise";
 import type { DbKind, SSEMessage } from "../shared/src";
 import type { GetDbConfigResult } from "./connect-postgres";
 import type { GetMysqlDbConfigResult } from "./connect-mysql";
-import type { ConnectionPool as MssqlConnectionPool } from "mssql";
+import type { ConnectionPool as MssqlConnectionPool, Request as MssqlRequest } from "mssql";
 import type { GetSqlServerDbConfigResult } from "./connect-sqlserver";
 import type { SqlServerStreamingQueryHandle } from "./sqlserver-mssql-stream";
 
@@ -57,6 +57,8 @@ export interface SqlServerSessionConnection {
   keepAliveTimer?: ReturnType<typeof setInterval>;
   /** db/query-stream 未读完时的 mssql 流式请求 + 事务，须 teardown 后归还池 */
   sqlServerRowStream?: SqlServerStreamingQueryHandle;
+  /** `db/query` 等非流式路径上可 `cancel()` 的当前 Request（由 `runSqlServerQueryWithColumnMetadata` 登记） */
+  sqlServerActiveRequest?: MssqlRequest | null;
 }
 
 export type SessionConnection = PostgresSessionConnection | MysqlSessionConnection | SqlServerSessionConnection;

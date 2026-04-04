@@ -23,6 +23,14 @@ import {
   startSqlServerStreamingQuery,
   teardownSqlServerRowStream,
 } from "./sqlserver-mssql-stream";
+import {
+  sqlServerFetchEstimatedPlanXml,
+  sqlServerFetchExplainTextLines,
+  sqlServerFetchPartitionInfo,
+  sqlServerFetchSessionMonitor,
+  sqlServerGetOwnSpid,
+  sqlServerSessionControl,
+} from "./sqlserver-support";
 
 function sqlServerSession(getSWithDb: (cid: string) => SessionConnection, cid: string): SqlServerSessionConnection {
   const s = getSWithDb(cid);
@@ -372,9 +380,10 @@ async function enrichSqlServerQueryColumnsEditable(
 async function buildSqlServerGridQueryResult(
   pool: sql.ConnectionPool,
   sqlText: string,
-  browseSourceSql?: string
+  browseSourceSql?: string,
+  trackRequest?: (req: sql.Request | null) => void
 ): Promise<{ rows: unknown[][]; columns: ColumnEditableInfo[] }> {
-  const { rows, columnMeta } = await runSqlServerQueryWithColumnMetadata(pool, sqlText);
+  const { rows, columnMeta } = await runSqlServerQueryWithColumnMetadata(pool, sqlText, { trackRequest });
   const base: ColumnEditableInfo[] = columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
   const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, browseSourceSql ?? sqlText);
   const columns = await enrichSqlServerQueryColumnsEditable(pool, base, columnMeta, browseRows);
@@ -526,6 +535,53 @@ async function sqlServerRunInsertChunk(
   }
   const q = `INSERT INTO ${qualified} (${colsSql}) VALUES ${tuples.join(", ")}`;
   const result = await req.query(q);
+  return sumRowsAffected(result.rowsAffected as number[]) || chunk.length;
+}
+
+async function sqlServerRunMergeChunk(
+  pool: sql.ConnectionPool,
+  transaction: sql.Transaction | undefined,
+  schema: string,
+  table: string,
+  colNames: string[],
+  chunk: unknown[][],
+  conflictColumns: string[],
+  onConflict: "nothing" | "update"
+): Promise<number> {
+  const req = transaction ? new sql.Request(transaction) : pool.request();
+  const qualified = `${sqlServerBracketIdent(schema)}.${sqlServerBracketIdent(table)}`;
+  const srcCols = colNames.map(sqlServerBracketIdent).join(", ");
+  const conflictSet = new Set(conflictColumns.map((c) => c.toLowerCase()));
+  for (const k of conflictColumns) {
+    if (!colNames.includes(k)) throw new Error(`冲突列不在导入列中: ${k}`);
+  }
+  const tuples: string[] = [];
+  let p = 0;
+  for (const row of chunk) {
+    const ph: string[] = [];
+    for (let c = 0; c < colNames.length; c++) {
+      const pname = `m${p++}`;
+      const def = sqlServerImportParamDef(row[c]);
+      req.input(pname, def.type, def.value);
+      ph.push(`@${pname}`);
+    }
+    tuples.push(`(${ph.join(", ")})`);
+  }
+  const valuesSql = tuples.join(",\n");
+  const onClause = conflictColumns
+    .map((c) => `tgt.${sqlServerBracketIdent(c)} = src.${sqlServerBracketIdent(c)}`)
+    .join(" AND ");
+  let mergeSql = `MERGE INTO ${qualified} AS tgt\nUSING (VALUES\n${valuesSql}\n) AS src (${srcCols})\nON ${onClause}\n`;
+  if (onConflict === "update") {
+    const updateCols = colNames.filter((c) => !conflictSet.has(c.toLowerCase()));
+    const setList =
+      updateCols.length > 0
+        ? updateCols.map((c) => `tgt.${sqlServerBracketIdent(c)} = src.${sqlServerBracketIdent(c)}`).join(", ")
+        : colNames.map((c) => `tgt.${sqlServerBracketIdent(c)} = src.${sqlServerBracketIdent(c)}`).join(", ");
+    mergeSql += `WHEN MATCHED THEN UPDATE SET ${setList}\n`;
+  }
+  mergeSql += `WHEN NOT MATCHED BY TARGET THEN INSERT (${srcCols}) VALUES (${colNames.map((c) => `src.${sqlServerBracketIdent(c)}`).join(", ")});`;
+  const result = await req.query(mergeSql);
   return sumRowsAffected(result.rowsAffected as number[]) || chunk.length;
 }
 
@@ -1123,7 +1179,9 @@ export async function handleSqlServerDbRequest(
           message: `执行查询: ${query.slice(0, 100)}...`,
           timestamp: Date.now(),
         });
-        const { rows, columns } = await buildSqlServerGridQueryResult(pool, query.trim());
+        const { rows, columns } = await buildSqlServerGridQueryResult(pool, query.trim(), undefined, (r) => {
+          session.sqlServerActiveRequest = r ?? undefined;
+        });
         sendSSEMessage(cid, {
           type: "INFO",
           message: `完成: ${rows.length} 行`,
@@ -1135,6 +1193,111 @@ export async function handleSqlServerDbRequest(
         sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${msg}`, timestamp: Date.now() });
         throw new Error(msg);
       }
+    }
+
+    case "db/cancel-query": {
+      const cid = getConnId();
+      const session = sqlServerSession(getSWithDb, cid);
+      const stream = session.sqlServerRowStream;
+      if (stream?.mssqlRequest) {
+        try {
+          stream.mssqlRequest.cancel();
+        } catch {
+          /* ignore */
+        }
+        session.sqlServerRowStream = undefined;
+        await teardownSqlServerRowStream(stream);
+        return { success: true, cancelled: true, message: "已请求中断流式查询" };
+      }
+      const ar = session.sqlServerActiveRequest;
+      if (ar) {
+        try {
+          ar.cancel();
+        } catch {
+          /* ignore */
+        }
+        return { success: true, cancelled: true, message: "已请求中断查询" };
+      }
+      return { success: false, cancelled: false, message: "没有正在执行的查询" };
+    }
+
+    case "db/explain": {
+      const cid = getConnId();
+      const { query } = payload as { connectionId: string; query: string };
+      const session = sqlServerSession(getSWithDb, cid);
+      sendSSEMessage(cid, { type: "QUERY", message: "获取执行计划 (SHOWPLAN_XML)...", timestamp: Date.now() });
+      const xml = await sqlServerFetchEstimatedPlanXml(session.backGroundPool, query);
+      if (xml.trim()) {
+        sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() });
+        return { plan: [{ Plan: xml, Format: "mssql-showplan-xml" as const }] };
+      }
+      sendSSEMessage(cid, { type: "QUERY", message: "SHOWPLAN_XML 无结果，尝试 SHOWPLAN_ALL 文本...", timestamp: Date.now() });
+      let lines: string[] = [];
+      try {
+        lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+      } catch {
+        lines = [];
+      }
+      const placeholder = "（无 SHOWPLAN 行；可能仅含 SET 语句或批处理为空）";
+      const text = lines.filter((l) => l.trim() && l.trim() !== placeholder).join("\n").trim();
+      if (text.length > 0) {
+        sendSSEMessage(cid, { type: "INFO", message: "已返回 SHOWPLAN_ALL 文本计划", timestamp: Date.now() });
+        return { plan: [{ Plan: text, Format: "mssql-showplan-all" as const }] };
+      }
+      const stmts = query
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      const useOnly = stmts.length === 1 && /^\s*USE\s/i.test(stmts[0]!);
+      throw new Error(
+        useOnly
+          ? "USE 语句无法生成 SHOWPLAN_XML；请对 SELECT/INSERT/UPDATE/DELETE 等使用解释分析（多语句时用分号分隔，将自动跳过开头的 USE）。"
+          : "未能取得执行计划：SHOWPLAN_XML 与 SHOWPLAN_ALL 均无可用输出。该批处理可能不支持估算计划（如部分 DDL），请改为单条 SELECT 验证。"
+      );
+    }
+
+    case "db/explain-text": {
+      const cid = getConnId();
+      const { query } = payload as { connectionId: string; query: string };
+      const session = sqlServerSession(getSWithDb, cid);
+      try {
+        const lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+        return { lines };
+      } catch (e: unknown) {
+        throw new Error(`explain-text: ${formatMssqlErrorChain(e)}`);
+      }
+    }
+
+    case "db/partition-info": {
+      const cid = getConnId();
+      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
+      const session = sqlServerSession(getSWithDb, cid);
+      try {
+        return await sqlServerFetchPartitionInfo(session.backGroundPool, schema, table);
+      } catch (e: unknown) {
+        throw new Error(`partition-info: ${formatMssqlErrorChain(e)}`);
+      }
+    }
+
+    case "db/session-monitor": {
+      const cid = getConnId();
+      const { limit = 20 } = payload as { connectionId: string; limit?: number };
+      const session = sqlServerSession(getSWithDb, cid);
+      try {
+        return await sqlServerFetchSessionMonitor(session.backGroundPool, limit);
+      } catch (e: unknown) {
+        throw new Error(`session-monitor: ${formatMssqlErrorChain(e)}`);
+      }
+    }
+
+    case "db/session-control": {
+      const cid = getConnId();
+      const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
+      const session = sqlServerSession(getSWithDb, cid);
+      const self = await sqlServerGetOwnSpid(session.backGroundPool);
+      if (pid === self) throw new Error("不允许操作当前监控连接自身会话");
+      const ok = await sqlServerSessionControl(session.backGroundPool, pid, action);
+      return { success: ok, pid, action };
     }
 
     case "db/save-changes": {
@@ -1180,9 +1343,10 @@ export async function handleSqlServerDbRequest(
       if (!colNames?.length || !Array.isArray(rows)) {
         throw new Error("缺少 columns 或 rows");
       }
-      if (conflictColumns?.length && onConflict) {
-        throw new Error("SQL Server 批量导入暂不支持 conflictColumns / UPSERT，请使用普通 INSERT");
+      if (conflictColumns?.length && !onConflict) {
+        throw new Error("指定 conflictColumns 时必须提供 onConflict（nothing 或 update）");
       }
+      const useMerge = !!(conflictColumns?.length && onConflict);
       const session = sqlServerSession(getSWithDb, cid);
       const pool = session.backGroundPool;
       const colWidth = Math.max(1, colNames.length);
@@ -1196,7 +1360,20 @@ export async function handleSqlServerDbRequest(
           try {
             for (let i = 0; i < rows.length; i += batchRows) {
               const chunk = rows.slice(i, i + batchRows);
-              total += await sqlServerRunInsertChunk(pool, tx, schema, table, colNames, chunk);
+              if (useMerge) {
+                total += await sqlServerRunMergeChunk(
+                  pool,
+                  tx,
+                  schema,
+                  table,
+                  colNames,
+                  chunk,
+                  conflictColumns!,
+                  onConflict!
+                );
+              } else {
+                total += await sqlServerRunInsertChunk(pool, tx, schema, table, colNames, chunk);
+              }
             }
             await tx.commit();
           } catch (e) {
@@ -1207,11 +1384,37 @@ export async function handleSqlServerDbRequest(
           for (let i = 0; i < rows.length; i += batchRows) {
             const chunk = rows.slice(i, i + batchRows);
             try {
-              total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, chunk);
+              if (useMerge) {
+                total += await sqlServerRunMergeChunk(
+                  pool,
+                  undefined,
+                  schema,
+                  table,
+                  colNames,
+                  chunk,
+                  conflictColumns!,
+                  onConflict!
+                );
+              } else {
+                total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, chunk);
+              }
             } catch {
               for (const row of chunk) {
                 try {
-                  total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, [row]);
+                  if (useMerge) {
+                    total += await sqlServerRunMergeChunk(
+                      pool,
+                      undefined,
+                      schema,
+                      table,
+                      colNames,
+                      [row],
+                      conflictColumns!,
+                      onConflict!
+                    );
+                  } else {
+                    total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, [row]);
+                  }
                 } catch {
                   /* 丢弃该行 */
                 }

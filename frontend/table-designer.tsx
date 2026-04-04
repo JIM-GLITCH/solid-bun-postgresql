@@ -11,7 +11,7 @@ export interface TableDesignerProps {
   schema: string;
   table?: string;
   mode: "create" | "edit";
-  onSuccess?: (connectionId: string, schema: string) => void;
+  onSuccess?: (connectionId: string, schema: string, savedTable?: string) => void;
 }
 
 export default function TableDesigner(props: TableDesignerProps) {

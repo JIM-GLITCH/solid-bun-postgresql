@@ -1,7 +1,7 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
 import { getSessionMonitor, sessionControl } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
-import { isMysqlFamily } from "../shared/src";
+import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { useDialog } from "./dialog-context";
 import { MODAL_Z_FULLSCREEN, vscode } from "./theme";
 
@@ -22,6 +22,8 @@ function slowSourceLabel(source: PgStatData["slowQuerySource"] | undefined): str
       return "events_statements_summary_by_digest";
     case "mysql_processlist":
       return "PROCESSLIST";
+    case "mssql_requests":
+      return "sys.dm_exec_requests";
     default:
       return "-";
   }
@@ -29,6 +31,12 @@ function slowSourceLabel(source: PgStatData["slowQuerySource"] | undefined): str
 
 function mysqlRowThreadId(r: Record<string, unknown>): number {
   const v = r.id ?? r.connection_id;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function mssqlRowSessionId(r: Record<string, unknown>): number {
+  const v = r.id ?? r.session_id;
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
@@ -131,7 +139,11 @@ export default function PgStatModal(props: PgStatModalProps) {
       >
         <div style={{ display: "flex", "justify-content": "space-between", "align-items": "center" }}>
           <div style={{ "font-size": "15px", "font-weight": 600 }}>
-            {isMysqlFamily(dbKind()) ? `${mysqlFamilyLabel()} 会话与锁监控` : "PostgreSQL 会话与锁监控"}
+            {isSqlServer(dbKind())
+              ? "SQL Server 会话与锁监控"
+              : isMysqlFamily(dbKind())
+                ? `${mysqlFamilyLabel()} 会话与锁监控`
+                : "PostgreSQL 会话与锁监控"}
           </div>
           <button onClick={props.onClose} style={iconBtnStyle()}>×</button>
         </div>
@@ -175,7 +187,9 @@ export default function PgStatModal(props: PgStatModalProps) {
           <StatCard title="活跃连接" value={String(data()?.connectionStats.active ?? 0)} />
           <StatCard title="空闲连接" value={String(data()?.connectionStats.idle ?? 0)} />
           <StatCard
-            title={isMysqlFamily(dbKind()) ? "等待/锁相关状态" : "等待事件连接"}
+            title={
+              isSqlServer(dbKind()) || isMysqlFamily(dbKind()) ? "等待/锁相关状态" : "等待事件连接"
+            }
             value={String(data()?.connectionStats.waiting ?? 0)}
           />
         </div>
@@ -210,6 +224,21 @@ export default function PgStatModal(props: PgStatModalProps) {
           >
             当前为 <code>PROCESSLIST</code> 实时列表（按 TIME 排序）。若需按 digest 汇总历史耗时，请在实例上启用并采集{" "}
             <code>performance_schema.events_statements_summary_by_digest</code>（需相应 consumer 与权限）。
+          </div>
+        </Show>
+        <Show when={data()?.slowQuerySource === "mssql_requests"}>
+          <div
+            style={{
+              "font-size": "12px",
+              color: vscode.foregroundDim,
+              background: vscode.sidebarBg,
+              border: `1px solid ${vscode.border}`,
+              "border-radius": "6px",
+              padding: "8px 10px",
+            }}
+          >
+            当前为 <code>sys.dm_exec_requests</code> 实时采样（按 total_elapsed_time）。取消查询优先尝试{" "}
+            <code>KILL QUERY</code>（SQL Server 2022+），失败则回退为 <code>KILL</code> 终止会话。
           </div>
         </Show>
         <Show when={data()?.slowQuerySource === "mysql_processlist"}>
@@ -271,7 +300,64 @@ export default function PgStatModal(props: PgStatModalProps) {
             </table>
           </TableWrap>
         </Show>
-        <Show when={data()?.slowQuerySource !== "mysql_processlist"}>
+        <Show when={data()?.slowQuerySource === "mssql_requests"}>
+          <TableWrap>
+            <table style={tableStyle()}>
+              <thead>
+                <tr>
+                  <Th>session_id</Th>
+                  <Th>登录</Th>
+                  <Th>主机</Th>
+                  <Th>库</Th>
+                  <Th>状态</Th>
+                  <Th>耗时(s)</Th>
+                  <Th>SQL</Th>
+                  <Th>操作</Th>
+                </tr>
+              </thead>
+              <tbody>
+                <For each={data()?.slowQueries ?? []}>
+                  {(r) => {
+                    const row = r as Record<string, unknown>;
+                    const sid = mssqlRowSessionId(row);
+                    return (
+                      <tr>
+                        <Td>{String(sid || "-")}</Td>
+                        <Td>{String(row.user ?? "")}</Td>
+                        <Td mono>{String(row.host ?? "")}</Td>
+                        <Td>{String(row.db ?? "")}</Td>
+                        <Td>{String(row.command ?? row.state ?? "")}</Td>
+                        <Td>{String(row.time_seconds ?? "-")}</Td>
+                        <Td mono>{String(row.query ?? "")}</Td>
+                        <Td>
+                          <div style={{ display: "flex", gap: "6px", "flex-wrap": "wrap" }}>
+                            <button
+                              type="button"
+                              style={smallBtnStyle(false)}
+                              disabled={sid <= 0 || opLoadingPid() === sid}
+                              onClick={() => void runBackendAction(sid, "cancel")}
+                            >
+                              Kill query
+                            </button>
+                            <button
+                              type="button"
+                              style={smallBtnStyle(true)}
+                              disabled={sid <= 0 || opLoadingPid() === sid}
+                              onClick={() => void runBackendAction(sid, "terminate")}
+                            >
+                              Kill
+                            </button>
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+                  }}
+                </For>
+              </tbody>
+            </table>
+          </TableWrap>
+        </Show>
+        <Show when={data()?.slowQuerySource !== "mysql_processlist" && data()?.slowQuerySource !== "mssql_requests"}>
           <TableWrap>
             <table style={tableStyle()}>
               <thead>

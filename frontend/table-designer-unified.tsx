@@ -160,7 +160,8 @@ export interface TableDesignerUnifiedProps {
   schema: string;
   table?: string;
   mode: "create" | "edit";
-  onSuccess?: (connectionId: string, schema: string) => void;
+  /** 新建表保存成功时第三参为表名，便于宿主切换为编辑态 */
+  onSuccess?: (connectionId: string, schema: string, savedTable?: string) => void;
 }
 
 function emptyOriginalState(): OriginalState {
@@ -626,7 +627,9 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     checkConstraints: JSON.parse(JSON.stringify([...checkConstraints])),
                   };
                   setOriginalState(newSnapshot);
-                  props.onSuccess?.(props.connectionId, props.schema);
+                  const savedTable =
+                    props.mode === "create" ? tableName().trim() || undefined : undefined;
+                  props.onSuccess?.(props.connectionId, props.schema, savedTable);
                   // Reload data from DB to reflect actual saved state
                   if (props.mode === "edit") refetchEditData();
                 } catch (e: any) {

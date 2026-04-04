@@ -1277,22 +1277,24 @@ export default function Sidebar(props: SidebarProps) {
               >
                 <span>📄</span> 查看 DDL
               </div>
-              <div
-                onClick={() => handleMenuAction("partitionTable")}
-                style={{
-                  padding: "8px 16px",
-                  color: vscode.foreground,
-                  cursor: "pointer",
-                  "font-size": "13px",
-                  display: "flex",
-                  "align-items": "center",
-                  gap: "8px",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span>🔀</span> 分区结构 / 裁剪预览
-              </div>
+              <Show when={getEffectiveDbCapabilities(menu().node.connectionId).partitionStructureInspect}>
+                <div
+                  onClick={() => handleMenuAction("partitionTable")}
+                  style={{
+                    padding: "8px 16px",
+                    color: vscode.foreground,
+                    cursor: "pointer",
+                    "font-size": "13px",
+                    display: "flex",
+                    "align-items": "center",
+                    gap: "8px",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                >
+                  <span>🔀</span> 分区结构 / 裁剪预览
+                </div>
+              </Show>
               <Show when={getEffectiveDbCapabilities(menu().node.connectionId).fakeDataImport}>
                 <div
                   onClick={() => handleMenuAction("generateFakeData")}

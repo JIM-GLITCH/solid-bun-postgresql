@@ -136,6 +136,7 @@ async function recreateSqlServerPool(cid: string): Promise<void> {
     await teardownSqlServerRowStream(s.sqlServerRowStream);
     s.sqlServerRowStream = undefined;
   }
+  s.sqlServerActiveRequest = undefined;
   await s.userUsedClient.close().catch(() => {});
   const pool = await openSqlServerPool(s.dbForReconnect);
   s.userUsedClient = pool;

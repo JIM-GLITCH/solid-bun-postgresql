@@ -56,6 +56,11 @@ export interface DatabaseCapabilities {
    * 为 false 时隐藏入口；方言未实现 `db/import-rows` 时应为 false。
    */
   fakeDataImport: boolean;
+  /**
+   * 是否开放侧栏表的「分区结构 / 裁剪预览」：依赖 `db/partition-info` 与文本 `db/explain`。
+   * SQL Server 等尚未实现对应 RPC 时应为 false，避免打开弹窗即报错。
+   */
+  partitionStructureInspect: boolean;
 }
 
 export interface PostgresLoginParams {

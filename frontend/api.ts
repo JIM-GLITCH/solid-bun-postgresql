@@ -334,7 +334,8 @@ export async function getSessionMonitor(connectionId: string, limit = 20) {
       | "pg_stat_statements"
       | "pg_stat_activity"
       | "mysql_processlist"
-      | "mysql_events_statements";
+      | "mysql_events_statements"
+      | "mssql_requests";
     collectedAt: number;
   }>;
 }

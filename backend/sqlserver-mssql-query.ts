@@ -62,17 +62,23 @@ export function mssqlRecordsetColumnsToSqlServerMeta(cols: MssqlArrayRecordsetCo
  */
 export async function runSqlServerQueryWithColumnMetadata(
   pool: sql.ConnectionPool,
-  sqlText: string
+  sqlText: string,
+  opts?: { trackRequest?: (req: sql.Request | null) => void }
 ): Promise<{ rows: unknown[][]; columnMeta: SqlServerColumnMeta[] }> {
   const batch = `SET ROWCOUNT 0;\n${sqlText}`;
   const req = pool.request();
-  req.arrayRowMode = true;
-  const result = (await req.query(batch)) as {
-    recordset: unknown[][];
-    columns?: MssqlArrayRecordsetColumn[];
-  };
-  const rs = result.recordset ?? [];
-  const rows = rs.map((r) => [...(r as unknown[])]);
-  const columnMeta = mssqlRecordsetColumnsToSqlServerMeta(result.columns ?? []);
-  return { rows, columnMeta };
+  opts?.trackRequest?.(req);
+  try {
+    req.arrayRowMode = true;
+    const result = (await req.query(batch)) as {
+      recordset: unknown[][];
+      columns?: MssqlArrayRecordsetColumn[];
+    };
+    const rs = result.recordset ?? [];
+    const rows = rs.map((r) => [...(r as unknown[])]);
+    const columnMeta = mssqlRecordsetColumnsToSqlServerMeta(result.columns ?? []);
+    return { rows, columnMeta };
+  } finally {
+    opts?.trackRequest?.(null);
+  }
 }

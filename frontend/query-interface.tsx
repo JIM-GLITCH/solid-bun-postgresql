@@ -4,7 +4,7 @@ import type { Accessor } from "solid-js";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor";
-import type { ColumnEditableInfo, SSEMessage } from "../shared/src";
+import { isSqlServer, type ColumnEditableInfo, type SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentForGridColumn, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
 import {
   queryStream,
@@ -33,12 +33,13 @@ import ImportModal from "./import-modal";
 import ExplainPlanViewer from "./explain-plan-viewer";
 import { convertMysqlExplainJsonToPlanNode, isMysqlExplainJsonRoot } from "./mysql-explain-json";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
+import { getRegisteredDbType } from "./db-session-meta";
 import { useDialog } from "./dialog-context";
 
 interface QueryInterfaceProps {
   /** 当前活跃的连接 ID，用于执行查询 */
   activeConnectionId?: Accessor<string | null>;
-  /** MySQL：侧栏选中的库名，随 db/query-stream 等传给后端 USE */
+  /** MySQL：侧栏选中的库名；仅在有值时后端执行 USE，不会每次查询都 USE */
   mysqlDefaultSchemaFor?: (connectionId: string) => string | null | undefined;
   /** 外部触发的查询（如侧边栏点击表），处理后应清空 */
   externalQuery?: Accessor<{ connectionId: string; sql: string } | null>;
@@ -638,8 +639,18 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const sqlToRun = (overrideSql ?? sql()).trim();
     if (!sqlToRun) return;
     const statements = getStatementsFromText(sqlToRun);
-    const firstStmt = statements[0];
+    let firstStmt = statements[0];
     if (!firstStmt) return;
+    if (isSqlServer(getRegisteredDbType(cid))) {
+      const nonUse = statements.find((st) => !/^\s*USE\s+/i.test(st.trim()));
+      if (nonUse) {
+        firstStmt = nonUse;
+      } else if (/^\s*USE\s+/i.test(firstStmt.trim())) {
+        setError("USE 无法生成 SHOWPLAN；请编写或选中 SELECT 等语句后再点「解释分析」。");
+        setExplainLoading(false);
+        return;
+      }
+    }
     setExplainLoading(true);
     setExplainPlan(null);
     try {

@@ -4,6 +4,8 @@
 
 import { createSignal, Show } from "solid-js";
 import { executeDdl } from "./api";
+import { getRegisteredDbType } from "./db-session-meta";
+import { qualifiedTableForDdl } from "./sql-ddl-quote";
 import { vscode } from "./theme";
 
 export interface TruncateTableModalProps {
@@ -22,9 +24,9 @@ export default function TruncateTableModal(props: TruncateTableModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const schema = props.schema.replace(/"/g, '""');
-      const table = props.table.replace(/"/g, '""');
-      await executeDdl(props.connectionId, `TRUNCATE TABLE "${schema}"."${table}";`);
+      const kind = getRegisteredDbType(props.connectionId);
+      const q = qualifiedTableForDdl(kind, props.schema, props.table);
+      await executeDdl(props.connectionId, `TRUNCATE TABLE ${q};`);
       props.onSuccess(props.connectionId, props.schema);
       props.onClose();
     } catch (e) {

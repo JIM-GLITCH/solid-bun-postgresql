@@ -34,17 +34,20 @@ function mysqlBacktickIdent(id: string): string {
   return "`" + id.replace(/`/g, "``") + "`";
 }
 
-/** 在指定连接上 USE 默认库，解决未在 DSN 填 database 时「No database selected」 */
+/**
+ * 仅在请求里显式带了 defaultSchema（侧栏当前库）时执行 USE。
+ * 不再用 session.mysqlCurrentDatabase 回退发 USE，避免每次查询都多一轮 USE；
+ * 会话默认库依赖 DSN 中的 database，或由用户曾在侧栏选库时写入的 mysqlCurrentDatabase（仅当发生过 USE 时更新）。
+ */
 async function ensureMysqlDefaultDatabase(
   session: MysqlSessionConnection,
   conn: PoolConnection,
   overrideSchema?: string | null
 ): Promise<void> {
   const o = overrideSchema != null ? String(overrideSchema).trim() : "";
-  const dbName = o || session.mysqlCurrentDatabase;
-  if (!dbName) return;
-  await conn.query(`USE ${mysqlBacktickIdent(dbName)}`);
-  session.mysqlCurrentDatabase = dbName;
+  if (!o) return;
+  await conn.query(`USE ${mysqlBacktickIdent(o)}`);
+  session.mysqlCurrentDatabase = o;
 }
 
 function toRowArray(raw: unknown): unknown[][] {

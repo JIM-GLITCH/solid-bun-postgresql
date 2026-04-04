@@ -18,6 +18,7 @@ export function defaultDatabaseCapabilities(kind: DbKind): DatabaseCapabilities 
       resultCellEdit: true,
       visualQueryBuilder: true,
       fakeDataImport: true,
+      partitionStructureInspect: true,
     };
   }
   if (isMysqlFamily(kind)) {
@@ -33,21 +34,23 @@ export function defaultDatabaseCapabilities(kind: DbKind): DatabaseCapabilities 
       resultCellEdit: true,
       visualQueryBuilder: true,
       fakeDataImport: true,
+      partitionStructureInspect: true,
     };
   }
   if (kind === "sqlserver") {
     return {
       dialect: "sqlserver",
       streamingQuery: true,
-      cancelQuery: false,
-      explainAnalyzeJson: false,
-      explainText: false,
-      sessionMonitor: false,
+      cancelQuery: true,
+      explainAnalyzeJson: true,
+      explainText: true,
+      sessionMonitor: true,
       pgExtensionCatalog: false,
       tableDesigner: true,
       resultCellEdit: true,
       visualQueryBuilder: true,
       fakeDataImport: true,
+      partitionStructureInspect: true,
     };
   }
   const _exhaustive: never = kind;

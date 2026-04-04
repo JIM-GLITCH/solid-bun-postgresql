@@ -168,9 +168,10 @@ export default function ExplainPlanViewer(props: ExplainPlanViewerProps) {
     const et = executionTime();
     const fmt = planFormat();
     if (typeof planBody() === "string") {
-      return fmt === "mysql-analyze-text"
-        ? "MySQL EXPLAIN ANALYZE（真实执行采样）"
-        : "文本执行计划";
+      if (fmt === "mysql-analyze-text") return "MySQL EXPLAIN ANALYZE（真实执行采样）";
+      if (fmt === "mssql-showplan-xml") return "SQL Server SHOWPLAN_XML（估算计划，不执行查询）";
+      if (fmt === "mssql-showplan-all") return "SQL Server SHOWPLAN_ALL（估算计划文本，XML 不可用时回退）";
+      return "文本执行计划";
     }
     if (pt == null && et == null) {
       return fmt ? `格式: ${fmt}` : "估算成本 / 行数（无实际耗时）";

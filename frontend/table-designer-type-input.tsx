@@ -28,6 +28,11 @@ export function TableDesignerTypeInput(props: TableDesignerTypeInputProps) {
     props.setOpenRow(null);
   };
 
+  const clearType = () => {
+    props.onChange("");
+    props.setOpenRow(null);
+  };
+
   return (
     <div style={{ position: "relative", display: "block", width: "100%", "min-width": "140px" }}>
       <input
@@ -42,8 +47,54 @@ export function TableDesignerTypeInput(props: TableDesignerTypeInputProps) {
         }}
         placeholder={props.placeholder ?? "类型，建议或手填"}
         autocomplete="off"
-        style={{ ...props.inputStyle, width: "100%", "font-family": "'JetBrains Mono', monospace" }}
+        style={{
+          ...props.inputStyle,
+          width: "100%",
+          "font-family": "'JetBrains Mono', monospace",
+          "box-sizing": "border-box",
+          "padding-right": props.value.trim() ? "26px" : undefined,
+        }}
       />
+      <Show when={props.value.trim().length > 0}>
+        <button
+          type="button"
+          aria-label="清空类型"
+          title="清空"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            clearType();
+          }}
+          style={{
+            position: "absolute",
+            right: "4px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            width: "20px",
+            height: "20px",
+            padding: "0",
+            border: "none",
+            "border-radius": "3px",
+            background: "transparent",
+            color: vscode.foregroundDim,
+            cursor: "pointer",
+            "font-size": "14px",
+            "line-height": 1,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = vscode.foreground;
+            e.currentTarget.style.backgroundColor = vscode.listHover;
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = vscode.foregroundDim;
+            e.currentTarget.style.backgroundColor = "transparent";
+          }}
+        >
+          ×
+        </button>
+      </Show>
       <Show when={props.openRow() === props.rowIndex && filtered().length > 0}>
         <div
           style={{
