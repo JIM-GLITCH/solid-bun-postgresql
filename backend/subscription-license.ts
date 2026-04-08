@@ -2,6 +2,8 @@
  * 业务进程侧订阅校验：请求订阅服务 GET /api/verify-license（与前端原 license-client 一致）
  */
 
+import { getStoredSubscriptionToken } from "./subscription-token-store";
+
 export class SubscriptionRequiredError extends Error {
   override readonly name = "SubscriptionRequiredError";
   readonly subscriptionRequired = true as const;
@@ -32,6 +34,11 @@ export function parseBearerToken(req: Request): string | null {
     return t || null;
   }
   return null;
+}
+
+/** Web 业务 API：优先 Authorization，否则 fallback 到 standalone 本地后端加密存储 */
+export function parseSubscriptionAccessToken(req: Request): string | null {
+  return parseBearerToken(req) ?? getStoredSubscriptionToken();
 }
 
 /** EventSource 无法带 Header 时用 query（仅用于 GET /api/events） */

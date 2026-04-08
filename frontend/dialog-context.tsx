@@ -2,10 +2,13 @@
  * 弹窗上下文：替代 alert/confirm/prompt，并托管 JSONB 编辑器、改表名等全屏模态（与 App 同级 DOM，避免点穿）
  */
 
-import { createContext, createSignal, useContext, onMount, type JSX } from "solid-js";
+import { createContext, createSignal, useContext, onMount, onCleanup, type JSX } from "solid-js";
 import { vscode, MODAL_Z_DIALOG_OVERLAY } from "./theme";
 import { JSONB_Editor } from "./jsonb-editor";
 import RenameTableModal from "./rename-table-modal";
+import { SUBSCRIPTION_REQUIRED_EVENT } from "./subscription/subscription-prompt";
+import { openSubscriptionPortalForCurrentEnvironment } from "./subscription/portal";
+import { getInjectedDesktopHost } from "./desktop-host-context";
 
 export interface OpenJsonbEditorOptions {
   initialValue: string | null;
@@ -46,6 +49,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
 
   const [jsonbEditorState, setJsonbEditorState] = createSignal<OpenJsonbEditorOptions | null>(null);
   const [renameTableState, setRenameTableState] = createSignal<OpenRenameTableOptions | null>(null);
+  const [subscriptionRequiredState, setSubscriptionRequiredState] = createSignal<{ message: string } | null>(null);
 
   const showAlert = (message: string, title = "提示") => {
     setAlertState({ message, title });
@@ -79,9 +83,116 @@ export function DialogProvider(props: { children: JSX.Element }) {
     openRenameTable,
   };
 
+  onMount(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ message?: string }>;
+      const msg = (ce.detail?.message ?? "").trim() || "该功能需要有效订阅。";
+      setSubscriptionRequiredState({ message: msg });
+    };
+    window.addEventListener(SUBSCRIPTION_REQUIRED_EVENT, handler);
+    onCleanup(() => window.removeEventListener(SUBSCRIPTION_REQUIRED_EVENT, handler));
+  });
+
   return (
     <DialogContext.Provider value={value}>
       {props.children}
+      {/* 订阅提示：HTTP / VS Code Webview 共用 */}
+      {subscriptionRequiredState() && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            "background-color": "rgba(0,0,0,0.5)",
+            display: "flex",
+            "align-items": "center",
+            "justify-content": "center",
+            "z-index": MODAL_Z_DIALOG_OVERLAY,
+          }}
+          onClick={() => setSubscriptionRequiredState(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+              "background-color": vscode.sidebarBg,
+              border: `1px solid ${vscode.border}`,
+              "border-radius": "8px",
+              "box-shadow": "0 8px 32px rgba(0,0,0,0.4)",
+              "min-width": "320px",
+              "max-width": "480px",
+              padding: "24px",
+              "z-index": 1,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ "font-size": "16px", margin: "0 0 12px 0", color: vscode.foreground }}>需要订阅</h2>
+            <p
+              style={{
+                "font-size": "13px",
+                color: vscode.foregroundDim,
+                margin: "0 0 12px 0",
+                "white-space": "pre-wrap",
+              }}
+            >
+              {subscriptionRequiredState()!.message}
+            </p>
+            {(() => {
+              const h = getInjectedDesktopHost();
+              if (!h) return null;
+              return (
+                <p
+                  style={{
+                    "font-size": "12px",
+                    color: vscode.foregroundDim,
+                    margin: "0 0 20px 0",
+                    opacity: 0.92,
+                    "line-height": 1.45,
+                  }}
+                >
+                  当前在 <strong style={{ color: vscode.foreground }}>{h.displayName}</strong>{" "}
+                  中使用。在浏览器完成登录/订阅后，请用订阅页的「返回 {h.displayName}
+                  并授权」将令牌写回编辑器；或直接点击上方「前往订阅站」。
+                </p>
+              );
+            })()}
+            <div style={{ display: "flex", "justify-content": "flex-end", gap: "12px", "flex-wrap": "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setSubscriptionRequiredState(null)}
+                style={{
+                  padding: "8px 20px",
+                  "font-size": "13px",
+                  "background-color": vscode.buttonSecondary,
+                  color: vscode.foreground,
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: "pointer",
+                }}
+              >
+                关闭
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSubscriptionRequiredState(null);
+                  openSubscriptionPortalForCurrentEnvironment();
+                }}
+                style={{
+                  padding: "8px 20px",
+                  "font-size": "13px",
+                  "background-color": vscode.buttonBg,
+                  color: "#fff",
+                  border: "none",
+                  "border-radius": "4px",
+                  cursor: "pointer",
+                }}
+              >
+                前往订阅站
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Alert 弹窗 */}
       {alertState() && (
         <div

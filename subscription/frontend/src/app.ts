@@ -1,7 +1,29 @@
 import { getApiUrl } from "./config";
 
 const TOKEN_KEY = "dbplayer_token";
-const VSCODE_SOURCE_KEY = "dbplayer_source";
+const CLIENT_SOURCE_KEY = "dbplayer_client_source";
+const HOST_LABEL_KEY = "dbplayer_host_label";
+const STANDALONE_RETURN_KEY = "dbplayer_standalone_oauth_return";
+
+const EXTENSION_AUTHORITY = "lilr.db-player";
+
+/** 桌面扩展类 OAuth：自定义协议回跳（vscode / cursor / kiro / …） */
+function isDesktopCustomProtocolSource(src: string): boolean {
+  if (src === "standalone" || src === "webapp") return false;
+  return /^[a-z][a-z0-9.-]*$/i.test(src);
+}
+
+const KNOWN_SCHEME_LABEL: Record<string, string> = {
+  vscode: "VS Code",
+  "vscode-insiders": "VS Code Insiders",
+  cursor: "Cursor",
+  kiro: "Kiro",
+  vscodium: "VSCodium",
+  "code-oss": "Code - OSS",
+  windsurf: "Windsurf",
+  trae: "Trae",
+  "antigravity-ide": "Antigravity",
+};
 
 const $ = (id: string) => document.getElementById(id)!;
 const $btnLogin = $("btn-login");
@@ -19,7 +41,9 @@ function getToken(): string | null {
   const token = raw?.trim() || null;
   if (params.get("token") && token) {
     localStorage.setItem(TOKEN_KEY, token);
-    history.replaceState({}, "", location.pathname);
+    params.delete("token");
+    const newSearch = params.toString();
+    history.replaceState({}, "", location.pathname + (newSearch ? "?" + newSearch : "") + location.hash);
   }
   return token;
 }
@@ -28,44 +52,140 @@ function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-// ─── 任务 3.1：source=vscode 检测 ────────────────────────────────────────────
-
-function detectVscodeSource(): void {
-  const params = new URLSearchParams(location.search);
-  const source = params.get("source");
-  if (source === "vscode") {
-    sessionStorage.setItem(VSCODE_SOURCE_KEY, "vscode");
-    // 清除 URL 中的 source 参数
-    params.delete("source");
-    const newSearch = params.toString();
-    const newUrl = location.pathname + (newSearch ? "?" + newSearch : "");
-    history.replaceState({}, "", newUrl);
+/** 根据入口 URL ?source=&host= 区分各桌面宿主 / Standalone / 纯网页 */
+function detectClientSource(): void {
+  if (sessionStorage.getItem("dbplayer_source") === "vscode") {
+    sessionStorage.setItem(CLIENT_SOURCE_KEY, "vscode");
+    sessionStorage.removeItem("dbplayer_source");
   }
+
+  const params = new URLSearchParams(location.search);
+  const rawSource = params.get("source")?.trim();
+  if (rawSource === "standalone" || rawSource === "webapp") {
+    sessionStorage.setItem(CLIENT_SOURCE_KEY, rawSource);
+  } else if (rawSource && isDesktopCustomProtocolSource(rawSource.toLowerCase())) {
+    sessionStorage.setItem(CLIENT_SOURCE_KEY, rawSource.toLowerCase());
+  }
+
+  const hostLabel = params.get("host")?.trim();
+  if (hostLabel) {
+    sessionStorage.setItem(HOST_LABEL_KEY, hostLabel);
+  }
+
+  const ret = params.get("return");
+  if (ret?.trim()) {
+    try {
+      const u = new URL(ret.trim());
+      if (u.protocol === "http:" || u.protocol === "https:") {
+        sessionStorage.setItem(STANDALONE_RETURN_KEY, ret.trim());
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  params.delete("source");
+  params.delete("host");
+  params.delete("return");
+  const newSearch = params.toString();
+  history.replaceState({}, "", location.pathname + (newSearch ? "?" + newSearch : "") + location.hash);
 }
 
-function isVscodeSource(): boolean {
-  return sessionStorage.getItem(VSCODE_SOURCE_KEY) === "vscode";
+function getClientSource(): string {
+  const v = sessionStorage.getItem(CLIENT_SOURCE_KEY)?.trim().toLowerCase();
+  if (v === "standalone" || v === "webapp") return v;
+  if (v && isDesktopCustomProtocolSource(v)) return v;
+  return "webapp";
 }
 
-// ─── 任务 3.2：URI Scheme 跳转函数 ───────────────────────────────────────────
+function getHostDisplayName(): string {
+  const fromQuery = sessionStorage.getItem(HOST_LABEL_KEY)?.trim();
+  if (fromQuery) return fromQuery;
+  const src = getClientSource();
+  if (KNOWN_SCHEME_LABEL[src]) return KNOWN_SCHEME_LABEL[src];
+  if (src === "standalone") return "本地 DB Player";
+  if (src === "webapp") return "浏览器";
+  if (isDesktopCustomProtocolSource(src)) {
+    return src.length ? src.charAt(0).toUpperCase() + src.slice(1) : "编辑器";
+  }
+  return "浏览器";
+}
 
-function redirectToVscode(token: string): void {
-  window.location.href = `vscode://lilr.db-player/auth?token=${encodeURIComponent(token)}`;
+function githubOAuthStartUrl(): string {
+  const apiUrl = getApiUrl();
+  const src = getClientSource();
+  const q = new URLSearchParams();
+  q.set("source", src);
+  if (src === "standalone") {
+    // OAuth 完成后先回到订阅站（可看订阅状态/下单）；localhost 回跳地址只存在 sessionStorage，供「返回本地 DB Player」
+    const stayOnPortal = new URL(window.location.pathname || "/", window.location.origin).toString();
+    q.set("redirect", stayOnPortal);
+  } else if (isDesktopCustomProtocolSource(src)) {
+    q.set("redirect", `${src}://${EXTENSION_AUTHORITY}/auth`);
+  }
+  return `${apiUrl}/api/auth/github?${q.toString()}`;
+}
+
+function redirectToCustomProtocolAuth(token: string, scheme: string): void {
+  const s = scheme.trim().toLowerCase();
+  window.location.href = `${s}://${EXTENSION_AUTHORITY}/auth?token=${encodeURIComponent(token)}`;
+}
+
+function redirectToStandaloneApp(token: string): void {
+  const base = sessionStorage.getItem(STANDALONE_RETURN_KEY)?.trim();
+  if (!base) {
+    alert(
+      "未配置本地应用回跳地址。\n请从 DB Player 网页侧栏点「登录」进入订阅；\n或使用：?source=standalone&return=你的应用 /api/dbplayer/subscription-callback 完整 URL（需编码）。"
+    );
+    return;
+  }
+  const u = new URL(base);
+  u.searchParams.set("token", token);
+  window.location.href = u.toString();
+}
+
+function redirectToDesktopClient(token: string): void {
+  const src = getClientSource();
+  if (isDesktopCustomProtocolSource(src)) {
+    redirectToCustomProtocolAuth(token, src);
+    return;
+  }
+  if (src === "standalone") redirectToStandaloneApp(token);
+}
+
+function syncBackButtonVisibility(hasToken: boolean): void {
+  if (!hasToken) {
+    $btnBackVscode.classList.add("hidden");
+    return;
+  }
+  const src = getClientSource();
+  if (src === "webapp") {
+    $btnBackVscode.classList.add("hidden");
+    return;
+  }
+  $btnBackVscode.classList.remove("hidden");
+  if (src === "standalone") {
+    $btnBackVscode.textContent = "返回本地 DB Player";
+    return;
+  }
+  if (isDesktopCustomProtocolSource(src)) {
+    $btnBackVscode.textContent = `返回 ${getHostDisplayName()} 并授权`;
+    return;
+  }
+  $btnBackVscode.textContent = "返回客户端并授权";
 }
 
 // ─── 初始化 ───────────────────────────────────────────────────────────────────
 
 function init(): void {
-  // 先检测 source 参数（在 getToken 清理 URL 之前）
-  detectVscodeSource();
+  detectClientSource();
 
   const token = getToken();
   if (token) {
     $btnLogin.classList.add("hidden");
     $btnLogout.classList.remove("hidden");
     fetchSubscription(token);
-    $btnBackVscode.classList.remove("hidden");
-
+    syncBackButtonVisibility(true);
   } else {
     $btnLogin.classList.remove("hidden");
     $btnLogout.classList.add("hidden");
@@ -75,9 +195,7 @@ function init(): void {
 }
 
 $btnLogin.addEventListener("click", () => {
-  const apiUrl = getApiUrl();
-  const sourceParam = isVscodeSource() ? "?source=vscode" : "";
-  window.location.href = `${apiUrl}/api/auth/github${sourceParam}`;
+  window.location.href = githubOAuthStartUrl();
 });
 
 $btnLogout.addEventListener("click", () => {
@@ -88,10 +206,10 @@ $btnLogout.addEventListener("click", () => {
 $btnBackVscode.addEventListener("click", () => {
   const token = getToken();
   if (!token) {
-    alert("请先登录，再给 VSCode 插件授权。");
+    alert("请先登录，再返回客户端授权。");
     return;
   }
-  redirectToVscode(token);
+  redirectToDesktopClient(token);
 });
 
 interface SubscriptionRes {
@@ -230,13 +348,13 @@ function showWxQrModal(codeUrl: string, orderNo: string, token: string): void {
         clearInterval(pollTimer);
         document.getElementById("wx-qr-status")!.textContent = "支付成功！";
         document.getElementById("wx-qr-status")!.style.color = "#07c160";
-        // 任务 3.3：微信支付成功后，若 source=vscode 则触发 URI Scheme 跳转
         setTimeout(() => {
-          if (isVscodeSource() && token) {
-            modal.remove();
-            redirectToVscode(token);
+          const src = getClientSource();
+          modal.remove();
+          if (isDesktopCustomProtocolSource(src)) {
+            redirectToDesktopClient(token);
           } else {
-            modal.remove();
+            // standalone：留在订阅站刷新订阅状态，由用户点「返回本地 DB Player」
             fetchSubscription(token);
           }
         }, 1500);
@@ -250,8 +368,7 @@ function showWxQrModal(codeUrl: string, orderNo: string, token: string): void {
 async function handleSubscribe(plan: "monthly" | "yearly", method: "alipay" | "wxpay"): Promise<void> {
   const token = getToken();
   if (!token) {
-    const sourceParam = isVscodeSource() ? "?source=vscode" : "";
-    window.location.href = `${getApiUrl()}/api/auth/github${sourceParam}`;
+    window.location.href = githubOAuthStartUrl();
     return;
   }
 

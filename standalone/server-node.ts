@@ -11,10 +11,12 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = new Hono();
+registerDbPlayerSubscriptionRoutes(app);
 const apiRoutes = createApiRoutes();
 
 // API 路由：GET 逐项注册；POST 统一 `/api/*` → handleApiPost（与 `HttpTransport` 路径规则一致）

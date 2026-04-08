@@ -31,6 +31,7 @@ import { vscode } from "./theme";
 import { writeClipboardText } from "./clipboard";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
+import { SubscriptionRequiredError } from "./subscription/subscription-error";
 import ExplainPlanViewer from "./explain-plan-viewer";
 import { convertMysqlExplainJsonToPlanNode, isMysqlExplainJsonRoot } from "./mysql-explain-json";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
@@ -2047,8 +2048,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                     await assertFeatureSubscription("visual-query-builder");
                     setShowQueryBuilder(true);
                   } catch (e) {
-                    const msg = e instanceof Error ? e.message : String(e);
-                    showAlert(msg || "该功能需要有效订阅", "需要订阅");
+                    if (!(e instanceof SubscriptionRequiredError)) {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      showAlert(msg || "该功能需要有效订阅", "需要订阅");
+                    }
                   }
                 }}
                 style={{

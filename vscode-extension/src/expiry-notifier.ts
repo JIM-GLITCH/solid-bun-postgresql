@@ -18,7 +18,8 @@ export class ExpiryNotifier {
       vscode.window.showWarningMessage("DB Player: 订阅已过期，请续费以继续使用。", "立即续费").then(action => {
         if (action === "立即续费") {
           const base = this.getSubscriptionFrontend().replace(/\/$/, "");
-          vscode.env.openExternal(vscode.Uri.parse(`${base}?source=vscode`));
+          const src = vscode.env.uriScheme === "cursor" ? "cursor" : "vscode";
+          vscode.env.openExternal(vscode.Uri.parse(`${base}?source=${src}`));
         }
       });
       return;
@@ -36,7 +37,8 @@ export class ExpiryNotifier {
       ).then(action => {
         if (action === "立即续费") {
           const base = this.getSubscriptionFrontend().replace(/\/$/, "");
-          vscode.env.openExternal(vscode.Uri.parse(`${base}?source=vscode`));
+          const src = vscode.env.uriScheme === "cursor" ? "cursor" : "vscode";
+          vscode.env.openExternal(vscode.Uri.parse(`${base}?source=${src}`));
         }
       });
     }

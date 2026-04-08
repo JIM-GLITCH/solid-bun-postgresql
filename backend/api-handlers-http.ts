@@ -8,19 +8,11 @@ import { HTTP_API_METHOD_SET } from "../shared/src";
 import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
 import {
   assertSubscriptionLicensed,
-  parseAccessTokenQuery,
-  parseBearerToken,
+  parseSubscriptionAccessToken,
   SubscriptionRequiredError,
 } from "./subscription-license";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
-
-function isWebAuthBypassed(req: Request): boolean {
-  const clientHeader = (req.headers.get("x-dbplayer-client") ?? "").trim().toLowerCase();
-  if (clientHeader === "web") return true;
-  const clientQuery = (new URL(req.url).searchParams.get("client") ?? "").trim().toLowerCase();
-  return clientQuery === "web";
-}
 
 function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
   return Response.json({ error: e.message, success: false, subscriptionRequired: true }, { status: 403 });
@@ -30,8 +22,9 @@ function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
 function postApi<M extends ApiMethod>(method: M): RouteHandler {
   return async (req: Request) => {
     try {
-      if (!isWebAuthBypassed(req)) {
-        await assertSubscriptionLicensed(parseBearerToken(req));
+      // 与 VS Code 扩展一致：仅对显式 subscription/assert 做订阅校验，其它 RPC 不拦
+      if (method === "subscription/assert") {
+        await assertSubscriptionLicensed(parseSubscriptionAccessToken(req));
       }
       const data = (await req.json()) as ApiRequestPayload[M];
       const result = await handleApiRequest(method, data);
@@ -76,15 +69,6 @@ export function createApiRoutes(): Record<
     "/api/events": {
       GET: async (req: unknown) => {
         const r = req as Request;
-        try {
-          if (!isWebAuthBypassed(r)) {
-            const token = parseBearerToken(r) ?? parseAccessTokenQuery(r);
-            await assertSubscriptionLicensed(token);
-          }
-        } catch (e: unknown) {
-          if (e instanceof SubscriptionRequiredError) return subscriptionJsonResponse(e);
-          throw e;
-        }
         const url = new URL(r.url);
         const connectionSessionId =
           url.searchParams.get("connectionSessionId")?.trim() ||

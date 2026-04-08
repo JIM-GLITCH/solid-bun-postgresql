@@ -483,14 +483,23 @@ export async function deleteAiKeyViaVscode(keyRef: string) {
 }
 
 /**
- * Extension 端功能订阅校验：
- * - 非 VSCode Webview 环境直接放行
- * - VSCode 环境通过 extension host 做一次显式 assert
+ * 进入付费功能前做一次显式 assert：
+ * - VS Code：由 extension host 校验
+ * - 浏览器 / Standalone：由业务 API 的 POST subscription/assert 校验（与扩展策略一致）
+ * - Electrobun：由主进程侧处理，此处不重复请求
  */
 export async function assertFeatureSubscription(feature: "visual-query-builder" | "table-designer"): Promise<void> {
-  const isVscodeWebview =
-    typeof window !== "undefined" &&
-    typeof (window as Window & { acquireVsCodeApi?: unknown }).acquireVsCodeApi === "function";
-  if (!isVscodeWebview) return;
-  await api().request("subscription/assert" as ApiMethod, { feature } as ApiRequestPayload[ApiMethod]);
+  const w = window as Window & { __electrobunApiRequest?: unknown };
+  if (typeof w.__electrobunApiRequest === "function") return;
+  await api().request("subscription/assert", { feature });
+}
+
+export async function getSubscriptionAccount(): Promise<{
+  loggedIn: boolean;
+  user?: { id?: number; email?: string | null };
+}> {
+  return api().request("subscription/account", {}) as Promise<{
+    loggedIn: boolean;
+    user?: { id?: number; email?: string | null };
+  }>;
 }

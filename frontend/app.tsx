@@ -94,7 +94,9 @@ export default function App() {
       setSavedConnections(list);
     } catch (e) {
       if (e instanceof SubscriptionRequiredError) {
-        showAlert(e.message, '需要订阅');
+        /* HttpTransport / VsCodeTransport 已弹出统一订阅窗 */
+        setSavedConnections([]);
+        return;
       }
       setSavedConnections([]);
     }
@@ -159,7 +161,11 @@ export default function App() {
         return { success: true, connectionId };
       } else {
         const msg = error ?? '未知错误';
-        showAlert(subscriptionRequired ? msg : `连接失败: ${msg}`, subscriptionRequired ? '需要订阅' : '连接失败');
+        if (subscriptionRequired) {
+          /* connectFromSaved 返回前 transport 已触发统一订阅弹窗 */
+          return { success: false };
+        }
+        showAlert(`连接失败: ${msg}`, '连接失败');
         return { success: false };
       }
     } catch (e) {
@@ -176,7 +182,7 @@ export default function App() {
       void refreshSavedConnections();
     } catch (e) {
       if (e instanceof SubscriptionRequiredError) {
-        showAlert(e.message, '需要订阅');
+        /* transport 已弹出统一订阅窗 */
       } else {
         console.warn('删除失败:', e);
       }
@@ -266,7 +272,9 @@ export default function App() {
       await assertFeatureSubscription("table-designer");
       addDesignTableTab(connectionId, connectionInfo, schema);
     } catch (e) {
-      showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+      if (!(e instanceof SubscriptionRequiredError)) {
+        showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+      }
     }
   };
 
@@ -275,7 +283,9 @@ export default function App() {
       await assertFeatureSubscription("table-designer");
       addDesignTableTab(connectionId, connectionInfo, schema, table);
     } catch (e) {
-      showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+      if (!(e instanceof SubscriptionRequiredError)) {
+        showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+      }
     }
   };
 

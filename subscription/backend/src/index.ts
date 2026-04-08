@@ -10,6 +10,7 @@ import { pool, queryOne } from "./db";
 import { signJwt, verifyJwt } from "./auth";
 import { getCachedVerifyLicense, setCachedVerifyLicense } from "./verify-license-cache";
 import { handle } from 'hono-alibaba-cloud-fc3-adapter';
+import { Buffer } from "node:buffer";
 import {
   PLANS,
   genOrderNo,
@@ -19,6 +20,75 @@ import {
   verifyWxpayNotify,
   activateSubscription,
 } from "./payment";
+
+/** GitHub 授权 URL 不宜无限长；仅当 state JSON 超过此长度时才从 state 中省略 redirect（默认已远大于旧版 900，避免误丢 localhost 回跳） */
+const OAUTH_STATE_MAX_JSON_LENGTH = (() => {
+  const n = Number.parseInt(process.env.OAUTH_STATE_MAX_JSON_LENGTH ?? "12000", 10);
+  return Number.isFinite(n) && n >= 500 ? n : 12000;
+})();
+
+/** state：UTF-8 JSON → base64（避免 btoa 在非 Latin1 下抛错导致整段 state 不可用） */
+function encodeGithubOAuthState(payload: { nonce: string; source?: string; redirect?: string }): string {
+  return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
+}
+
+/** 兼容新版 base64(utf8) 与旧版 btoa(JSON) */
+function decodeGithubOAuthState(stateParam: string | undefined): { source?: string; redirect?: string } {
+  if (!stateParam?.trim()) return {};
+  let raw = stateParam.trim();
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    /* GitHub 可能已解码 */
+  }
+  const normalize = (p: { source?: string; redirect?: string }) => ({
+    source: typeof p.source === "string" ? p.source : undefined,
+    redirect: typeof p.redirect === "string" ? p.redirect.trim() : undefined,
+  });
+  const tryParseJson = (json: string) => {
+    try {
+      return normalize(JSON.parse(json) as { source?: string; redirect?: string });
+    } catch {
+      return null;
+    }
+  };
+  try {
+    const json = Buffer.from(raw, "base64").toString("utf8");
+    const r = tryParseJson(json);
+    if (r && (r.source !== undefined || r.redirect !== undefined)) return r;
+  } catch {
+    /* 继续尝试 atob */
+  }
+  try {
+    const r = tryParseJson(atob(raw));
+    if (r && (r.source !== undefined || r.redirect !== undefined)) return r;
+  } catch {
+    /* ignore */
+  }
+  return {};
+}
+
+/** state 里未带 source 时，根据回跳目标猜默认，保证最终 URL 始终有 source 供订阅前端 / 客户端识别 */
+function defaultOAuthSourceForTarget(targetBase: string, srcFromState?: string): string {
+  const s = srcFromState?.trim();
+  if (s) return s;
+  try {
+    const t = new URL(targetBase);
+    const proto = t.protocol.replace(/:$/, "").toLowerCase();
+    if (proto === "http:" || proto === "https:") {
+      const path = (t.pathname || "").toLowerCase();
+      if (path.includes("subscription-callback") || path.includes("dbplayer/subscription")) {
+        return "standalone";
+      }
+      return "webapp";
+    }
+    // vscode://、cursor://、kiro:// … 等非 http(s) 协议
+    return proto;
+  } catch {
+    /* ignore */
+  }
+  return "webapp";
+}
 
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID ?? "";
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET ?? "";
@@ -147,14 +217,15 @@ app.get("/api/auth/github", (c) => {
   if (source !== undefined) statePayload.source = source;
   if (webRedirect !== undefined && String(webRedirect).trim()) statePayload.redirect = String(webRedirect).trim();
   const stateJson = JSON.stringify(statePayload);
-  // GitHub state 不宜过长；过长则丢弃 redirect，回跳仍落订阅前端（用户可再点「返回应用」类入口）
-  const stateTruncated = stateJson.length > 900;
+  const stateTruncated = stateJson.length > OAUTH_STATE_MAX_JSON_LENGTH;
   if (stateTruncated && statePayload.redirect) {
-    console.warn("[github oauth] state too long, redirect omitted from state; user will land on subscription home");
+    console.warn(
+      `[github oauth] state JSON length ${stateJson.length} > ${OAUTH_STATE_MAX_JSON_LENGTH}, redirect omitted; user may land on subscription home only`
+    );
   }
-  const state = stateTruncated
-    ? btoa(JSON.stringify({ nonce: statePayload.nonce, source: statePayload.source }))
-    : btoa(stateJson);
+  const state = encodeGithubOAuthState(
+    stateTruncated ? { nonce: statePayload.nonce, source: statePayload.source } : statePayload
+  );
   const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email&state=${encodeURIComponent(state)}`;
   return c.redirect(url);
 });
@@ -164,21 +235,12 @@ app.get("/api/auth/github", (c) => {
 app.get("/api/auth/github/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
-  let source: string | undefined;
-  let webRedirect: string | undefined;
-  try {
-    let raw = state ?? "";
-    try {
-      raw = decodeURIComponent(raw);
-    } catch {
-      /* GitHub 可能已解码 */
-    }
-    const parsed = JSON.parse(atob(raw)) as { source?: string; redirect?: string };
-    source = typeof parsed.source === "string" ? parsed.source : undefined;
-    webRedirect = typeof parsed.redirect === "string" ? parsed.redirect.trim() : undefined;
-  } catch {
-    source = undefined;
-    webRedirect = undefined;
+  const decoded = decodeGithubOAuthState(state);
+  let source = decoded.source;
+  let webRedirect = decoded.redirect;
+  if (typeof source === "string") source = source.trim().toLowerCase();
+  if (state && !source && !webRedirect) {
+    console.warn("[github callback] OAuth state 无法解析或为空，将回退到订阅首页（请检查 state 是否被网关截断）");
   }
   if (!code) {
     return c.json({ success: false, error: "缺少 code" }, 400);
@@ -263,30 +325,20 @@ app.get("/api/auth/github/callback", async (c) => {
       email: email ?? (await queryOne<{ email: string }>("SELECT email FROM users WHERE id = $1", [userId]))?.email ?? null,
     });
 
+    /** http(s)：任意合法 URL 均允许回跳。自定义协议：仅校验 scheme 为常见 URI 形态且与 OAuth state 内 source 一致。 */
     const isAllowedRedirect = (raw?: string, src?: string): raw is string => {
       if (!raw) return false;
       try {
         const u = new URL(raw);
         const protocol = u.protocol.toLowerCase();
         if (protocol === "http:" || protocol === "https:") {
-          if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
-          const fe = new URL(FRONTEND_URL);
-          if (u.origin === fe.origin) return true;
-          const extras = (process.env.OAUTH_RETURN_ORIGINS ?? "")
-            .split(",")
-            .map((s) => s.trim().replace(/\/$/, ""))
-            .filter(Boolean);
-          return extras.includes(u.origin);
+          return true;
         }
-        // 自定义协议：用于 vscode://、cursor:// 等桌面客户端回跳
-        const customSchemes = (process.env.OAUTH_RETURN_SCHEMES ?? "vscode")
-          .split(",")
-          .map((s) => s.trim().toLowerCase())
-          .filter(Boolean);
-        const scheme = protocol.replace(/:$/, "");
-        if (!customSchemes.includes(scheme)) return false;
-        // 限制仅桌面来源允许自定义协议，避免 Web 场景被意外跳走
-        return src === "vscode" || src === "cursor";
+        const scheme = protocol.replace(/:$/, "").toLowerCase();
+        // RFC 3986 scheme：ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+        if (!/^[a-z][a-z0-9+.-]*$/i.test(scheme) || scheme.length > 64) return false;
+        const s = typeof src === "string" ? src.trim().toLowerCase() : "";
+        return !!s && s === scheme;
       } catch {
         return false;
       }
@@ -296,14 +348,14 @@ app.get("/api/auth/github/callback", async (c) => {
     const redirectAllowed = isAllowedRedirect(webRedirect, source);
     if (webRedirect && !redirectAllowed) {
       console.warn(
-        "[github callback] redirect not in allowlist (OAUTH_RETURN_ORIGINS / OAUTH_RETURN_SCHEMES), using subscription home:",
+        "[github callback] redirect not allowed (custom scheme / source mismatch), using subscription home:",
         webRedirect
       );
     }
     const targetBase = redirectAllowed ? webRedirect! : subscriptionHome;
     const u = new URL(targetBase);
     u.searchParams.set("token", token);
-    if (source) u.searchParams.set("source", source);
+    u.searchParams.set("source", defaultOAuthSourceForTarget(targetBase, source));
     const redirectUrl = u.toString();
 
     /** meta refresh 的 url= 段：& 必须写成 &amp;，否则属性会在第一个 & 处截断 */

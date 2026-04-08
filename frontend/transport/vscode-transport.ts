@@ -10,6 +10,7 @@
 
 import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
+import { raiseSubscriptionRequired } from "../subscription/subscription-prompt";
 
 export type VsCodeWebviewApi = {
   postMessage(message: unknown): void;
@@ -48,13 +49,13 @@ export class VsCodeTransport implements IApiTransport {
         if (p) {
           this.pending.delete(id);
           if (error) {
-            p.reject(
-              subscriptionRequired
-                ? new SubscriptionRequiredError(
-                    typeof error === "string" && error.trim() ? error : undefined
-                  )
-                : new Error(error)
-            );
+            if (subscriptionRequired) {
+              const m = typeof error === "string" && error.trim() ? error : "";
+              raiseSubscriptionRequired(m);
+              p.reject(new SubscriptionRequiredError(m || undefined));
+            } else {
+              p.reject(new Error(error));
+            }
           } else p.resolve(data);
         }
       });

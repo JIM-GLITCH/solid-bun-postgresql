@@ -6,8 +6,7 @@ import { setAiKeyResolver } from "../../backend/api-core.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
-import { ExpiryNotifier } from "./expiry-notifier";
-
+import { buildSubscriptionPortalEntryUrl, getDesktopOAuthContext } from "./desktop-host";
 let currentPanel: vscode.WebviewPanel | null = null;
 
 const AI_SECRET_PREFIX = "dbplayer_ai_key_";
@@ -29,7 +28,6 @@ function getSubscriptionConfig(): { apiBase: string; frontendUrl: string } {
 type SubscriptionDeps = {
   tokenStorage: TokenStorage;
   licenseValidator: LicenseValidator;
-  expiryNotifier: ExpiryNotifier;
   getFrontendUrl: () => string;
   getApiBase: () => string;
 };
@@ -79,35 +77,38 @@ async function fetchAccountSummary(token: string): Promise<string> {
   }
 }
 
-/** 根据 SecretStorage 中的 JWT 向 Webview 推送当前登录态（与侧栏「账号」展示一致） */
-async function postAccountStateToWebview(
-  webview: vscode.Webview,
+async function getAccountStateFromTokenStorage(
   tokenStorage: TokenStorage
-): Promise<void> {
+): Promise<{ loggedIn: boolean; user?: { id?: number; email?: string | null } }> {
   const token = await tokenStorage.getToken();
   if (!token) {
-    webview.postMessage({ type: "dbplayer/account", loggedIn: false });
-    return;
+    return { loggedIn: false };
   }
   const api = getSubscriptionConfig().apiBase.replace(/\/$/, "");
   try {
     const res = await fetch(`${api}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(String(res.status));
     const data = (await res.json()) as { user?: { id?: number; email?: string | null } };
-    webview.postMessage({ type: "dbplayer/account", loggedIn: true, user: data.user });
+    return { loggedIn: true, user: data.user };
   } catch {
-    webview.postMessage({ type: "dbplayer/account", loggedIn: true });
+    return { loggedIn: true };
   }
 }
 
+/** 根据 SecretStorage 中的 JWT 向 Webview 推送当前登录态（与侧栏「账号」展示一致） */
+async function postAccountStateToWebview(
+  webview: vscode.Webview,
+  tokenStorage: TokenStorage
+): Promise<void> {
+  webview.postMessage({ type: "dbplayer/account", ...(await getAccountStateFromTokenStorage(tokenStorage)) });
+}
+
 async function openSubscriptionLogin(deps: SubscriptionDeps): Promise<void> {
-  const apiBase = deps.getApiBase().replace(/\/$/, "");
-  const redirect = "vscode://lilr.db-player/auth";
-  const loginUrl = `${apiBase}/api/auth/github?source=vscode&redirect=${encodeURIComponent(redirect)}`;
+  const loginUrl = buildSubscriptionPortalEntryUrl(deps.getFrontendUrl());
   const ok = await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
   if (!ok) {
     vscode.window.showWarningMessage(
-      `未能用系统浏览器打开登录页。请复制链接到浏览器：${loginUrl}`
+      `未能用系统浏览器打开订阅页。请复制链接到浏览器：${loginUrl}`
     );
   }
 }
@@ -132,7 +133,7 @@ async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> 
   if (!pick || pick.value === "noop") return;
 
   if (pick.value === "open") {
-    await vscode.env.openExternal(vscode.Uri.parse(deps.getFrontendUrl().replace(/\/$/, "")));
+    await vscode.env.openExternal(vscode.Uri.parse(buildSubscriptionPortalEntryUrl(deps.getFrontendUrl())));
     return;
   }
   if (pick.value === "switch") {
@@ -167,107 +168,15 @@ async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> 
   }
 }
 
-/** 无有效订阅时弹出引导（与 OAuth 共用 TokenStorage → dbplayer.jwt） */
-function showSubscriptionGate(context: vscode.ExtensionContext, deps: SubscriptionDeps): void {
-  const panel = vscode.window.createWebviewPanel(
-    "dbPlayerSubscribe",
-    "DB Player — 订阅",
-    vscode.ViewColumn.One,
-    { enableScripts: true }
-  );
-
-  const subscribeUrl = deps.getFrontendUrl().replace(/\/$/, "");
-  const loginUrl = `${deps.getApiBase().replace(/\/$/, "")}/api/auth/github?source=vscode&redirect=${encodeURIComponent("vscode://lilr.db-player/auth")}`;
-  panel.webview.html = `<!DOCTYPE html>
-<html lang="zh">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DB Player 订阅</title>
-  <style>
-    body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; gap: 16px; }
-    h2 { margin: 0; }
-    p { margin: 0; opacity: 0.7; }
-    a { color: var(--vscode-textLink-foreground); }
-    button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
-    button:hover { background: var(--vscode-button-hoverBackground); }
-    input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 6px 10px; border-radius: 4px; width: 320px; font-size: 13px; }
-    .row { display: flex; gap: 8px; }
-  </style>
-</head>
-<body>
-  <h2>DB Player 需要有效订阅</h2>
-  <p>点击下方按钮登录并完成订阅，完成后会自动返回 VS Code。</p>
-  <a href="${subscribeUrl}" target="_blank">查看订阅页面</a>
-  <div class="row">
-    <button id="loginBtn">登录 / 订阅</button>
-    <button id="checkBtn">我已完成，立即检查</button>
-  </div>
-  <p id="msg" style="color: var(--vscode-descriptionForeground);">等待登录中...</p>
-  <script>
-    const vscode = acquireVsCodeApi();
-    document.getElementById('loginBtn').addEventListener('click', () => {
-      vscode.postMessage({ type: 'openSubscribe' });
-    });
-    document.getElementById('checkBtn').addEventListener('click', () => {
-      vscode.postMessage({ type: 'checkLicense' });
-    });
-    window.addEventListener('message', e => {
-      if (e.data.type === 'licenseStatus') {
-        const valid = !!e.data.valid;
-        document.getElementById('msg').textContent = valid ? '验证成功，正在打开 DB Player...' : '尚未检测到有效订阅，请完成登录/订阅后重试';
-        document.getElementById('msg').style.color = valid ? 'var(--vscode-terminal-ansiGreen)' : 'var(--vscode-descriptionForeground)';
-      }
-    });
-  </script>
-</body>
-</html>`;
-
-  let checking = false;
-  const checkAndContinue = async () => {
-    if (checking || !panel.visible) return;
-    checking = true;
-    try {
-      deps.licenseValidator.invalidateCache();
-      const { valid } = await deps.licenseValidator.validate();
-      panel.webview.postMessage({ type: "licenseStatus", valid });
-      if (valid) {
-        panel.dispose();
-        vscode.window.showInformationMessage("订阅验证成功，正在打开 DB Player...");
-        openDbPlayerWebview(context, deps).catch(console.error);
-      }
-    } finally {
-      checking = false;
-    }
-  };
-
-  const pollTimer = setInterval(() => {
-    void checkAndContinue();
-  }, 3000);
-  panel.onDidDispose(() => clearInterval(pollTimer));
-
-  panel.webview.onDidReceiveMessage(async (msg: { type: string }) => {
-    if (msg.type === "openSubscribe") {
-      await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
-      void checkAndContinue();
-      return;
-    }
-    if (msg.type === "checkLicense") {
-      void checkAndContinue();
-    }
-  });
-}
-
 export function activate(context: vscode.ExtensionContext) {
   const tokenStorage = new TokenStorage(context.secrets);
   const getApiBase = () => getSubscriptionConfig().apiBase;
   const getFrontendUrl = () => getSubscriptionConfig().frontendUrl;
   const licenseValidator = new LicenseValidator(tokenStorage, getApiBase);
-  const expiryNotifier = new ExpiryNotifier(getFrontendUrl);
-  const deps: SubscriptionDeps = { tokenStorage, licenseValidator, expiryNotifier, getFrontendUrl, getApiBase };
+  const deps: SubscriptionDeps = { tokenStorage, licenseValidator, getFrontendUrl, getApiBase };
   setAiKeyResolver(async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`));
 
-  // 注册 URI Handler，支付完成后网页通过 vscode://lilr.db-player/auth?token=JWT 回传 token
+  // 注册 URI Handler：{uriScheme}://lilr.db-player/auth?token=JWT（随宿主变化，如 vscode / cursor / kiro）
   context.subscriptions.push(
     vscode.window.registerUriHandler(
       new DbPlayerUriHandler(tokenStorage, () => {
@@ -390,13 +299,7 @@ function redactPayload(msg: unknown): unknown {
 }
 
 async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: SubscriptionDeps) {
-  const { licenseValidator, expiryNotifier } = deps;
-  const { valid, expiresAt } = await licenseValidator.validate();
-  if (!valid) {
-    showSubscriptionGate(context, deps);
-    return;
-  }
-  await expiryNotifier.checkAndNotify(expiresAt);
+  // 与 Web 一致：启动主界面时不校验订阅；仅在表格设计器 / 可视化查询等处调用 subscription/assert 时再校验
 
   const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
   const panel = vscode.window.createWebviewPanel(
@@ -436,10 +339,6 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       (message as { type?: string }).type === "dbplayer/open-subscription-login"
     ) {
       await openSubscriptionLogin(deps);
-      return;
-    }
-    if (message && typeof message === "object" && (message as { type?: string }).type === "dbplayer/get-account") {
-      await postAccountStateToWebview(webview, deps.tokenStorage);
       return;
     }
     if (message && typeof message === "object" && (message as { type?: string }).type === "dbplayer/logout-subscription") {
@@ -528,6 +427,14 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       }
       return;
     }
+    if (typeof msg.id === "number" && msg.method === "subscription/account") {
+      try {
+        webview.postMessage({ id: msg.id, data: await getAccountStateFromTokenStorage(deps.tokenStorage) });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
     baseHandler(message as any);
   });
 
@@ -561,6 +468,13 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
     .split("{{CSP}}").join(csp)
     .split("{{SCRIPT_URI}}").join(scriptUri.toString())
     .split("{{MONACO_BASE_URI}}").join(monacoBaseUri.toString());
+
+  const hostBoot = getDesktopOAuthContext();
+  const hostScript = `<script>window.__DBPLAYER_DESKTOP_HOST__=${JSON.stringify({
+    source: hostBoot.source,
+    displayName: hostBoot.displayName,
+  })};<\/script>`;
+  newHtml = newHtml.includes("</body>") ? newHtml.replace("</body>", `${hostScript}</body>`) : newHtml + hostScript;
 
   webview.html = newHtml;
 

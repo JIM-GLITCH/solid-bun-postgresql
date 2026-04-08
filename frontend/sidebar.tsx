@@ -2,7 +2,7 @@ import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
-import { getSchemas, getTables, getColumns, getIndexes, getTableDdl, getFunctionDdl } from "./api";
+import { getSchemas, getTables, getColumns, getIndexes, getTableDdl, getFunctionDdl, getSubscriptionAccount } from "./api";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
@@ -24,13 +24,7 @@ import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
-import { clearBrowserJwt, getBrowserJwt, syncBrowserJwtFromUrl } from "./subscription/browser-token";
-import {
-  canAutoRedirectToWebLogin,
-  getSubscriptionApiUrl,
-  getSubscriptionPortalUrl,
-  openWebSubscriptionLogin,
-} from "./subscription/portal";
+import { openSubscriptionPortalForCurrentEnvironment } from "./subscription/portal";
 import { getVsCodeWebviewApi } from "./transport/vscode-transport";
 
 /** 侧栏生成「查全表 / TOP / LIMIT」等与方言一致的 SELECT */
@@ -231,51 +225,20 @@ export default function Sidebar(props: SidebarProps) {
 
   async function refreshAccountState(): Promise<void> {
     ++accountRefreshTicket;
-    const vsc = getVsCodeWebviewApi();
-    if (vsc) {
-      vsc.postMessage({ type: "dbplayer/get-account" });
-      return;
-    }
-
     const ticket = accountRefreshTicket;
-    const token = getBrowserJwt();
-    if (!token) {
-      setLoggedIn(false);
-      setAccountText("未登录");
-      return;
-    }
     try {
-      const res = await fetch(`${getSubscriptionApiUrl()}/api/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { success?: boolean; user?: { id?: number; email?: string | null } };
+      const data = await getSubscriptionAccount();
       if (ticket !== accountRefreshTicket) return;
-      const email = data.user?.email?.trim() || "";
-      const uid = data.user?.id != null ? String(data.user.id) : "";
-      setLoggedIn(true);
-      setAccountText(email || (uid ? `user:${uid}` : "已登录"));
+      applyAccountFromHost({ loggedIn: !!data.loggedIn, user: data.user });
     } catch {
       if (ticket !== accountRefreshTicket) return;
-      setLoggedIn(true);
-      setAccountText("已登录");
+      setLoggedIn(false);
+      setAccountText("未登录");
     }
   }
 
   function handleLoginOrSwitch(): void {
-    const vsc = getVsCodeWebviewApi();
-    // VS Code Webview 常拦截 window.open / location 跳外部，交给扩展 host 用 openExternal 打开
-    if (vsc) {
-      vsc.postMessage({ type: "dbplayer/open-subscription-login" });
-      return;
-    }
-    if (canAutoRedirectToWebLogin()) {
-      openWebSubscriptionLogin();
-      return;
-    }
-    if (typeof window !== "undefined") {
-      window.open(getSubscriptionPortalUrl(), "_blank");
-    }
+    openSubscriptionPortalForCurrentEnvironment();
   }
 
   async function handleLogout(): Promise<void> {
@@ -284,18 +247,14 @@ export default function Sidebar(props: SidebarProps) {
       vsc.postMessage({ type: "dbplayer/logout-subscription" });
       return;
     }
-    const token = getBrowserJwt();
-    if (token) {
-      try {
-        await fetch(`${getSubscriptionApiUrl()}/api/logout`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-        });
-      } catch {
-        /* ignore */
-      }
+    try {
+      await fetch(`${window.location.origin}/api/dbplayer/subscription-logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      /* ignore */
     }
-    clearBrowserJwt();
     await refreshAccountState();
   }
 
@@ -312,28 +271,20 @@ export default function Sidebar(props: SidebarProps) {
   });
 
   createEffect(() => {
-    const onHostAccount = (ev: MessageEvent) => {
-      const d = ev.data as { type?: string; loggedIn?: boolean; user?: { id?: number; email?: string | null } };
-      if (d?.type !== "dbplayer/account") return;
-      applyAccountFromHost({
-        loggedIn: !!d.loggedIn,
-        user: d.user,
-      });
-    };
-    window.addEventListener("message", onHostAccount);
-    onCleanup(() => window.removeEventListener("message", onHostAccount));
-  });
-
-  createEffect(() => {
-    syncBrowserJwtFromUrl();
+    const u = new URL(window.location.href);
+    const token = u.searchParams.get("token")?.trim();
+    if (token && typeof fetch !== "undefined") {
+      void fetch(`${window.location.origin}/api/dbplayer/subscription-token`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      }).catch(() => {});
+      u.searchParams.delete("token");
+      u.searchParams.delete("source");
+      window.history.replaceState({}, "", `${u.pathname}${u.search}${u.hash}`);
+    }
     void refreshAccountState();
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "dbplayer.jwt" || e.key === "dbplayer_token" || e.key === null) {
-        void refreshAccountState();
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    onCleanup(() => window.removeEventListener("storage", onStorage));
   });
 
   /** 从树节点 id 解析 connectionId（schema:/table:/connection: 等格式统一为第 2 段） */

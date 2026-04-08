@@ -23,6 +23,8 @@ export const API_METHODS = [
   "query-history/search",
   "query-history/delete",
   "query-history/clear",
+  "subscription/assert",
+  "subscription/account",
   "db/connect",
   "db/disconnect",
   "db/query",
@@ -93,6 +95,8 @@ export type ApiRequestPayload = {
   "query-history/search": { keyword?: string; since?: number; until?: number };
   "query-history/delete": { id: string };
   "query-history/clear": {};
+  "subscription/assert": { feature: "visual-query-builder" | "table-designer" };
+  "subscription/account": Record<string, never>;
   "db/connect": ConnectDbRequest;
   "db/disconnect": DbRpcBase;
   "db/query": DbRpcBase & { query: string; defaultSchema?: string };

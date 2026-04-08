@@ -1,3 +1,5 @@
+import { getVsCodeWebviewApi } from "../transport/vscode-transport";
+
 const DEFAULT_PORTAL = "https://dbplayer.top";
 const DEFAULT_API = "https://api.dbplayer.top";
 const LOGIN_REDIRECT_LOCK = "dbplayer_login_redirecting";
@@ -52,12 +54,40 @@ export function isLoginRedirectingRecently(windowMs = 15000): boolean {
   return Date.now() - t < windowMs;
 }
 
+/** Standalone：仅用于 `?return=` 存 sessionStorage；用户点「返回本地 DB Player」时再带 token 打开，由本地业务后端写 Cookie。GitHub OAuth 不再直接 redirect 到此。 */
+export function getStandaloneSubscriptionOAuthCallbackUrl(): string {
+  if (typeof window === "undefined") return "";
+  return `${window.location.origin}/api/dbplayer/subscription-callback`;
+}
+
+/**
+ * 当前运行环境下的订阅站入口：VS Code 由扩展 host 打开外部浏览器；
+ * Standalone/Web 整页跳转带 return；其它环境新窗口打开门户。
+ */
+export function openSubscriptionPortalForCurrentEnvironment(): void {
+  const vsc = getVsCodeWebviewApi();
+  if (vsc) {
+    vsc.postMessage({ type: "dbplayer/open-subscription-login" });
+    return;
+  }
+  if (canAutoRedirectToWebLogin()) {
+    openWebSubscriptionLogin();
+    return;
+  }
+  if (typeof window !== "undefined") {
+    window.open(getSubscriptionPortalUrl(), "_blank", "noopener,noreferrer");
+  }
+}
+
+/** 先打开订阅前端页面，由用户点击「用 GitHub 登录」再走 OAuth（与扩展行为一致） */
 export function openWebSubscriptionLogin(): void {
   if (!canAutoRedirectToWebLogin()) return;
-  const api = getSubscriptionApiUrl();
-  // 保留当前路径与查询，登录后尽量回到用户原位置
-  const redirect = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+  const portal = getSubscriptionPortalUrl().replace(/\/$/, "");
+  const callback = getStandaloneSubscriptionOAuthCallbackUrl();
   markLoginRedirecting();
-  window.location.href = `${api}/api/auth/github?source=webapp&redirect=${encodeURIComponent(redirect)}`;
+  const u = new URL(portal.includes("://") ? portal : `https://${portal}`);
+  u.searchParams.set("source", "standalone");
+  u.searchParams.set("return", callback);
+  window.location.href = u.toString();
 }
 

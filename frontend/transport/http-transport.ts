@@ -5,14 +5,13 @@
 import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
 import { formatUnknownError } from "../format-unknown-error";
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
+import { raiseSubscriptionRequired } from "../subscription/subscription-prompt";
 
 const API_BASE = "";
 
 export type HttpTransportOptions = {
   /** 随请求发送 Authorization: Bearer（订阅校验在业务后端） */
   getBearerToken?: () => string | null;
-  /** 订阅失效时的统一处理（如跳登录） */
-  onSubscriptionRequired?: (error: SubscriptionRequiredError) => void;
 };
 
 export class HttpTransport implements IApiTransport {
@@ -35,6 +34,7 @@ export class HttpTransport implements IApiTransport {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
+        credentials: "include",
       });
     } catch (e) {
       const isNet =
@@ -63,7 +63,7 @@ export class HttpTransport implements IApiTransport {
       if (res.status === 403 && data?.subscriptionRequired) {
         const msg = formatUnknownError(data?.error, "");
         const err = new SubscriptionRequiredError(msg || undefined);
-        this.opts.onSubscriptionRequired?.(err);
+        raiseSubscriptionRequired(err.message);
         throw err;
       }
       throw new Error(formatUnknownError(data?.error, `请求失败: ${method}`));
@@ -79,7 +79,7 @@ export class HttpTransport implements IApiTransport {
     const t = this.opts.getBearerToken?.() ?? null;
     if (t) q.set("access_token", t);
     const url = `${API_BASE}/api/events?${q.toString()}`;
-    const eventSource = new EventSource(url);
+    const eventSource = new EventSource(url, { withCredentials: true });
 
     eventSource.onmessage = (event) => {
       try {
