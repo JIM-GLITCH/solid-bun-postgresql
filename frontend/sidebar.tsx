@@ -24,6 +24,14 @@ import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
+import { clearBrowserJwt, getBrowserJwt, syncBrowserJwtFromUrl } from "./subscription/browser-token";
+import {
+  canAutoRedirectToWebLogin,
+  getSubscriptionApiUrl,
+  getSubscriptionPortalUrl,
+  openWebSubscriptionLogin,
+} from "./subscription/portal";
+import { getVsCodeWebviewApi } from "./transport/vscode-transport";
 
 /** 侧栏生成「查全表 / TOP / LIMIT」等与方言一致的 SELECT */
 function selectStarFromTableSql(connectionId: string, schema: string, table: string, topN?: number): string {
@@ -197,6 +205,99 @@ export default function Sidebar(props: SidebarProps) {
   const [createSchemaModalCid, setCreateSchemaModalCid] = createSignal<string | null>(null);
   const [deleteSchemaModal, setDeleteSchemaModal] = createSignal<{ connectionId: string; schema: string } | null>(null);
   const [dragOverZone, setDragOverZone] = createSignal<string | null>(null);
+  const [accountText, setAccountText] = createSignal("未登录");
+  const [loggedIn, setLoggedIn] = createSignal(false);
+  let accountRefreshTicket = 0;
+
+  function applyAccountFromHost(payload: {
+    loggedIn: boolean;
+    user?: { id?: number; email?: string | null };
+  }): void {
+    if (!payload.loggedIn) {
+      setLoggedIn(false);
+      setAccountText("未登录");
+      return;
+    }
+    if (!payload.user) {
+      setLoggedIn(true);
+      setAccountText("已登录");
+      return;
+    }
+    const email = payload.user.email?.trim() || "";
+    const uid = payload.user.id != null ? String(payload.user.id) : "";
+    setLoggedIn(true);
+    setAccountText(email || (uid ? `user:${uid}` : "已登录"));
+  }
+
+  async function refreshAccountState(): Promise<void> {
+    ++accountRefreshTicket;
+    const vsc = getVsCodeWebviewApi();
+    if (vsc) {
+      vsc.postMessage({ type: "dbplayer/get-account" });
+      return;
+    }
+
+    const ticket = accountRefreshTicket;
+    const token = getBrowserJwt();
+    if (!token) {
+      setLoggedIn(false);
+      setAccountText("未登录");
+      return;
+    }
+    try {
+      const res = await fetch(`${getSubscriptionApiUrl()}/api/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { success?: boolean; user?: { id?: number; email?: string | null } };
+      if (ticket !== accountRefreshTicket) return;
+      const email = data.user?.email?.trim() || "";
+      const uid = data.user?.id != null ? String(data.user.id) : "";
+      setLoggedIn(true);
+      setAccountText(email || (uid ? `user:${uid}` : "已登录"));
+    } catch {
+      if (ticket !== accountRefreshTicket) return;
+      setLoggedIn(true);
+      setAccountText("已登录");
+    }
+  }
+
+  function handleLoginOrSwitch(): void {
+    const vsc = getVsCodeWebviewApi();
+    // VS Code Webview 常拦截 window.open / location 跳外部，交给扩展 host 用 openExternal 打开
+    if (vsc) {
+      vsc.postMessage({ type: "dbplayer/open-subscription-login" });
+      return;
+    }
+    if (canAutoRedirectToWebLogin()) {
+      openWebSubscriptionLogin();
+      return;
+    }
+    if (typeof window !== "undefined") {
+      window.open(getSubscriptionPortalUrl(), "_blank");
+    }
+  }
+
+  async function handleLogout(): Promise<void> {
+    const vsc = getVsCodeWebviewApi();
+    if (vsc) {
+      vsc.postMessage({ type: "dbplayer/logout-subscription" });
+      return;
+    }
+    const token = getBrowserJwt();
+    if (token) {
+      try {
+        await fetch(`${getSubscriptionApiUrl()}/api/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    clearBrowserJwt();
+    await refreshAccountState();
+  }
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -208,6 +309,31 @@ export default function Sidebar(props: SidebarProps) {
       document.removeEventListener("click", handler, false);
       document.removeEventListener("contextmenu", handler, false);
     });
+  });
+
+  createEffect(() => {
+    const onHostAccount = (ev: MessageEvent) => {
+      const d = ev.data as { type?: string; loggedIn?: boolean; user?: { id?: number; email?: string | null } };
+      if (d?.type !== "dbplayer/account") return;
+      applyAccountFromHost({
+        loggedIn: !!d.loggedIn,
+        user: d.user,
+      });
+    };
+    window.addEventListener("message", onHostAccount);
+    onCleanup(() => window.removeEventListener("message", onHostAccount));
+  });
+
+  createEffect(() => {
+    syncBrowserJwtFromUrl();
+    void refreshAccountState();
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "dbplayer.jwt" || e.key === "dbplayer_token" || e.key === null) {
+        void refreshAccountState();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    onCleanup(() => window.removeEventListener("storage", onStorage));
   });
 
   /** 从树节点 id 解析 connectionId（schema:/table:/connection: 等格式统一为第 2 段） */
@@ -1867,11 +1993,57 @@ export default function Sidebar(props: SidebarProps) {
           "font-size": "11px",
           color: vscode.foregroundDim,
           display: "flex",
-          "justify-content": "space-between",
+          "flex-direction": "column",
+          gap: "8px",
         }}
       >
-        <span>Connections: {state.nodes.length}</span>
-        <span>💡 双击表查询 · 双击函数查看源码</span>
+        <div style={{ display: "flex", "justify-content": "space-between" }}>
+          <span>Connections: {state.nodes.length}</span>
+          <span>💡 双击表查询 · 双击函数查看源码</span>
+        </div>
+        <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
+          <span
+            title={accountText()}
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              "text-overflow": "ellipsis",
+              "white-space": "nowrap",
+            }}
+          >
+            👤 {accountText()}
+          </span>
+          <button
+            onClick={handleLoginOrSwitch}
+            style={{
+              padding: "2px 8px",
+              border: `1px solid ${vscode.border}`,
+              "border-radius": "4px",
+              background: "transparent",
+              color: vscode.foreground,
+              cursor: "pointer",
+              "font-size": "11px",
+            }}
+          >
+            {loggedIn() ? "切换" : "登录"}
+          </button>
+          <button
+            onClick={handleLogout}
+            disabled={!loggedIn()}
+            style={{
+              padding: "2px 8px",
+              border: `1px solid ${vscode.border}`,
+              "border-radius": "4px",
+              background: "transparent",
+              color: loggedIn() ? vscode.foreground : vscode.foregroundDim,
+              cursor: loggedIn() ? "pointer" : "not-allowed",
+              "font-size": "11px",
+              opacity: loggedIn() ? 1 : 0.6,
+            }}
+          >
+            退出
+          </button>
+        </div>
       </div>
       </div>
     </div>

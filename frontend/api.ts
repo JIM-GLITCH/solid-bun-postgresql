@@ -481,3 +481,16 @@ export async function setAiKeyViaVscode(keyRef: string, apiKey: string) {
 export async function deleteAiKeyViaVscode(keyRef: string) {
   return api().request("vscode/ai-key-delete", { keyRef }) as Promise<{ success: boolean }>;
 }
+
+/**
+ * Extension 端功能订阅校验：
+ * - 非 VSCode Webview 环境直接放行
+ * - VSCode 环境通过 extension host 做一次显式 assert
+ */
+export async function assertFeatureSubscription(feature: "visual-query-builder" | "table-designer"): Promise<void> {
+  const isVscodeWebview =
+    typeof window !== "undefined" &&
+    typeof (window as Window & { acquireVsCodeApi?: unknown }).acquireVsCodeApi === "function";
+  if (!isVscodeWebview) return;
+  await api().request("subscription/assert" as ApiMethod, { feature } as ApiRequestPayload[ApiMethod]);
+}

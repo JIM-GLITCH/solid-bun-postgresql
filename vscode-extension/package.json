@@ -32,6 +32,11 @@
         "command": "db-player.helloWorld",
         "title": "Open DB Player",
         "category": "DB Player"
+      },
+      {
+        "command": "db-player.manageSubscriptionAccount",
+        "title": "Manage Subscription Account",
+        "category": "DB Player"
       }
     ],
     "uriHandler": {},

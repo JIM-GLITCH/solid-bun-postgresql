@@ -22,6 +22,7 @@ import {
   setAiKeyViaVscode,
   deleteAiKeyViaVscode,
   deleteAiKey,
+  assertFeatureSubscription,
 } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
@@ -93,7 +94,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const dbCaps = createMemo(() => getEffectiveDbCapabilities(props.activeConnectionId?.() ?? null));
 
   const AI_MODEL_PREF_KEY = "dbplayer.ai.model";
-  const { openJsonbEditor } = useDialog();
+  const { openJsonbEditor, showAlert } = useDialog();
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -2037,7 +2038,19 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </button>
             <Show when={dbCaps().visualQueryBuilder}>
               <button
-                onClick={() => setShowQueryBuilder(!showQueryBuilder())}
+                onClick={async () => {
+                  if (showQueryBuilder()) {
+                    setShowQueryBuilder(false);
+                    return;
+                  }
+                  try {
+                    await assertFeatureSubscription("visual-query-builder");
+                    setShowQueryBuilder(true);
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    showAlert(msg || "该功能需要有效订阅", "需要订阅");
+                  }
+                }}
                 style={{
                   padding: "10px 24px",
                   "font-size": "14px",

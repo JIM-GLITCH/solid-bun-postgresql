@@ -6,7 +6,7 @@ import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
 import Sidebar from './sidebar';
-import { disconnectPostgres, disconnectPostgresOnPageUnload, subscribeEvents } from './api';
+import { assertFeatureSubscription, disconnectPostgres, disconnectPostgresOnPageUnload, subscribeEvents } from './api';
 import {
   loadStoredConnections,
   connectFromSaved,
@@ -261,12 +261,22 @@ export default function App() {
     addOrFocusQueryTab(connectionId, "", sql);
   };
 
-  const handleNewTable = (connectionId: string, connectionInfo: string, schema: string) => {
-    addDesignTableTab(connectionId, connectionInfo, schema);
+  const handleNewTable = async (connectionId: string, connectionInfo: string, schema: string) => {
+    try {
+      await assertFeatureSubscription("table-designer");
+      addDesignTableTab(connectionId, connectionInfo, schema);
+    } catch (e) {
+      showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+    }
   };
 
-  const handleEditTable = (connectionId: string, connectionInfo: string, schema: string, table: string) => {
-    addDesignTableTab(connectionId, connectionInfo, schema, table);
+  const handleEditTable = async (connectionId: string, connectionInfo: string, schema: string, table: string) => {
+    try {
+      await assertFeatureSubscription("table-designer");
+      addDesignTableTab(connectionId, connectionInfo, schema, table);
+    } catch (e) {
+      showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
+    }
   };
 
   const handleViewDdl = (connectionId: string, connectionInfo: string, schema: string, table: string, ddl: string) => {

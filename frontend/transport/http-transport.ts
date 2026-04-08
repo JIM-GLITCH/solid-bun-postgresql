@@ -11,6 +11,8 @@ const API_BASE = "";
 export type HttpTransportOptions = {
   /** 随请求发送 Authorization: Bearer（订阅校验在业务后端） */
   getBearerToken?: () => string | null;
+  /** 订阅失效时的统一处理（如跳登录） */
+  onSubscriptionRequired?: (error: SubscriptionRequiredError) => void;
 };
 
 export class HttpTransport implements IApiTransport {
@@ -21,7 +23,10 @@ export class HttpTransport implements IApiTransport {
     payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     const path = `/api/${method}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-dbplayer-client": "web",
+    };
     const token = this.opts.getBearerToken?.() ?? null;
     if (token) headers.Authorization = `Bearer ${token}`;
     let res: Response;
@@ -37,7 +42,7 @@ export class HttpTransport implements IApiTransport {
         (e.message === "Failed to fetch" || e.message.includes("fetch"));
       throw new Error(
         isNet
-          ? `网络请求失败（${method}）：无法连接 API。请确认后端已启动（如 127.0.0.1:3001），且开发服务器已将 /api 代理到该地址。`
+          ? `网络请求失败（${method}）：无法连接 API。请确认后端已启动（如 127.0.0.1:3101），且开发服务器已将 /api 代理到该地址。`
           : e instanceof Error
             ? e.message
             : String(e)
@@ -57,7 +62,9 @@ export class HttpTransport implements IApiTransport {
     if (!res.ok) {
       if (res.status === 403 && data?.subscriptionRequired) {
         const msg = formatUnknownError(data?.error, "");
-        throw new SubscriptionRequiredError(msg || undefined);
+        const err = new SubscriptionRequiredError(msg || undefined);
+        this.opts.onSubscriptionRequired?.(err);
+        throw err;
       }
       throw new Error(formatUnknownError(data?.error, `请求失败: ${method}`));
     }
@@ -68,6 +75,7 @@ export class HttpTransport implements IApiTransport {
   subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
     const q = new URLSearchParams();
     q.set("connectionSessionId", connectionId);
+    q.set("client", "web");
     const t = this.opts.getBearerToken?.() ?? null;
     if (t) q.set("access_token", t);
     const url = `${API_BASE}/api/events?${q.toString()}`;

@@ -2,12 +2,6 @@
  * 业务进程侧订阅校验：请求订阅服务 GET /api/verify-license（与前端原 license-client 一致）
  */
 
-const CACHE_TTL_MS = 60 * 60 * 1000;
-
-type CacheEntry = { token: string; valid: boolean; cachedAt: number };
-
-let cache: CacheEntry | null = null;
-
 export class SubscriptionRequiredError extends Error {
   override readonly name = "SubscriptionRequiredError";
   readonly subscriptionRequired = true as const;
@@ -51,24 +45,15 @@ export function parseAccessTokenQuery(req: Request): string | null {
 }
 
 async function verifyRemote(apiBase: string, token: string): Promise<boolean> {
-  if (cache && cache.token === token && Date.now() - cache.cachedAt < CACHE_TTL_MS) {
-    return cache.valid;
-  }
   const base = apiBase.replace(/\/$/, "");
   try {
     const res = await fetch(`${base}/api/verify-license`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) {
-      cache = { token, valid: false, cachedAt: Date.now() };
-      return false;
-    }
+    if (!res.ok) return false;
     const data = (await res.json()) as { valid?: boolean };
-    const valid = data.valid === true;
-    cache = { token, valid, cachedAt: Date.now() };
-    return valid;
+    return data.valid === true;
   } catch {
-    cache = null;
     return false;
   }
 }
@@ -87,8 +72,4 @@ export async function assertSubscriptionLicensed(
   const base = (apiBaseOverride ?? getSubscriptionApiBaseFromEnv()).replace(/\/$/, "");
   const valid = await verifyRemote(base, t);
   if (!valid) throw new SubscriptionRequiredError();
-}
-
-export function invalidateSubscriptionLicenseCache(): void {
-  cache = null;
 }

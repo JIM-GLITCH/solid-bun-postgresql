@@ -1,8 +1,8 @@
 /**
  * Standalone 开发入口：Node + Hono，仅 API + Monaco
- * 开发模式：Vite (3000) 代理 /api、/vs 到此服务 (3001)；前端由 Vite 提供（HMR）
+ * 开发模式：Vite (3000) 代理 /api、/vs 到此服务 (3101)；前端由 Vite 提供（HMR）
  * 生产/SEA：静态资源从 out/ 或 sea.getAsset() 读取
- * 开发：bun run dev（concurrently 启动 api:3001 + vite:3000）
+ * 开发：bun run dev（concurrently 启动 api:3101 + vite:3000）
  */
 
 import { Hono } from "hono";
@@ -82,7 +82,7 @@ async function setupStatic() {
 
   // SEA 或打包后必为生产模式；仅 ts 源码直接跑时为开发
   const isDev = !isSea && __filename.endsWith(".ts");
-  const PORT = Number(process.env.PORT) || (isDev ? 3001 : 3000);
+  const PORT = Number(process.env.PORT) || (isDev ? 3101 : 3000);
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);
   if (isDev) console.log(`  → Vite proxies /api, /vs to this port`);

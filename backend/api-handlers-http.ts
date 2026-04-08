@@ -15,6 +15,13 @@ import {
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
+function isWebAuthBypassed(req: Request): boolean {
+  const clientHeader = (req.headers.get("x-dbplayer-client") ?? "").trim().toLowerCase();
+  if (clientHeader === "web") return true;
+  const clientQuery = (new URL(req.url).searchParams.get("client") ?? "").trim().toLowerCase();
+  return clientQuery === "web";
+}
+
 function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
   return Response.json({ error: e.message, success: false, subscriptionRequired: true }, { status: 403 });
 }
@@ -23,7 +30,9 @@ function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
 function postApi<M extends ApiMethod>(method: M): RouteHandler {
   return async (req: Request) => {
     try {
-      await assertSubscriptionLicensed(parseBearerToken(req));
+      if (!isWebAuthBypassed(req)) {
+        await assertSubscriptionLicensed(parseBearerToken(req));
+      }
       const data = (await req.json()) as ApiRequestPayload[M];
       const result = await handleApiRequest(method, data);
       return Response.json(result);
@@ -68,8 +77,10 @@ export function createApiRoutes(): Record<
       GET: async (req: unknown) => {
         const r = req as Request;
         try {
-          const token = parseBearerToken(r) ?? parseAccessTokenQuery(r);
-          await assertSubscriptionLicensed(token);
+          if (!isWebAuthBypassed(r)) {
+            const token = parseBearerToken(r) ?? parseAccessTokenQuery(r);
+            await assertSubscriptionLicensed(token);
+          }
         } catch (e: unknown) {
           if (e instanceof SubscriptionRequiredError) return subscriptionJsonResponse(e);
           throw e;

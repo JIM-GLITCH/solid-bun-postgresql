@@ -19,6 +19,11 @@ export interface VscodeWebview {
 export type VscodeMessageHandlerOptions = {
   /** 在 RPC 与 subscribe-events 前执行（Extension Host 从 Secret 取 token 并调订阅服务） */
   assertLicensed?: () => Promise<void>;
+  /** 返回 true 时才执行 assertLicensed；默认全部校验（向后兼容） */
+  shouldAssertLicensed?: (ctx: {
+    kind: "rpc" | "subscribe-events";
+    method?: string;
+  }) => boolean;
 };
 
 function postRpcError(
@@ -48,6 +53,7 @@ function postRpcError(
 export function createVscodeMessageHandler(webview: VscodeWebview, opts?: VscodeMessageHandlerOptions) {
   const eventUnsubscribes = new Map<string, () => void>();
   const assertLicensed = opts?.assertLicensed;
+  const shouldAssertLicensed = opts?.shouldAssertLicensed ?? (() => true);
 
   return async (message: {
     id?: number;
@@ -66,7 +72,9 @@ export function createVscodeMessageHandler(webview: VscodeWebview, opts?: Vscode
     // 订阅/取消订阅事件推送
     if (type === "subscribe-events" && sid) {
       try {
-        if (assertLicensed) await assertLicensed();
+        if (assertLicensed && shouldAssertLicensed({ kind: "subscribe-events" })) {
+          await assertLicensed();
+        }
         const unsub = subscribeSessionEvents(sid, (msg) => {
           webview.postMessage({ type: "sse", data: msg });
         });
@@ -87,7 +95,9 @@ export function createVscodeMessageHandler(webview: VscodeWebview, opts?: Vscode
     if (typeof id !== "number" || !method || payload == null) return;
 
     try {
-      if (assertLicensed) await assertLicensed();
+      if (assertLicensed && shouldAssertLicensed({ kind: "rpc", method })) {
+        await assertLicensed();
+      }
       const result = await handleApiRequest(method as ApiMethod, payload as any);
       webview.postMessage({ id, data: result });
     } catch (e: unknown) {

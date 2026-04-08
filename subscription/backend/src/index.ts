@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { pool, queryOne } from "./db";
 import { signJwt, verifyJwt } from "./auth";
+import { getCachedVerifyLicense, setCachedVerifyLicense } from "./verify-license-cache";
 import { handle } from 'hono-alibaba-cloud-fc3-adapter';
 import {
   PLANS,
@@ -38,6 +39,8 @@ const CORS_ORIGIN_ALLOWLIST = new Set(
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
+        "http://localhost:3101",
+        "http://127.0.0.1:3101",
         "https://dbplayer.top",
         "https://www.dbplayer.top",
       ]
@@ -139,10 +142,20 @@ app.get("/api/health", (c) => c.json({ ok: true }));
 app.get("/api/auth/github", (c) => {
   const redirectUri = `${API_BASE_URL.replace(/\/$/, "")}/api/auth/github/callback`;
   const source = c.req.query("source");
-  const statePayload: { nonce: string; source?: string } = { nonce: crypto.randomUUID() };
+  const webRedirect = c.req.query("redirect");
+  const statePayload: { nonce: string; source?: string; redirect?: string } = { nonce: crypto.randomUUID() };
   if (source !== undefined) statePayload.source = source;
-  const state = btoa(JSON.stringify(statePayload));
-  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email&state=${state}`;
+  if (webRedirect !== undefined && String(webRedirect).trim()) statePayload.redirect = String(webRedirect).trim();
+  const stateJson = JSON.stringify(statePayload);
+  // GitHub state 不宜过长；过长则丢弃 redirect，回跳仍落订阅前端（用户可再点「返回应用」类入口）
+  const stateTruncated = stateJson.length > 900;
+  if (stateTruncated && statePayload.redirect) {
+    console.warn("[github oauth] state too long, redirect omitted from state; user will land on subscription home");
+  }
+  const state = stateTruncated
+    ? btoa(JSON.stringify({ nonce: statePayload.nonce, source: statePayload.source }))
+    : btoa(stateJson);
+  const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email&state=${encodeURIComponent(state)}`;
   return c.redirect(url);
 });
 
@@ -152,11 +165,20 @@ app.get("/api/auth/github/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   let source: string | undefined;
+  let webRedirect: string | undefined;
   try {
-    const parsed = JSON.parse(atob(state ?? ""));
-    source = parsed.source;
+    let raw = state ?? "";
+    try {
+      raw = decodeURIComponent(raw);
+    } catch {
+      /* GitHub 可能已解码 */
+    }
+    const parsed = JSON.parse(atob(raw)) as { source?: string; redirect?: string };
+    source = typeof parsed.source === "string" ? parsed.source : undefined;
+    webRedirect = typeof parsed.redirect === "string" ? parsed.redirect.trim() : undefined;
   } catch {
     source = undefined;
+    webRedirect = undefined;
   }
   if (!code) {
     return c.json({ success: false, error: "缺少 code" }, 400);
@@ -241,10 +263,56 @@ app.get("/api/auth/github/callback", async (c) => {
       email: email ?? (await queryOne<{ email: string }>("SELECT email FROM users WHERE id = $1", [userId]))?.email ?? null,
     });
 
-    // callback 用 HTML meta refresh 跳转，避免 FC 拦截外部 302
-    const baseRedirect = `${FRONTEND_URL}${FRONTEND_URL.endsWith("/") ? "" : "/"}?token=${token}`;
-    const redirectUrl = source ? `${baseRedirect}&source=${encodeURIComponent(source)}` : baseRedirect;
-    return c.html(`<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${redirectUrl}"></head><body>登录成功，跳转中...</body></html>`);
+    const isAllowedRedirect = (raw?: string, src?: string): raw is string => {
+      if (!raw) return false;
+      try {
+        const u = new URL(raw);
+        const protocol = u.protocol.toLowerCase();
+        if (protocol === "http:" || protocol === "https:") {
+          if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return true;
+          const fe = new URL(FRONTEND_URL);
+          if (u.origin === fe.origin) return true;
+          const extras = (process.env.OAUTH_RETURN_ORIGINS ?? "")
+            .split(",")
+            .map((s) => s.trim().replace(/\/$/, ""))
+            .filter(Boolean);
+          return extras.includes(u.origin);
+        }
+        // 自定义协议：用于 vscode://、cursor:// 等桌面客户端回跳
+        const customSchemes = (process.env.OAUTH_RETURN_SCHEMES ?? "vscode")
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        const scheme = protocol.replace(/:$/, "");
+        if (!customSchemes.includes(scheme)) return false;
+        // 限制仅桌面来源允许自定义协议，避免 Web 场景被意外跳走
+        return src === "vscode" || src === "cursor";
+      } catch {
+        return false;
+      }
+    };
+
+    const subscriptionHome = `${FRONTEND_URL.replace(/\/$/, "")}/`;
+    const redirectAllowed = isAllowedRedirect(webRedirect, source);
+    if (webRedirect && !redirectAllowed) {
+      console.warn(
+        "[github callback] redirect not in allowlist (OAUTH_RETURN_ORIGINS / OAUTH_RETURN_SCHEMES), using subscription home:",
+        webRedirect
+      );
+    }
+    const targetBase = redirectAllowed ? webRedirect! : subscriptionHome;
+    const u = new URL(targetBase);
+    u.searchParams.set("token", token);
+    if (source) u.searchParams.set("source", source);
+    const redirectUrl = u.toString();
+
+    /** meta refresh 的 url= 段：& 必须写成 &amp;，否则属性会在第一个 & 处截断 */
+    const metaUrl = redirectUrl.replace(/&/g, "&amp;");
+    const hrefAttr = redirectUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const jsUrl = JSON.stringify(redirectUrl);
+    return c.html(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${metaUrl}"></head><body>登录成功，跳转中…<script>location.replace(${jsUrl});</script><noscript><p><a href="${hrefAttr}">点击继续</a></p></noscript></body></html>`
+    );
   } catch (e) {
     console.error("[github callback]", e);
     const { error, detail } = publicError(e);
@@ -280,6 +348,51 @@ app.get("/api/subscription", async (c) => {
     success: true,
     subscription: { active, plan, expiresAt },
   });
+});
+
+// ========== 当前账号信息（Web / VSCode 共用） ==========
+app.get("/api/me", async (c) => {
+  const auth = await authorize(c);
+  if (!auth.ok) return unauthorizedJson(c, auth.hadBearerToken);
+  const { user } = auth;
+
+  const sub = await queryOne<{ plan: string; status: string; expires_at: Date | null }>(
+    `SELECT plan, status, expires_at FROM subscriptions
+     WHERE user_id = $1 AND status = 'active'
+     ORDER BY expires_at DESC NULLS LAST
+     LIMIT 1`,
+    [user.userId]
+  );
+
+  let active = false;
+  let plan = "free";
+  let expiresAt: number | null = null;
+
+  if (sub) {
+    plan = sub.plan;
+    expiresAt = sub.expires_at ? Math.floor(sub.expires_at.getTime() / 1000) : null;
+    active = !expiresAt || expiresAt > Math.floor(Date.now() / 1000);
+  }
+
+  return c.json({
+    success: true,
+    user: {
+      id: user.userId,
+      email: user.email,
+    },
+    subscription: {
+      active,
+      plan,
+      expiresAt,
+    },
+  });
+});
+
+// ========== 统一退出（JWT 方案下由客户端清本地凭据） ==========
+app.post("/api/logout", async (c) => {
+  const auth = await authorize(c);
+  if (!auth.ok) return unauthorizedJson(c, auth.hadBearerToken);
+  return c.json({ success: true });
 });
 
 // ========== 创建支付订单 ==========
@@ -380,27 +493,40 @@ app.get("/api/payment/order/:orderNo", async (c) => {
 
 // ========== VSCode 订阅校验（轻量，无需完整订阅信息） ==========
 app.get("/api/verify-license", async (c) => {
-  const auth = await authorize(c);
-  if (!auth.ok) {
-    return c.json(
-      {
-        valid: false,
-        reason: auth.hadBearerToken ? "invalid_token" : "missing_token",
-      },
-      401
-    );
+  const token = parseBearerToken(c);
+  if (!token) {
+    return c.json({ valid: false, reason: "missing_token" }, 401);
   }
-  const { user } = auth;
+
+  const cached = getCachedVerifyLicense(token);
+  if (cached) {
+    // 与未走缓存时一致：无订阅行只返回 { valid: false }，不带 expiresAt
+    if (!cached.valid && cached.expiresAt == null) {
+      return c.json({ valid: false });
+    }
+    return c.json({ valid: cached.valid, expiresAt: cached.expiresAt });
+  }
+
+  const user = await verifyJwt(token);
+  if (!user) {
+    return c.json({ valid: false, reason: "invalid_token" }, 401);
+  }
 
   const sub = await queryOne<{ expires_at: Date | null }>(
     `SELECT expires_at FROM subscriptions WHERE user_id=$1 AND status='active' ORDER BY expires_at DESC NULLS LAST LIMIT 1`,
     [user.userId]
   );
 
-  if (!sub) return c.json({ valid: false });
+  if (!sub) {
+    const body = { valid: false as boolean, expiresAt: null as number | null };
+    setCachedVerifyLicense(token, body);
+    return c.json({ valid: false });
+  }
   const expiresAt = sub.expires_at ? Math.floor(sub.expires_at.getTime() / 1000) : null;
   const valid = !expiresAt || expiresAt > Math.floor(Date.now() / 1000);
-  return c.json({ valid, expiresAt });
+  const body = { valid, expiresAt };
+  setCachedVerifyLicense(token, body);
+  return c.json(body);
 });
 
 

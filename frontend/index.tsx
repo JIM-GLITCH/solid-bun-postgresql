@@ -6,7 +6,11 @@ import { setTransport } from './transport';
 import { HttpTransport } from './transport/http-transport';
 import { getBrowserJwt } from './subscription/browser-token';
 
-setTransport(new HttpTransport({ getBearerToken: getBrowserJwt }));
+setTransport(
+  new HttpTransport({
+    getBearerToken: getBrowserJwt,
+  })
+);
 
 function mount() {
   const root = document.getElementById('root');

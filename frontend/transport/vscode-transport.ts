@@ -11,14 +11,32 @@
 import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
 
-declare const acquireVsCodeApi: () => {
+export type VsCodeWebviewApi = {
   postMessage(message: unknown): void;
   getState(): unknown;
   setState(state: unknown): void;
 };
 
+let vscodeApiSingleton: VsCodeWebviewApi | null | undefined;
+
+/**
+ * VS Code Webview 中 `acquireVsCodeApi()` 整个页面只能调用一次。
+ * Transport、侧栏登录等必须共用同一实例，否则会抛错且 postMessage 无效。
+ */
+export function getVsCodeWebviewApi(): VsCodeWebviewApi | null {
+  if (vscodeApiSingleton !== undefined) return vscodeApiSingleton;
+  const w = typeof window !== "undefined" ? window : undefined;
+  const fn = (w as Window & { acquireVsCodeApi?: () => VsCodeWebviewApi })?.acquireVsCodeApi;
+  if (typeof fn !== "function") {
+    vscodeApiSingleton = null;
+    return null;
+  }
+  vscodeApiSingleton = fn();
+  return vscodeApiSingleton;
+}
+
 export class VsCodeTransport implements IApiTransport {
-  private vscode = typeof acquireVsCodeApi !== "undefined" ? acquireVsCodeApi() : null;
+  private vscode = getVsCodeWebviewApi();
   private messageId = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
