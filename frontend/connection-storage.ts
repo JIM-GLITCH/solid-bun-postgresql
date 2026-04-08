@@ -5,6 +5,7 @@
 import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../shared/src";
 import { registerConnectionDbType } from "./db-session-meta";
 import { getTransport } from "./transport";
+import { SubscriptionRequiredError } from "./transport/subscription-guard-transport";
 import { prefetchDbCapabilities } from "./api";
 
 export interface StoredConnection {
@@ -33,7 +34,8 @@ export async function loadStoredConnections(): Promise<ConnectionList> {
   try {
     const arr = await getTransport().request("connections/list", {});
     return Array.isArray(arr) ? (arr as ConnectionList) : [];
-  } catch {
+  } catch (e) {
+    if (e instanceof SubscriptionRequiredError) throw e;
     return [];
   }
 }
@@ -78,7 +80,10 @@ export async function removeStoredConnection(id: string): Promise<void> {
 }
 
 /** 使用已保存连接进行连接（服务端解密并建立连接，密码不经过前端） */
-export async function connectFromSaved(id: string, sessionId?: string): Promise<{ success: boolean; connectionId?: string; error?: string }> {
+export async function connectFromSaved(
+  id: string,
+  sessionId?: string
+): Promise<{ success: boolean; connectionId?: string; error?: string; subscriptionRequired?: boolean }> {
   try {
     const data = (await getTransport().request("connections/connect", { id, sessionId })) as {
       success?: boolean;
@@ -93,6 +98,9 @@ export async function connectFromSaved(id: string, sessionId?: string): Promise<
     }
     return { success: false, error: data.error || "连接失败" };
   } catch (e) {
+    if (e instanceof SubscriptionRequiredError) {
+      return { success: false, error: e.message, subscriptionRequired: true };
+    }
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

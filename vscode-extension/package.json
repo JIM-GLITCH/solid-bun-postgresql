@@ -34,6 +34,21 @@
         "category": "DB Player"
       }
     ],
-    "uriHandler": {}
+    "uriHandler": {},
+    "configuration": {
+      "title": "DB Player",
+      "properties": {
+        "dbPlayer.subscriptionApiUrl": {
+          "type": "string",
+          "default": "https://api.dbplayer.top",
+          "description": "订阅服务 API 根地址（用于 /api/verify-license 等，勿以 / 结尾）"
+        },
+        "dbPlayer.subscriptionFrontendUrl": {
+          "type": "string",
+          "default": "https://dbplayer.top",
+          "description": "订阅/登录 Web 页面根地址（支付与 vscode:// 回跳说明中的站点）"
+        }
+      }
+    }
   }
 }

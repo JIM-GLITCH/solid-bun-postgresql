@@ -4,6 +4,9 @@
 import { render } from "solid-js/web";
 import { setTransport } from "./transport";
 import { VsCodeTransport } from "./transport/vscode-transport";
+import { SubscriptionGuardTransport } from "./transport/subscription-guard-transport";
+import { createWebviewJwtGetter } from "./transport/webview-jwt-bridge";
+import { getSubscriptionApiBaseFromEnv, isSubscriptionCheckDisabled } from "./subscription/config";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
@@ -11,7 +14,17 @@ import { readClipboardText } from "./clipboard";
 import { resolveMonacoEditorForPaste } from "./monaco-paste-registry";
 import { applyWebviewMonacoPaste } from "./vscode-line-clipboard-meta";
 
-setTransport(new VsCodeTransport());
+const innerVsCode = new VsCodeTransport();
+if (!isSubscriptionCheckDisabled()) {
+  setTransport(
+    new SubscriptionGuardTransport(innerVsCode, {
+      subscriptionApiBase: getSubscriptionApiBaseFromEnv(),
+      getToken: createWebviewJwtGetter(),
+    })
+  );
+} else {
+  setTransport(innerVsCode);
+}
 
 // start listening for theme messages from extension
 initWebviewThemeListener();

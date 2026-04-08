@@ -26,9 +26,15 @@ export async function verifyJwt(token: string): Promise<{ userId: number; email:
       issuer: JWT_ISSUER,
       audience: JWT_AUDIENCE,
     });
-    const userId = payload.userId as number;
+    const rawId = payload.userId;
+    const userId =
+      typeof rawId === "number" && Number.isFinite(rawId)
+        ? Math.trunc(rawId)
+        : typeof rawId === "string" && /^\d+$/.test(rawId)
+          ? parseInt(rawId, 10)
+          : NaN;
     const email = (payload.email as string | null) ?? null;
-    if (typeof userId !== "number") return null;
+    if (!Number.isFinite(userId) || userId < 1) return null;
     return { userId, email };
   } catch {
     return null;

@@ -14,7 +14,8 @@ const $statusContent = $("status-content");
 
 function getToken(): string | null {
   const params = new URLSearchParams(location.search);
-  const token = params.get("token") || localStorage.getItem(TOKEN_KEY);
+  const raw = params.get("token") || localStorage.getItem(TOKEN_KEY);
+  const token = raw?.trim() || null;
   if (params.get("token") && token) {
     localStorage.setItem(TOKEN_KEY, token);
     history.replaceState({}, "", location.pathname);
@@ -94,6 +95,10 @@ $btnLogout.addEventListener("click", () => {
 interface SubscriptionRes {
   success: boolean;
   subscription?: { active: boolean; plan: string; expiresAt: number | null };
+  error?: string;
+  detail?: string;
+  reason?: string;
+  hint?: string;
 }
 
 interface PaymentRes {
@@ -103,11 +108,27 @@ interface PaymentRes {
   codeUrl?: string;
   orderNo?: string;
   error?: string;
+  detail?: string;
 }
 
 interface OrderStatusRes {
   success: boolean;
   status?: string;
+  error?: string;
+  detail?: string;
+}
+
+function formatApiErr(data: { error?: string; detail?: string; reason?: string; hint?: string }): string {
+  return [data.error, data.reason, data.hint, data.detail].filter((x) => x && String(x).trim()).join("\n\n");
+}
+
+async function parseResJson<T>(res: Response): Promise<{ ok: true; data: T; rawText: string } | { ok: false; rawText: string }> {
+  const rawText = await res.text();
+  try {
+    return { ok: true, data: JSON.parse(rawText) as T, rawText };
+  } catch {
+    return { ok: false, rawText };
+  }
 }
 
 async function fetchSubscription(token: string): Promise<void> {
@@ -116,7 +137,18 @@ async function fetchSubscription(token: string): Promise<void> {
     const res = await fetch(`${apiUrl}/api/subscription`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const data = (await res.json()) as SubscriptionRes;
+    const parsed = await parseResJson<SubscriptionRes>(res);
+    if (!parsed.ok) {
+      console.error("[subscription] 非 JSON:", parsed.rawText);
+      $userInfo.textContent = `订阅接口异常 HTTP ${res.status}（见控制台）`;
+      return;
+    }
+    const data = parsed.data;
+    if (!data.success) {
+      console.error("[subscription]", formatApiErr(data));
+      $userInfo.textContent = formatApiErr(data) || "获取订阅状态失败";
+      return;
+    }
 
     if (data.success && data.subscription) {
       const sub = data.subscription;
@@ -228,9 +260,14 @@ async function handleSubscribe(plan: "monthly" | "yearly", method: "alipay" | "w
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ plan, method }),
     });
-    const data = (await res.json()) as PaymentRes;
+    const parsed = await parseResJson<PaymentRes>(res);
+    if (!parsed.ok) {
+      alert(`HTTP ${res.status}\n\n${parsed.rawText.slice(0, 1200)}`);
+      return;
+    }
+    const data = parsed.data;
     if (!data.success) {
-      alert(data.error ?? "创建订单失败");
+      alert(formatApiErr(data) || "创建订单失败");
       return;
     }
     if (data.method === "alipay" && data.payUrl) {

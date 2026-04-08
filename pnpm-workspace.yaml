@@ -1,0 +1,3 @@
+packages:
+  - "subscription/backend"
+  - "electrobun-app"

@@ -9,27 +9,31 @@ import { ExpiryNotifier } from "./expiry-notifier";
 
 let currentPanel: vscode.WebviewPanel | null = null;
 
-const SUBSCRIPTION_API = process.env.DBPLAYER_SUBSCRIPTION_API ?? "https://your-fc-endpoint.aliyuncs.com";
-const SUBSCRIPTION_FRONTEND = process.env.DBPLAYER_SUBSCRIPTION_FRONTEND ?? "https://your-oss-frontend.aliyuncs.com";
-const TOKEN_SECRET_KEY = "dbplayer_token";
 const AI_SECRET_PREFIX = "dbplayer_ai_key_";
 
-async function checkSubscription(context: vscode.ExtensionContext): Promise<boolean> {
-  const token = await context.secrets.get(TOKEN_SECRET_KEY);
-  if (!token) return false;
-  try {
-    const res = await fetch(`${SUBSCRIPTION_API}/api/verify-license`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return false;
-    const data = await res.json() as { valid: boolean };
-    return data.valid === true;
-  } catch {
-    return false;
-  }
+/** 设置 / 环境变量优先，默认线上 dbplayer */
+function getSubscriptionConfig(): { apiBase: string; frontendUrl: string } {
+  const cfg = vscode.workspace.getConfiguration("dbPlayer");
+  const apiBase =
+    cfg.get<string>("subscriptionApiUrl")?.trim() ||
+    process.env.DBPLAYER_SUBSCRIPTION_API?.trim() ||
+    "https://api.dbplayer.top";
+  const frontendUrl =
+    cfg.get<string>("subscriptionFrontendUrl")?.trim() ||
+    process.env.DBPLAYER_SUBSCRIPTION_FRONTEND?.trim() ||
+    "https://dbplayer.top";
+  return { apiBase, frontendUrl };
 }
 
-function showSubscriptionGate(context: vscode.ExtensionContext): void {
+type SubscriptionDeps = {
+  tokenStorage: TokenStorage;
+  licenseValidator: LicenseValidator;
+  expiryNotifier: ExpiryNotifier;
+  getFrontendUrl: () => string;
+};
+
+/** 无有效订阅时弹出引导（与 OAuth 共用 TokenStorage → dbplayer.jwt） */
+function showSubscriptionGate(context: vscode.ExtensionContext, deps: SubscriptionDeps): void {
   const panel = vscode.window.createWebviewPanel(
     "dbPlayerSubscribe",
     "DB Player — 订阅",
@@ -37,7 +41,7 @@ function showSubscriptionGate(context: vscode.ExtensionContext): void {
     { enableScripts: true }
   );
 
-  const subscribeUrl = SUBSCRIPTION_FRONTEND;
+  const subscribeUrl = deps.getFrontendUrl().replace(/\/$/, "");
   panel.webview.html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -83,13 +87,14 @@ function showSubscriptionGate(context: vscode.ExtensionContext): void {
 
   panel.webview.onDidReceiveMessage(async (msg: { type: string; token?: string }) => {
     if (msg.type === "saveToken" && msg.token) {
-      await context.secrets.store(TOKEN_SECRET_KEY, msg.token);
-      const valid = await checkSubscription(context);
+      await deps.tokenStorage.setToken(msg.token.trim());
+      deps.licenseValidator.invalidateCache();
+      const { valid } = await deps.licenseValidator.validate();
       panel.webview.postMessage({ type: "tokenResult", valid });
       if (valid) {
         panel.dispose();
         vscode.window.showInformationMessage("订阅验证成功，正在打开 DB Player...");
-        openDbPlayerWebview(context).catch(console.error);
+        openDbPlayerWebview(context, deps).catch(console.error);
       }
     }
   });
@@ -97,8 +102,11 @@ function showSubscriptionGate(context: vscode.ExtensionContext): void {
 
 export function activate(context: vscode.ExtensionContext) {
   const tokenStorage = new TokenStorage(context.secrets);
-  const licenseValidator = new LicenseValidator(tokenStorage, SUBSCRIPTION_API);
-  const expiryNotifier = new ExpiryNotifier(SUBSCRIPTION_FRONTEND);
+  const getApiBase = () => getSubscriptionConfig().apiBase;
+  const getFrontendUrl = () => getSubscriptionConfig().frontendUrl;
+  const licenseValidator = new LicenseValidator(tokenStorage, getApiBase);
+  const expiryNotifier = new ExpiryNotifier(getFrontendUrl);
+  const deps: SubscriptionDeps = { tokenStorage, licenseValidator, expiryNotifier, getFrontendUrl };
   setAiKeyResolver(async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`));
 
   // 注册 URI Handler，支付完成后网页通过 vscode://lilr.db-player/auth?token=JWT 回传 token
@@ -110,7 +118,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand("db-player.helloWorld", () => {
-      openDbPlayerWebview(context).catch((err) => {
+      openDbPlayerWebview(context, deps).catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage("DB Player 启动失败: " + msg);
         console.error("DB Player open error:", err);
@@ -210,7 +218,15 @@ function redactPayload(msg: unknown): unknown {
   return msg;
 }
 
-async function openDbPlayerWebview(context: vscode.ExtensionContext) {
+async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: SubscriptionDeps) {
+  const { licenseValidator, expiryNotifier } = deps;
+  const { valid, expiresAt } = await licenseValidator.validate();
+  if (!valid) {
+    showSubscriptionGate(context, deps);
+    return;
+  }
+  await expiryNotifier.checkAndNotify(expiresAt);
+
   const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
   const panel = vscode.window.createWebviewPanel(
     "dbPlayer",
@@ -233,6 +249,12 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("DB Player");
   const baseHandler = createVscodeMessageHandler(webview);
   webview.onDidReceiveMessage(async (message: unknown) => {
+    const jwtReq = message as { type?: string; requestId?: number };
+    if (jwtReq.type === "dbplayer/get-jwt" && typeof jwtReq.requestId === "number") {
+      const token = (await deps.tokenStorage.getToken()) ?? null;
+      webview.postMessage({ type: "dbplayer/jwt-response", requestId: jwtReq.requestId, token });
+      return;
+    }
     const safe = redactPayload(message);
     output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
     const msg = message as { id?: number; method?: string; payload?: unknown };

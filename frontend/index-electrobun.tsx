@@ -5,6 +5,9 @@ import { Electroview } from "electrobun/view";
 import type { AppRPCType } from "../shared/src/electrobun-rpc";
 import { setTransport } from "./transport";
 import { ElectrobunTransport, handleBackendEvent } from "./transport/electrobun-transport";
+import { SubscriptionGuardTransport } from "./transport/subscription-guard-transport";
+import { getSubscriptionApiBaseFromEnv, isSubscriptionCheckDisabled } from "./subscription/config";
+import { getBrowserJwt } from "./subscription/browser-token";
 import { render } from "solid-js/web";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
@@ -21,7 +24,17 @@ const electroview = new Electroview({ rpc });
 window.__electrobunApiRequest = (method, payload) =>
   electroview.rpc.request.api_request({ method, payload });
 
-setTransport(new ElectrobunTransport());
+const innerBun = new ElectrobunTransport();
+if (!isSubscriptionCheckDisabled()) {
+  setTransport(
+    new SubscriptionGuardTransport(innerBun, {
+      subscriptionApiBase: getSubscriptionApiBaseFromEnv(),
+      getToken: () => Promise.resolve(getBrowserJwt()),
+    })
+  );
+} else {
+  setTransport(innerBun);
+}
 
 const root = document.getElementById("root");
 if (root) {

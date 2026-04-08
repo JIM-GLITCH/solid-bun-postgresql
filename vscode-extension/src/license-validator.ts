@@ -12,7 +12,8 @@ export class LicenseValidator {
 
   constructor(
     private readonly tokenStorage: TokenStorage,
-    private readonly apiBase: string
+    /** 允许在设置变更后读到新地址（无需重载窗口时尽量在 validate 前 invalidateCache） */
+    private readonly getApiBase: () => string
   ) {}
 
   async validate(): Promise<{ valid: boolean; expiresAt: number | null }> {
@@ -25,8 +26,10 @@ export class LicenseValidator {
       return this.cache.result;
     }
 
+    const apiBase = this.getApiBase().replace(/\/$/, "");
+
     try {
-      const res = await fetch(`${this.apiBase}/api/verify-license`, {
+      const res = await fetch(`${apiBase}/api/verify-license`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {

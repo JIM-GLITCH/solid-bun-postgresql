@@ -120,13 +120,14 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const [connecting, setConnecting] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [successHint, setSuccessHint] = createSignal<string | null>(null);
+  /** 仅「测试连接」结果，显示在测试按钮下方 */
+  const [testMessage, setTestMessage] = createSignal<{ ok: boolean; text: string } | null>(null);
   const [connectionName, setConnectionName] = createSignal(props.editStored?.name ?? props.editStored?.label ?? '');
   const [connectionGroup, setConnectionGroup] = createSignal(props.editStored?.group ?? '');
 
   const onChange = (key: keyof PostgresLoginParams, value: string) => {
     setError(null);
-    setSuccessHint(null);
+    setTestMessage(null);
     if (key === 'connectionTimeoutSec') {
       const n = parseInt(value, 10);
       setForm((prev) => ({ ...prev, connectionTimeoutSec: n > 0 ? n : 30 }));
@@ -138,11 +139,11 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const setSshEnabled = (enabled: boolean) => {
     setForm((prev) => ({ ...prev, sshEnabled: enabled }));
     setError(null);
-    setSuccessHint(null);
+    setTestMessage(null);
   };
 
   const setDbKind = (k: DbKind) => {
-    setSuccessHint(null);
+    setTestMessage(null);
     setDbType(k);
     setForm((prev) => {
       const next = { ...prev };
@@ -158,7 +159,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
 
   /** 临时建连校验账号密码，成功后立即断开，不在侧栏建立会话 */
   const testConnection = async () => {
-    setSuccessHint(null);
+    setTestMessage(null);
     setConnecting(true);
     setError(null);
     try {
@@ -171,12 +172,12 @@ export default function ConnectionForm(props: ConnectionFormProps) {
         } catch {
           /* ignore */
         }
-        setSuccessHint('测试连接成功');
+        setTestMessage({ ok: true, text: '测试连接成功' });
       } else {
-        setError(String(err ?? '连接失败'));
+        setTestMessage({ ok: false, text: String(err ?? '连接失败') });
       }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '连接失败');
+      setTestMessage({ ok: false, text: e instanceof Error ? e.message : '连接失败' });
     } finally {
       setConnecting(false);
     }
@@ -185,7 +186,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const saveOnly = async () => {
     setSaving(true);
     setError(null);
-    setSuccessHint(null);
+    setTestMessage(null);
     try {
       const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
       const payload = buildPayload();
@@ -205,7 +206,7 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     if (!props.editStored) return;
     setSaving(true);
     setError(null);
-    setSuccessHint(null);
+    setTestMessage(null);
     try {
       const payload = buildPayload();
       await saveConnection(props.editStored.id, { ...payload, dbType: dbType() }, {
@@ -275,16 +276,6 @@ export default function ConnectionForm(props: ConnectionFormProps) {
       <Show when={props.editStored && paramsResource.error}>
         <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>加载失败，请重试</div>
       </Show>
-        <Show when={error()}>
-          <div style={{ color: vscode.error, 'margin-bottom': '12px', 'font-size': '13px' }}>
-            {error()}
-          </div>
-        </Show>
-        <Show when={successHint()}>
-          <div style={{ color: vscode.success, 'margin-bottom': '12px', 'font-size': '13px' }}>
-            {successHint()}
-          </div>
-        </Show>
       <div style={{ 'margin-bottom': '14px', display: 'flex', 'align-items': 'center', gap: '10px', 'flex-wrap': 'wrap' }}>
         <label style={{ color: vscode.foreground, 'font-size': '13px' }}>数据库类型</label>
         <select
@@ -504,24 +495,40 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           </div>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '8px', 'margin-top': '12px', 'flex-wrap': 'wrap' }}>
-        <button
-          type="button"
-          onClick={() => void testConnection()}
-          disabled={connecting() || saving()}
-          style={{
-            padding: '8px 20px',
-            'font-size': '13px',
-            'background-color': connecting() || saving() ? vscode.buttonSecondary : vscode.buttonBg,
-            color: '#fff',
-            border: 'none',
-            cursor: connecting() || saving() ? 'not-allowed' : 'pointer',
-          }}
-          onMouseEnter={(e) => !(connecting() || saving()) && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
-          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
-        >
-          {connecting() ? '测试中...' : '测试连接'}
-        </button>
+      <div style={{ display: 'flex', gap: '8px', 'margin-top': '12px', 'flex-wrap': 'wrap', 'align-items': 'flex-start' }}>
+        <div style={{ display: 'flex', 'flex-direction': 'column', gap: '8px', 'align-items': 'flex-start', 'max-width': '100%' }}>
+          <button
+            type="button"
+            onClick={() => void testConnection()}
+            disabled={connecting() || saving()}
+            style={{
+              padding: '8px 20px',
+              'font-size': '13px',
+              'background-color': connecting() || saving() ? vscode.buttonSecondary : vscode.buttonBg,
+              color: '#fff',
+              border: 'none',
+              cursor: connecting() || saving() ? 'not-allowed' : 'pointer',
+            }}
+            onMouseEnter={(e) => !(connecting() || saving()) && (e.currentTarget.style.backgroundColor = vscode.buttonHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = vscode.buttonBg)}
+          >
+            {connecting() ? '测试中...' : '测试连接'}
+          </button>
+          <Show when={testMessage()}>
+            {(msg) => (
+              <div
+                style={{
+                  color: msg().ok ? vscode.success : vscode.error,
+                  'font-size': '13px',
+                  'line-height': '1.45',
+                  'word-break': 'break-word',
+                }}
+              >
+                {msg().text}
+              </div>
+            )}
+          </Show>
+        </div>
         <button
           type="button"
           onClick={() => void (props.editStored ? saveEdit() : saveOnly())}
@@ -540,6 +547,11 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           {saving() ? '保存中...' : '保存'}
         </button>
       </div>
+      <Show when={error()}>
+        <div style={{ color: vscode.error, 'margin-top': '10px', 'font-size': '13px', 'line-height': '1.45', 'word-break': 'break-word' }}>
+          {error()}
+        </div>
+      </Show>
     </div>
   );
 }

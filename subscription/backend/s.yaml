@@ -3,6 +3,7 @@ name: db-player-subscription
 access: 'default'
 
 vars:
+  # 函数计算部署地域：杭州（勿与 .env 中 API_BASE_URL 的 cn-xxx 不一致）
   region: cn-hangzhou
 
 resources:
@@ -20,16 +21,25 @@ resources:
       diskSize: 512
       code: ./out
       environmentVariables:
+        # Node 20 / OpenSSL 3：部分 PKCS#1 应用私钥在签名时报 error:1E08010C:DECODER routines::unsupported
+        NODE_OPTIONS: "--openssl-legacy-provider"
+        # 阿里云 HTTP 触发器/自定义域名已配 CORS 时设为 1，避免与 Hono cors 重复写 ACAO
+        GATEWAY_HANDLES_CORS: "1"
         DATABASE_URL: __DATABASE_URL__
         JWT_SECRET: __JWT_SECRET__
         GITHUB_CLIENT_ID: __GITHUB_CLIENT_ID__
         GITHUB_CLIENT_SECRET: __GITHUB_CLIENT_SECRET__
         FRONTEND_URL: __FRONTEND_URL__
         API_BASE_URL: __API_BASE_URL__
+        ALIPAY_SANDBOX: __ALIPAY_SANDBOX__
         ALIPAY_APP_ID: __ALIPAY_APP_ID__
         ALIPAY_PRIVATE_KEY: __ALIPAY_PRIVATE_KEY__
         ALIPAY_PUBLIC_KEY: __ALIPAY_PUBLIC_KEY__
-        ALIPAY_SANDBOX: __ALIPAY_SANDBOX__
+        ALIPAY_SANDBOX_APP_ID: __ALIPAY_SANDBOX_APP_ID__
+        ALIPAY_SANDBOX_PRIVATE_KEY: __ALIPAY_SANDBOX_PRIVATE_KEY__
+        ALIPAY_SANDBOX_PUBLIC_KEY: __ALIPAY_SANDBOX_PUBLIC_KEY__
+        ALIPAY_AES_KEY: __ALIPAY_AES_KEY__
+        ALIPAY_SANDBOX_AES_KEY: __ALIPAY_SANDBOX_AES_KEY__
         WECHAT_APP_ID: __WECHAT_APP_ID__
         WECHAT_MCH_ID: __WECHAT_MCH_ID__
         WECHAT_PUBLIC_KEY: __WECHAT_PUBLIC_KEY__

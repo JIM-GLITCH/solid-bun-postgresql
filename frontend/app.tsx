@@ -15,6 +15,7 @@ import {
   type ConnectionList,
 } from './connection-storage';
 import { useDialog } from './dialog-context';
+import { SubscriptionRequiredError } from './transport/subscription-guard-transport';
 import { vscode } from './theme';
 
 export interface ConnectionInfo {
@@ -87,6 +88,18 @@ export default function App() {
   const [connectionSwitcherOpen, setConnectionSwitcherOpen] = createSignal(false);
   const [sessionId] = createSignal(crypto.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
+  const refreshSavedConnections = async () => {
+    try {
+      const list = await loadStoredConnections();
+      setSavedConnections(list);
+    } catch (e) {
+      if (e instanceof SubscriptionRequiredError) {
+        showAlert(e.message, '需要订阅');
+      }
+      setSavedConnections([]);
+    }
+  };
+
   createEffect(() => {
     if (!connectionSwitcherOpen()) return;
     const close = (e: MouseEvent) => {
@@ -98,7 +111,7 @@ export default function App() {
   });
 
   onMount(() => {
-    loadStoredConnections().then(setSavedConnections);
+    void refreshSavedConnections();
 
     const onPageHide = (e: PageTransitionEvent) => {
       if (e.persisted) return;
@@ -128,7 +141,7 @@ export default function App() {
   };
 
   const handleSavedRefresh = () => {
-    loadStoredConnections().then(setSavedConnections);
+    void refreshSavedConnections();
   };
 
   const handleConnectFromSaved = async (stored: StoredConnection): Promise<{ success: boolean; connectionId?: string }> => {
@@ -139,13 +152,14 @@ export default function App() {
     }
     setConnectingSavedId(stored.id);
     try {
-      const { success, connectionId, error } = await connectFromSaved(stored.id, sessionId());
+      const { success, connectionId, error, subscriptionRequired } = await connectFromSaved(stored.id, sessionId());
       if (success && connectionId) {
         setConnections(connections.length, { id: connectionId, info: stored.label });
         setShowConnectionForm(false);
         return { success: true, connectionId };
       } else {
-        showAlert(`连接失败: ${error ?? '未知错误'}`, '连接失败');
+        const msg = error ?? '未知错误';
+        showAlert(subscriptionRequired ? msg : `连接失败: ${msg}`, subscriptionRequired ? '需要订阅' : '连接失败');
         return { success: false };
       }
     } catch (e) {
@@ -159,9 +173,13 @@ export default function App() {
   const handleRemoveSaved = async (id: string) => {
     try {
       await removeStoredConnection(id);
-      loadStoredConnections().then(setSavedConnections);
+      void refreshSavedConnections();
     } catch (e) {
-      console.warn('删除失败:', e);
+      if (e instanceof SubscriptionRequiredError) {
+        showAlert(e.message, '需要订阅');
+      } else {
+        console.warn('删除失败:', e);
+      }
     }
   };
 
@@ -381,7 +399,7 @@ export default function App() {
             connectingSavedId={connectingSavedId()}
             onRemoveSaved={handleRemoveSaved}
             onOpenEditConnection={handleOpenEditConnection}
-            onRefreshSavedConnections={() => loadStoredConnections().then(setSavedConnections)}
+            onRefreshSavedConnections={() => void refreshSavedConnections()}
             onMysqlDefaultSchema={(connectionId, schema) => setMysqlDefaultSchemaByConn(connectionId, schema)}
             onMysqlSchemaRemoved={(connectionId, schema) =>
               setMysqlDefaultSchemaByConn(

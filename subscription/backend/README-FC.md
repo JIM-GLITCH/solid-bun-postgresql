@@ -42,10 +42,10 @@ ACR_NAMESPACE=your-namespace bun run deploy
 | GITHUB_CLIENT_SECRET | GitHub OAuth App Secret |
 | FRONTEND_URL | 前端地址，登录成功后重定向 |
 | API_BASE_URL | API 自身地址（FC 的 HTTP 触发器 URL），用于 GitHub 回调和支付回调 |
-| ALIPAY_APP_ID | 支付宝应用 ID |
-| ALIPAY_PRIVATE_KEY | 支付宝应用私钥（换行用 \n） |
-| ALIPAY_PUBLIC_KEY | 支付宝公钥（换行用 \n） |
-| ALIPAY_SANDBOX | 沙箱模式：true / false |
+| ALIPAY_SANDBOX | true/1/yes=沙箱，否则正式；决定使用下面哪一套凭证 |
+| ALIPAY_APP_ID 等 | 正式：`ALIPAY_APP_ID`、`ALIPAY_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY` |
+| ALIPAY_SANDBOX_* | 沙箱：`ALIPAY_SANDBOX_APP_ID`、`ALIPAY_SANDBOX_PRIVATE_KEY`、`ALIPAY_SANDBOX_PUBLIC_KEY` |
+| ALIPAY_AES_KEY / ALIPAY_SANDBOX_AES_KEY | 可选；开放平台启用「接口内容加密」时填入 Base64 AES 密钥 |
 | WECHAT_APP_ID | 微信支付 AppID |
 | WECHAT_MCH_ID | 微信支付商户号 |
 | WECHAT_PUBLIC_KEY | 微信支付平台证书公钥（换行用 \n） |
@@ -57,6 +57,8 @@ ACR_NAMESPACE=your-namespace bun run deploy
 若 RDS 在 VPC 内，在 `s.yaml` 中取消注释并填写 `vpcConfig`，将 FC 的 vSwitch 网段加入 RDS 白名单。
 
 ## 6. 部署
+
+部署地域默认为**杭州** `cn-hangzhou`（见 `s.yaml` 中 `vars.region`）。修改地域后需重新部署，并把 `API_BASE_URL` 改成对应区域的 FC 域名（如 `*.cn-hangzhou.fcapp.run`）。
 
 ```bash
 # 安装 Serverless Devs
@@ -81,7 +83,19 @@ export API_BASE_URL=http://localhost:9000
 bun run dev
 ```
 
-## 8. API 列表
+## 8. 故障排查
+
+### 支付宝签名 `ERR_OSSL_UNSUPPORTED` / `DECODER routines::unsupported`
+
+函数使用 **Node.js 20**（OpenSSL 3）时，个别 **PKCS#1**（`BEGIN RSA PRIVATE KEY`）应用私钥在 `createSign` 阶段会解码失败。`s.yaml` 已默认设置 `NODE_OPTIONS=--openssl-legacy-provider`；若仍报错，请把应用私钥转为 **PKCS#8** 后再写入环境变量：
+
+```bash
+openssl pkcs8 -topk8 -inform PEM -in rsa_private.pem -outform PEM -nocrypt -out app_pkcs8.pem
+```
+
+PKCS#8 文件头为 `BEGIN PRIVATE KEY`，与 `BEGIN RSA PRIVATE KEY` 不同。转换后需把**对应的应用公钥**重新上传到支付宝开放平台（与私钥仍为同一对）。
+
+## 9. API 列表
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
