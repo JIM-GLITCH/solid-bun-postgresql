@@ -4,18 +4,9 @@ import { DialogProvider } from './dialog-context';
 import { loadDefaultTheme } from './theme-sync';
 import { setTransport } from './transport';
 import { HttpTransport } from './transport/http-transport';
-import { SubscriptionGuardTransport } from './transport/subscription-guard-transport';
-import { getSubscriptionApiBaseFromEnv, isSubscriptionCheckDisabled } from './subscription/config';
 import { getBrowserJwt } from './subscription/browser-token';
 
-if (!isSubscriptionCheckDisabled()) {
-  setTransport(
-    new SubscriptionGuardTransport(new HttpTransport(), {
-      subscriptionApiBase: getSubscriptionApiBaseFromEnv(),
-      getToken: () => Promise.resolve(getBrowserJwt()),
-    })
-  );
-}
+setTransport(new HttpTransport({ getBearerToken: getBrowserJwt }));
 
 function mount() {
   const root = document.getElementById('root');

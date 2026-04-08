@@ -9,6 +9,7 @@
  */
 
 import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
+import { SubscriptionRequiredError } from "../subscription/subscription-error";
 
 declare const acquireVsCodeApi: () => {
   postMessage(message: unknown): void;
@@ -24,12 +25,19 @@ export class VsCodeTransport implements IApiTransport {
   constructor() {
     if (typeof window !== "undefined") {
       window.addEventListener("message", (event) => {
-        const { id, data, error } = event.data || {};
+        const { id, data, error, subscriptionRequired } = event.data || {};
         const p = this.pending.get(id);
         if (p) {
           this.pending.delete(id);
-          if (error) p.reject(new Error(error));
-          else p.resolve(data);
+          if (error) {
+            p.reject(
+              subscriptionRequired
+                ? new SubscriptionRequiredError(
+                    typeof error === "string" && error.trim() ? error : undefined
+                  )
+                : new Error(error)
+            );
+          } else p.resolve(data);
         }
       });
     }

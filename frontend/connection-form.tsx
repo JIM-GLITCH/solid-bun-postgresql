@@ -1,6 +1,7 @@
 import { For, createSignal, Show, createEffect, createResource } from 'solid-js';
 import { connectPostgres, disconnectPostgres } from './api';
 import { saveConnection, getStoredConnectionParams } from './connection-storage';
+import { formatUnknownError } from './format-unknown-error';
 import { vscode } from './theme';
 import { isMysqlFamily, isSqlServer, type PostgresLoginParams, type DbKind } from '../shared/src';
 import type { StoredConnection } from './connection-storage';
@@ -174,10 +175,10 @@ export default function ConnectionForm(props: ConnectionFormProps) {
         }
         setTestMessage({ ok: true, text: '测试连接成功' });
       } else {
-        setTestMessage({ ok: false, text: String(err ?? '连接失败') });
+        setTestMessage({ ok: false, text: formatUnknownError(err, '连接失败') });
       }
     } catch (e: unknown) {
-      setTestMessage({ ok: false, text: e instanceof Error ? e.message : '连接失败' });
+      setTestMessage({ ok: false, text: formatUnknownError(e, '连接失败') });
     } finally {
       setConnecting(false);
     }

@@ -15,7 +15,7 @@ import {
   type ConnectionList,
 } from './connection-storage';
 import { useDialog } from './dialog-context';
-import { SubscriptionRequiredError } from './transport/subscription-guard-transport';
+import { SubscriptionRequiredError } from './subscription/subscription-error';
 import { vscode } from './theme';
 
 export interface ConnectionInfo {

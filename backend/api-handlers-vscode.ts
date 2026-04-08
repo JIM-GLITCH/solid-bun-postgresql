@@ -10,14 +10,44 @@
 
 import type { ApiMethod, ApiRequestPayload } from "../shared/src";
 import { handleApiRequest, subscribeSessionEvents } from "./api-core";
+import { SubscriptionRequiredError } from "./subscription-license";
 
 export interface VscodeWebview {
   postMessage(message: unknown): Thenable<boolean>;
 }
 
+export type VscodeMessageHandlerOptions = {
+  /** 在 RPC 与 subscribe-events 前执行（Extension Host 从 Secret 取 token 并调订阅服务） */
+  assertLicensed?: () => Promise<void>;
+};
+
+function postRpcError(
+  webview: VscodeWebview,
+  id: number | undefined,
+  e: unknown
+): void {
+  if (e instanceof SubscriptionRequiredError) {
+    const msg = e.message;
+    if (typeof id === "number") {
+      void webview.postMessage({ id, error: msg, subscriptionRequired: true });
+    } else {
+      // subscribe-events 无 id：用伪 SSE 推给已注册的 onmessage
+      void webview.postMessage({
+        type: "sse",
+        data: { type: "ERROR", message: msg, timestamp: Date.now() },
+      });
+    }
+    return;
+  }
+  if (typeof id === "number") {
+    void webview.postMessage({ id, error: (e as Error)?.message ?? String(e) });
+  }
+}
+
 /** 创建 VSCode Webview 的消息处理器 */
-export function createVscodeMessageHandler(webview: VscodeWebview) {
+export function createVscodeMessageHandler(webview: VscodeWebview, opts?: VscodeMessageHandlerOptions) {
   const eventUnsubscribes = new Map<string, () => void>();
+  const assertLicensed = opts?.assertLicensed;
 
   return async (message: {
     id?: number;
@@ -36,12 +66,13 @@ export function createVscodeMessageHandler(webview: VscodeWebview) {
     // 订阅/取消订阅事件推送
     if (type === "subscribe-events" && sid) {
       try {
+        if (assertLicensed) await assertLicensed();
         const unsub = subscribeSessionEvents(sid, (msg) => {
           webview.postMessage({ type: "sse", data: msg });
         });
         eventUnsubscribes.set(sid, unsub);
       } catch (e) {
-        webview.postMessage({ id, error: (e as Error).message });
+        postRpcError(webview, id, e);
       }
       return;
     }
@@ -56,10 +87,11 @@ export function createVscodeMessageHandler(webview: VscodeWebview) {
     if (typeof id !== "number" || !method || payload == null) return;
 
     try {
+      if (assertLicensed) await assertLicensed();
       const result = await handleApiRequest(method as ApiMethod, payload as any);
       webview.postMessage({ id, data: result });
-    } catch (e: any) {
-      webview.postMessage({ id, error: e?.message ?? String(e) });
+    } catch (e: unknown) {
+      postRpcError(webview, id, e);
     }
   };
 }

@@ -10,6 +10,8 @@ import type { SSEMessage } from "./types";
 export type ApiRequestParams = {
   method: string;
   payload: Record<string, unknown> & { sessionId?: string };
+  /** 订阅 JWT；主进程在校验通过后才执行 handleApiRequest */
+  licenseJwt?: string | null;
 };
 
 /** 主进程推送给浏览器的后端事件 */

@@ -3,20 +3,32 @@
  */
 
 import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
+import { formatUnknownError } from "../format-unknown-error";
+import { SubscriptionRequiredError } from "../subscription/subscription-error";
 
 const API_BASE = "";
 
+export type HttpTransportOptions = {
+  /** 随请求发送 Authorization: Bearer（订阅校验在业务后端） */
+  getBearerToken?: () => string | null;
+};
+
 export class HttpTransport implements IApiTransport {
+  constructor(private readonly opts: HttpTransportOptions = {}) {}
+
   async request<M extends ApiMethod>(
     method: M,
     payload: ApiRequestPayload[M]
   ): Promise<unknown> {
     const path = `/api/${method}`;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const token = this.opts.getBearerToken?.() ?? null;
+    if (token) headers.Authorization = `Bearer ${token}`;
     let res: Response;
     try {
       res = await fetch(path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(payload),
       });
     } catch (e) {
@@ -43,14 +55,22 @@ export class HttpTransport implements IApiTransport {
     }
 
     if (!res.ok) {
-      throw new Error(data?.error || `请求失败: ${method}`);
+      if (res.status === 403 && data?.subscriptionRequired) {
+        const msg = formatUnknownError(data?.error, "");
+        throw new SubscriptionRequiredError(msg || undefined);
+      }
+      throw new Error(formatUnknownError(data?.error, `请求失败: ${method}`));
     }
 
     return data;
   }
 
   subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-    const url = `${API_BASE}/api/events?connectionSessionId=${encodeURIComponent(connectionId)}`;
+    const q = new URLSearchParams();
+    q.set("connectionSessionId", connectionId);
+    const t = this.opts.getBearerToken?.() ?? null;
+    if (t) q.set("access_token", t);
+    const url = `${API_BASE}/api/events?${q.toString()}`;
     const eventSource = new EventSource(url);
 
     eventSource.onmessage = (event) => {

@@ -5,7 +5,8 @@
 import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../shared/src";
 import { registerConnectionDbType } from "./db-session-meta";
 import { getTransport } from "./transport";
-import { SubscriptionRequiredError } from "./transport/subscription-guard-transport";
+import { formatUnknownError } from "./format-unknown-error";
+import { SubscriptionRequiredError } from "./subscription/subscription-error";
 import { prefetchDbCapabilities } from "./api";
 
 export interface StoredConnection {
@@ -101,6 +102,6 @@ export async function connectFromSaved(
     if (e instanceof SubscriptionRequiredError) {
       return { success: false, error: e.message, subscriptionRequired: true };
     }
-    return { success: false, error: e instanceof Error ? e.message : String(e) };
+    return { success: false, error: formatUnknownError(e, "连接失败") };
   }
 }

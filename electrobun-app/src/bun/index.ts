@@ -5,6 +5,7 @@
 import { BrowserWindow, BrowserView } from "electrobun/bun";
 import type { AppRPCType } from "../../../shared/src/electrobun-rpc";
 import { handleApiRequest, getSession, subscribeSessionEvents } from "../../../backend/api-core";
+import { assertSubscriptionLicensed } from "../../../backend/subscription-license";
 import type { ApiMethod } from "../../../shared/src";
 
 /** 当前主窗口的 webview，用于推送 backend_event */
@@ -17,7 +18,8 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
   maxRequestTime: 30000,
   handlers: {
     requests: {
-      api_request: async ({ method, payload }) => {
+      api_request: async ({ method, payload, licenseJwt }) => {
+        await assertSubscriptionLicensed(licenseJwt ?? null);
         if (method === "subscribe-events") {
           const sessionId = (payload as { sessionId?: string })?.sessionId;
           if (!sessionId) throw new Error("subscribe-events requires sessionId");

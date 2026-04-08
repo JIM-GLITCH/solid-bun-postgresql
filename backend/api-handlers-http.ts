@@ -6,17 +6,29 @@
 import type { ApiMethod, ApiRequestPayload, HttpRpcMethod, SSEMessage } from "../shared/src";
 import { HTTP_API_METHOD_SET } from "../shared/src";
 import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
+import {
+  assertSubscriptionLicensed,
+  parseAccessTokenQuery,
+  parseBearerToken,
+  SubscriptionRequiredError,
+} from "./subscription-license";
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
+
+function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
+  return Response.json({ error: e.message, success: false, subscriptionRequired: true }, { status: 403 });
+}
 
 /** 通用 POST 处理器：成功 200 + JSON；失败 500 + `{ error, success: false }`（与 HttpTransport `res.ok` 一致） */
 function postApi<M extends ApiMethod>(method: M): RouteHandler {
   return async (req: Request) => {
     try {
+      await assertSubscriptionLicensed(parseBearerToken(req));
       const data = (await req.json()) as ApiRequestPayload[M];
       const result = await handleApiRequest(method, data);
       return Response.json(result);
     } catch (e: unknown) {
+      if (e instanceof SubscriptionRequiredError) return subscriptionJsonResponse(e);
       const err = e instanceof Error ? e.message : String(e);
       return Response.json({ error: err, success: false }, { status: 500 });
     }
@@ -53,8 +65,16 @@ export function createApiRoutes(): Record<
     "/api/hello": { GET: () => Response.json({ message: "Hello from API" }) },
 
     "/api/events": {
-      GET: (req: unknown) => {
-        const url = new URL((req as Request).url);
+      GET: async (req: unknown) => {
+        const r = req as Request;
+        try {
+          const token = parseBearerToken(r) ?? parseAccessTokenQuery(r);
+          await assertSubscriptionLicensed(token);
+        } catch (e: unknown) {
+          if (e instanceof SubscriptionRequiredError) return subscriptionJsonResponse(e);
+          throw e;
+        }
+        const url = new URL(r.url);
         const connectionSessionId =
           url.searchParams.get("connectionSessionId")?.trim() ||
           url.searchParams.get("connectionId")?.trim();
@@ -63,7 +83,6 @@ export function createApiRoutes(): Record<
         }
         const session = getSession(connectionSessionId);
         if (!session) return new Response("未找到数据库连接，请先连接数据库", { status: 400 });
-
 
         let cleanup: (() => void) | undefined;
         const stream = new ReadableStream<Uint8Array>({

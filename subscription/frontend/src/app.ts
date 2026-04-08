@@ -6,6 +6,7 @@ const VSCODE_SOURCE_KEY = "dbplayer_source";
 const $ = (id: string) => document.getElementById(id)!;
 const $btnLogin = $("btn-login");
 const $btnLogout = $("btn-logout");
+const $btnBackVscode = $("btn-back-vscode");
 const $btnSubscribe = $("btn-subscribe");
 const $btnSubscribeYearly = $("btn-subscribe-yearly");
 const $userInfo = $("user-info");
@@ -63,20 +64,12 @@ function init(): void {
     $btnLogin.classList.add("hidden");
     $btnLogout.classList.remove("hidden");
     fetchSubscription(token);
+    $btnBackVscode.classList.remove("hidden");
 
-    // 任务 3.3：已登录且 source=vscode 时展示"返回 VSCode"按钮
-    if (isVscodeSource()) {
-      const $btnBackVscode = document.getElementById("btn-back-vscode");
-      if ($btnBackVscode) {
-        $btnBackVscode.classList.remove("hidden");
-        $btnBackVscode.addEventListener("click", () => {
-          redirectToVscode(getToken()!);
-        });
-      }
-    }
   } else {
     $btnLogin.classList.remove("hidden");
     $btnLogout.classList.add("hidden");
+    $btnBackVscode.classList.add("hidden");
     $subscriptionStatus.classList.add("hidden");
   }
 }
@@ -90,6 +83,15 @@ $btnLogin.addEventListener("click", () => {
 $btnLogout.addEventListener("click", () => {
   clearToken();
   location.reload();
+});
+
+$btnBackVscode.addEventListener("click", () => {
+  const token = getToken();
+  if (!token) {
+    alert("请先登录，再给 VSCode 插件授权。");
+    return;
+  }
+  redirectToVscode(token);
 });
 
 interface SubscriptionRes {

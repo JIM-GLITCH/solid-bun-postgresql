@@ -1,6 +1,7 @@
 // 前端 Webview 使用 frontend 打包的 webview.js，后端使用 backend/api-handlers-vscode，通过 postMessage 通信
 import * as vscode from "vscode";
 import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
+import { assertSubscriptionLicensed } from "../../backend/subscription-license.js";
 import { setAiKeyResolver } from "../../backend/api-core.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
@@ -42,6 +43,7 @@ function showSubscriptionGate(context: vscode.ExtensionContext, deps: Subscripti
   );
 
   const subscribeUrl = deps.getFrontendUrl().replace(/\/$/, "");
+  const loginUrl = `${subscribeUrl}/?source=vscode`;
   panel.webview.html = `<!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -61,41 +63,63 @@ function showSubscriptionGate(context: vscode.ExtensionContext, deps: Subscripti
 </head>
 <body>
   <h2>DB Player 需要有效订阅</h2>
-  <p>请前往订阅页面完成订阅，然后将 Token 粘贴到下方。</p>
-  <a href="${subscribeUrl}" target="_blank">前往订阅页面</a>
+  <p>点击下方按钮登录并完成订阅，完成后会自动返回 VS Code。</p>
+  <a href="${subscribeUrl}" target="_blank">查看订阅页面</a>
   <div class="row">
-    <input id="tokenInput" type="text" placeholder="粘贴 Token..." />
-    <button id="saveBtn">保存并验证</button>
+    <button id="loginBtn">登录 / 订阅</button>
+    <button id="checkBtn">我已完成，立即检查</button>
   </div>
-  <p id="msg" style="color: var(--vscode-errorForeground);"></p>
+  <p id="msg" style="color: var(--vscode-descriptionForeground);">等待登录中...</p>
   <script>
     const vscode = acquireVsCodeApi();
-    document.getElementById('saveBtn').addEventListener('click', () => {
-      const token = document.getElementById('tokenInput').value.trim();
-      if (!token) { document.getElementById('msg').textContent = '请输入 Token'; return; }
-      vscode.postMessage({ type: 'saveToken', token });
+    document.getElementById('loginBtn').addEventListener('click', () => {
+      vscode.postMessage({ type: 'openSubscribe' });
+    });
+    document.getElementById('checkBtn').addEventListener('click', () => {
+      vscode.postMessage({ type: 'checkLicense' });
     });
     window.addEventListener('message', e => {
-      if (e.data.type === 'tokenResult') {
-        document.getElementById('msg').textContent = e.data.valid ? '' : '无效 Token，请检查后重试';
-        document.getElementById('msg').style.color = e.data.valid ? 'var(--vscode-terminal-ansiGreen)' : 'var(--vscode-errorForeground)';
+      if (e.data.type === 'licenseStatus') {
+        const valid = !!e.data.valid;
+        document.getElementById('msg').textContent = valid ? '验证成功，正在打开 DB Player...' : '尚未检测到有效订阅，请完成登录/订阅后重试';
+        document.getElementById('msg').style.color = valid ? 'var(--vscode-terminal-ansiGreen)' : 'var(--vscode-descriptionForeground)';
       }
     });
   </script>
 </body>
 </html>`;
 
-  panel.webview.onDidReceiveMessage(async (msg: { type: string; token?: string }) => {
-    if (msg.type === "saveToken" && msg.token) {
-      await deps.tokenStorage.setToken(msg.token.trim());
+  let checking = false;
+  const checkAndContinue = async () => {
+    if (checking || !panel.visible) return;
+    checking = true;
+    try {
       deps.licenseValidator.invalidateCache();
       const { valid } = await deps.licenseValidator.validate();
-      panel.webview.postMessage({ type: "tokenResult", valid });
+      panel.webview.postMessage({ type: "licenseStatus", valid });
       if (valid) {
         panel.dispose();
         vscode.window.showInformationMessage("订阅验证成功，正在打开 DB Player...");
         openDbPlayerWebview(context, deps).catch(console.error);
       }
+    } finally {
+      checking = false;
+    }
+  };
+
+  const pollTimer = setInterval(() => {
+    void checkAndContinue();
+  }, 3000);
+  panel.onDidDispose(() => clearInterval(pollTimer));
+
+  panel.webview.onDidReceiveMessage(async (msg: { type: string }) => {
+    if (msg.type === "openSubscribe") {
+      await vscode.env.openExternal(vscode.Uri.parse(loginUrl));
+      void checkAndContinue();
+      return;
+    }
+    if (msg.type === "checkLicense") {
+      void checkAndContinue();
     }
   });
 }
@@ -247,14 +271,12 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
 
   const webview = panel.webview;
   const output = vscode.window.createOutputChannel("DB Player");
-  const baseHandler = createVscodeMessageHandler(webview);
+  const assertLicensed = async () => {
+    const token = (await deps.tokenStorage.getToken()) ?? null;
+    await assertSubscriptionLicensed(token, getSubscriptionConfig().apiBase.replace(/\/$/, ""));
+  };
+  const baseHandler = createVscodeMessageHandler(webview, { assertLicensed });
   webview.onDidReceiveMessage(async (message: unknown) => {
-    const jwtReq = message as { type?: string; requestId?: number };
-    if (jwtReq.type === "dbplayer/get-jwt" && typeof jwtReq.requestId === "number") {
-      const token = (await deps.tokenStorage.getToken()) ?? null;
-      webview.postMessage({ type: "dbplayer/jwt-response", requestId: jwtReq.requestId, token });
-      return;
-    }
     const safe = redactPayload(message);
     output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
     const msg = message as { id?: number; method?: string; payload?: unknown };
