@@ -4,7 +4,7 @@
 import { createSignal, Show, onCleanup, onMount } from "solid-js";
 import { serializeCompact, serializePretty, parseJsonSafe, jsonNodesEqual } from "./jsonb-editor-model";
 import { vscode, MODAL_Z_FULLSCREEN } from "./theme";
-import JsonbMonacoJson from "./jsonb-monaco-json";
+import JsonbMonacoJson from "./jsonb-codemirror-json";
 
 export interface JsonbEditorProps {
   initialValue: string | null;

@@ -3,7 +3,7 @@ import { createStore, produce } from "solid-js/store";
 import type { Accessor } from "solid-js";
 import Resizable from "@corvu/resizable";
 import EditableCell from "./editable-cell";
-import SqlEditor from "./sql-editor";
+import SqlEditor from "./sql-editor-codemirror";
 import { isSqlServer, type ColumnEditableInfo, type SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentForGridColumn, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
 import {
@@ -2133,9 +2133,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                     onRun={runUserQuery}
                     onExplain={runExplain}
                     onFormat={(s) => formatSql(s)}
-                    onAiEdit={(blockSql, instruction) => {
-                      return handleAiEdit(blockSql, instruction);
-                    }}
+                    onAiEdit={(blockSql, instruction) => handleAiEdit(blockSql, instruction) as any}
                     onAiCopyPrompt={(blockSql, instruction) => {
                       void handleAiCopyPrompt(blockSql, instruction);
                     }}
