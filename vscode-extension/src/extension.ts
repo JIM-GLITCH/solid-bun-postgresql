@@ -308,6 +308,7 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
     column,
     {
       enableScripts: true,
+      enableCommandUris: true,
       retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "out")],
     }

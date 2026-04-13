@@ -26,6 +26,7 @@ export async function writeClipboardText(text: string): Promise<void> {
   execCommandCopy(text);
 }
 
+/** Webview 下供 Monaco 桥接读取系统剪贴板（经扩展 `vscode.env.clipboard`） */
 export async function readClipboardText(): Promise<string> {
   if (isWebview()) {
     const res = (await getTransport().request("vscode/clipboard-read", {})) as { text?: string };
