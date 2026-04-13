@@ -697,30 +697,6 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
             >
               预览 SQL
             </button>
-
-            {/* 添加列 button */}
-            <button
-              data-testid="btn-add-column"
-              onClick={() => {
-                const list = columnTypeOptions();
-                setColumns((cols) => {
-                  const row = emptyDesignerColumn(props.connectionId);
-                  if (list.length > 0) reconcileColumnDataTypesToDbList([row], list);
-                  return [...cols, row];
-                });
-              }}
-              style={{
-                "background-color": "transparent",
-                color: vscode.foreground,
-                border: `1px solid ${vscode.border}`,
-                padding: "4px 12px",
-                "border-radius": "4px",
-                cursor: "pointer",
-                "font-size": "13px",
-              }}
-            >
-              添加列
-            </button>
           </div>
 
           {/* 2. Table meta section */}
@@ -806,12 +782,14 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
             <button style={tabStyle("constraints")} onClick={() => setActiveTab("constraints")}>约束</button>
           </div>
 
-          {/* 4. Tab content area (placeholders — tasks 5-8) */}
+          {/* 4. Tab content area：占满剩余高度并可纵向滚动（列/索引/外键/约束行多时仍可操作底部行） */}
           <div
             data-testid="tab-content"
             style={{
               flex: "1",
-              overflow: activeTab() === "columns" ? "visible" : "auto",
+              "min-height": "0",
+              "overflow-y": "auto",
+              "overflow-x": "auto",
               padding: "16px",
             }}
           >
@@ -1029,26 +1007,16 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     </For>
                   </tbody>
                 </table>
-              </div>
-            </Show>
-            <Show when={activeTab() === "indexes"}>
-              <div data-testid="tab-indexes">
-                {/* 添加索引 button */}
-                <div style={{ "margin-bottom": "12px" }}>
+                <div style={{ "margin-top": "12px" }}>
                   <button
-                    data-testid="btn-add-index"
+                    data-testid="btn-add-column"
                     onClick={() => {
-                      setIndexes((idxs) => [
-                        ...idxs,
-                        {
-                          name: "",
-                          indexType: "BTREE",
-                          columns: [],
-                          unique: false,
-                          isNew: true,
-                          toDelete: false,
-                        },
-                      ]);
+                      const list = columnTypeOptions();
+                      setColumns((cols) => {
+                        const row = emptyDesignerColumn(props.connectionId);
+                        if (list.length > 0) reconcileColumnDataTypesToDbList([row], list);
+                        return [...cols, row];
+                      });
                     }}
                     style={{
                       "background-color": "transparent",
@@ -1060,10 +1028,13 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                       "font-size": "13px",
                     }}
                   >
-                    添加索引
+                    添加列
                   </button>
                 </div>
-
+              </div>
+            </Show>
+            <Show when={activeTab() === "indexes"}>
+              <div data-testid="tab-indexes">
                 {/* Indexes table */}
                 <table style={{ width: "100%", "border-collapse": "collapse" }}>
                   <thead>
@@ -1183,25 +1154,17 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     </For>
                   </tbody>
                 </table>
-              </div>
-            </Show>
-            <Show when={activeTab() === "foreignkeys"}>
-              <div data-testid="tab-foreignkeys">
-                {/* 添加外键 button */}
-                <div style={{ "margin-bottom": "12px" }}>
+                <div style={{ "margin-top": "12px" }}>
                   <button
-                    data-testid="btn-add-foreignkey"
+                    data-testid="btn-add-index"
                     onClick={() => {
-                      setForeignKeys((fks) => [
-                        ...fks,
+                      setIndexes((idxs) => [
+                        ...idxs,
                         {
-                          constraintName: "",
-                          column: "",
-                          refSchema: props.schema,
-                          refTable: "",
-                          refColumn: "",
-                          onDelete: "NO ACTION" as const,
-                          onUpdate: "NO ACTION" as const,
+                          name: "",
+                          indexType: "BTREE",
+                          columns: [],
+                          unique: false,
                           isNew: true,
                           toDelete: false,
                         },
@@ -1217,10 +1180,13 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                       "font-size": "13px",
                     }}
                   >
-                    添加外键
+                    添加索引
                   </button>
                 </div>
-
+              </div>
+            </Show>
+            <Show when={activeTab() === "foreignkeys"}>
+              <div data-testid="tab-foreignkeys">
                 {/* Foreign keys table */}
                 <table style={{ width: "100%", "border-collapse": "collapse" }}>
                   <thead>
@@ -1371,6 +1337,38 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                     </For>
                   </tbody>
                 </table>
+                <div style={{ "margin-top": "12px" }}>
+                  <button
+                    data-testid="btn-add-foreignkey"
+                    onClick={() => {
+                      setForeignKeys((fks) => [
+                        ...fks,
+                        {
+                          constraintName: "",
+                          column: "",
+                          refSchema: props.schema,
+                          refTable: "",
+                          refColumn: "",
+                          onDelete: "NO ACTION" as const,
+                          onUpdate: "NO ACTION" as const,
+                          isNew: true,
+                          toDelete: false,
+                        },
+                      ]);
+                    }}
+                    style={{
+                      "background-color": "transparent",
+                      color: vscode.foreground,
+                      border: `1px solid ${vscode.border}`,
+                      padding: "4px 12px",
+                      "border-radius": "4px",
+                      cursor: "pointer",
+                      "font-size": "13px",
+                    }}
+                  >
+                    添加外键
+                  </button>
+                </div>
               </div>
             </Show>
             <Show when={activeTab() === "constraints"}>
@@ -1378,33 +1376,8 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
                 {/* ── Section 1: 唯一约束 ─────────────────────────────────── */}
                 <div style={{ "margin-bottom": "24px" }}>
-                  <div style={{ display: "flex", "align-items": "center", gap: "12px", "margin-bottom": "10px" }}>
+                  <div style={{ "margin-bottom": "10px" }}>
                     <span style={{ color: vscode.foreground, "font-size": "13px", "font-weight": "600" }}>唯一约束</span>
-                    <button
-                      data-testid="btn-add-unique-constraint"
-                      onClick={() => {
-                        setUniqueConstraints((uqs) => [
-                          ...uqs,
-                          {
-                            constraintName: "",
-                            columns: "",
-                            isNew: true,
-                            toDelete: false,
-                          },
-                        ]);
-                      }}
-                      style={{
-                        "background-color": "transparent",
-                        color: vscode.foreground,
-                        border: `1px solid ${vscode.border}`,
-                        padding: "3px 10px",
-                        "border-radius": "4px",
-                        cursor: "pointer",
-                        "font-size": "12px",
-                      }}
-                    >
-                      添加唯一约束
-                    </button>
                   </div>
 
                   <table style={{ width: "100%", "border-collapse": "collapse" }}>
@@ -1491,23 +1464,15 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                       </For>
                     </tbody>
                   </table>
-                </div>
-
-                {/* ── Divider ──────────────────────────────────────────────── */}
-                <div style={{ "border-top": `1px solid ${vscode.border}`, "margin-bottom": "24px" }} />
-
-                {/* ── Section 2: 检查约束 ─────────────────────────────────── */}
-                <div>
-                  <div style={{ display: "flex", "align-items": "center", gap: "12px", "margin-bottom": "10px" }}>
-                    <span style={{ color: vscode.foreground, "font-size": "13px", "font-weight": "600" }}>检查约束</span>
+                  <div style={{ "margin-top": "12px" }}>
                     <button
-                      data-testid="btn-add-check-constraint"
+                      data-testid="btn-add-unique-constraint"
                       onClick={() => {
-                        setCheckConstraints((chks) => [
-                          ...chks,
+                        setUniqueConstraints((uqs) => [
+                          ...uqs,
                           {
                             constraintName: "",
-                            expression: "",
+                            columns: "",
                             isNew: true,
                             toDelete: false,
                           },
@@ -1517,14 +1482,24 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                         "background-color": "transparent",
                         color: vscode.foreground,
                         border: `1px solid ${vscode.border}`,
-                        padding: "3px 10px",
+                        padding: "4px 12px",
                         "border-radius": "4px",
                         cursor: "pointer",
-                        "font-size": "12px",
+                        "font-size": "13px",
                       }}
                     >
-                      添加检查约束
+                      添加唯一约束
                     </button>
+                  </div>
+                </div>
+
+                {/* ── Divider ──────────────────────────────────────────────── */}
+                <div style={{ "border-top": `1px solid ${vscode.border}`, "margin-bottom": "24px" }} />
+
+                {/* ── Section 2: 检查约束 ─────────────────────────────────── */}
+                <div>
+                  <div style={{ "margin-bottom": "10px" }}>
+                    <span style={{ color: vscode.foreground, "font-size": "13px", "font-weight": "600" }}>检查约束</span>
                   </div>
 
                   <table style={{ width: "100%", "border-collapse": "collapse" }}>
@@ -1613,6 +1588,33 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                       </For>
                     </tbody>
                   </table>
+                  <div style={{ "margin-top": "12px" }}>
+                    <button
+                      data-testid="btn-add-check-constraint"
+                      onClick={() => {
+                        setCheckConstraints((chks) => [
+                          ...chks,
+                          {
+                            constraintName: "",
+                            expression: "",
+                            isNew: true,
+                            toDelete: false,
+                          },
+                        ]);
+                      }}
+                      style={{
+                        "background-color": "transparent",
+                        color: vscode.foreground,
+                        border: `1px solid ${vscode.border}`,
+                        padding: "4px 12px",
+                        "border-radius": "4px",
+                        cursor: "pointer",
+                        "font-size": "13px",
+                      }}
+                    >
+                      添加检查约束
+                    </button>
+                  </div>
                 </div>
 
               </div>

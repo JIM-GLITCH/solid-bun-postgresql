@@ -1,7 +1,7 @@
 /**
  * 表设计器「类型」列：可手填 + 主题化建议列表（替代原生 datalist 的系统下拉样式）
  */
-import { createMemo, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { vscode } from "./theme";
 
 export interface TableDesignerTypeInputProps {
@@ -16,6 +16,8 @@ export interface TableDesignerTypeInputProps {
 }
 
 export function TableDesignerTypeInput(props: TableDesignerTypeInputProps) {
+  let anchorEl: HTMLDivElement | undefined;
+
   const filtered = createMemo(() => {
     const all = props.options();
     const q = props.value.trim().toLowerCase();
@@ -33,8 +35,35 @@ export function TableDesignerTypeInput(props: TableDesignerTypeInputProps) {
     props.setOpenRow(null);
   };
 
+  /** 建议列表用 fixed 定位，避免被表设计器 tab 区域的 overflow 滚动容器裁切 */
+  const [menuPos, setMenuPos] = createSignal({ top: 0, left: 0, width: 0 });
+
+  const readAnchorRect = () => {
+    if (!anchorEl) return;
+    const r = anchorEl.getBoundingClientRect();
+    setMenuPos({ top: r.bottom + 2, left: r.left, width: r.width });
+  };
+
+  createEffect(() => {
+    const open = props.openRow() === props.rowIndex && filtered().length > 0;
+    if (!open) return;
+    readAnchorRect();
+    const onScrollOrResize = () => readAnchorRect();
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    onCleanup(() => {
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    });
+  });
+
   return (
-    <div style={{ position: "relative", display: "block", width: "100%", "min-width": "140px" }}>
+    <div
+      ref={(el) => {
+        anchorEl = el;
+      }}
+      style={{ position: "relative", display: "block", width: "100%", "min-width": "140px" }}
+    >
       <input
         type="text"
         aria-label="列数据类型"
@@ -98,11 +127,10 @@ export function TableDesignerTypeInput(props: TableDesignerTypeInputProps) {
       <Show when={props.openRow() === props.rowIndex && filtered().length > 0}>
         <div
           style={{
-            position: "absolute",
-            left: "0",
-            top: "100%",
-            "margin-top": "2px",
-            "min-width": "100%",
+            position: "fixed",
+            top: `${menuPos().top}px`,
+            left: `${menuPos().left}px`,
+            "min-width": `${Math.max(menuPos().width, 140)}px`,
             width: "max-content",
             "max-width": "min(420px, 85vw)",
             "max-height": "220px",
