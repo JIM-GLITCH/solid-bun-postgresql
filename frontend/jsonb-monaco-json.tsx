@@ -9,6 +9,7 @@ import "./monaco-environment";
 import { buildAndDefineVscodeTheme, VSCODE_MONACO_THEME } from "./monaco-vscode-theme";
 import { getTheme, subscribe } from "./theme-sync";
 import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
+import { createWebviewMonacoEditorWithClipboardBridge } from "./webview-monaco-clipboard";
 
 function ensureJsonbMonacoStyles() {
   if (document.getElementById("jsonb-monaco-diag-style")) return;
@@ -60,7 +61,7 @@ export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
       schemas: [],
     });
 
-    const editor = monaco.editor.create(container, {
+    const { editor, disposeClipboardBridge } = createWebviewMonacoEditorWithClipboardBridge(container, {
       value: props.initialValue,
       language: "json",
       theme: initialTheme,
@@ -80,6 +81,7 @@ export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
     const model = editor.getModel();
     if (!model) {
       disposeMonaco = () => {
+        disposeClipboardBridge();
         detachMonacoLayout();
         editor.dispose();
       };
@@ -185,6 +187,7 @@ export default function JsonbMonacoJson(props: JsonbMonacoJsonProps) {
     });
 
     disposeMonaco = () => {
+      disposeClipboardBridge();
       subMarkers.dispose();
       unsubTheme();
       disposeLineDiagWidgets();

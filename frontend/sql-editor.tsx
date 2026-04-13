@@ -145,15 +145,8 @@ function ensureExecHighlightStyle() {
 import { getTheme, subscribe } from "./theme-sync";
 import "./monaco-environment";
 import { getSqlSegments } from "../shared/src";
-import { registerSqlEditor } from "./monaco-paste-registry";
-import { readClipboardText, writeClipboardText } from "./clipboard";
-import {
-  applyWebviewMonacoPaste,
-  clearEmptySelectionLineCopyMeta,
-  normalizeClipboardNewlines,
-  recordEmptySelectionLineCopyForWebview,
-} from "./vscode-line-clipboard-meta";
 import { attachMonacoLayoutOnResize } from "./monaco-resize-layout";
+import { createWebviewMonacoEditorWithClipboardBridge } from "./webview-monaco-clipboard";
 import {
   applyCursorStyleHunkToBase,
   buildCursorStylePreview,
@@ -390,18 +383,28 @@ export default function SqlEditor(props: SqlEditorProps) {
     if (initialTheme === VSCODE_MONACO_THEME && themeInfo) {
       buildAndDefineVscodeTheme(monaco, themeInfo.themeKind);
     }
-    editor = monaco.editor.create(container, {
-      value: props.value,
-      language: "sql",
-      theme: initialTheme,
-      minimap: { enabled: false },
-      scrollBeyondLastLine: false,
-      fontSize: 13,
-      lineNumbers: "on",
-      wordWrap: "on",
-      automaticLayout: false,
-      glyphMargin: true,
-    });
+    const { editor: sqlEditor, disposeClipboardBridge } = createWebviewMonacoEditorWithClipboardBridge(
+      container,
+      {
+        value: props.value,
+        language: "sql",
+        theme: initialTheme,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        fontSize: 13,
+        lineNumbers: "on",
+        wordWrap: "on",
+        automaticLayout: false,
+        glyphMargin: true,
+      },
+      () => ({
+        shouldDelegatePaste: (ev) => aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node),
+        shouldDelegateCopyCut: (ev) => aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node),
+        shouldSkipPasteShortcut: () => aiPanelPhase === "instruct" && isFocusInsideAiPanel(),
+        shouldSkipCutShortcut: () => aiPanelPhase === "instruct" && isFocusInsideAiPanel(),
+      })
+    );
+    editor = sqlEditor;
     detachMonacoLayout = attachMonacoLayoutOnResize(container, editor);
 
     // subscribe to theme changes
@@ -1962,130 +1965,6 @@ export default function SqlEditor(props: SqlEditorProps) {
 
     editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, doFormat);
 
-    // Webview 中 clipboard 受限：统一用 vscode.env.clipboard 桥接，保持单一剪贴板状态
-    const doPaste = () => {
-      const ed = editor;
-      const model = ed?.getModel();
-      if (!model || !ed) return;
-      readClipboardText().then((text) => {
-        if (!text) return;
-        applyWebviewMonacoPaste(ed, model, text);
-      });
-    };
-    // copy/cut：同步到 vscode 剪贴板（副作用），不阻止 Monaco 默认行为。
-    // 无选区复制：整行 + 尾随 \\n，并记录元数据，供粘贴时走 VS Code 式「整行贴到当前行行首」。
-    const syncCopyToVscode = () => {
-      const model = editor?.getModel();
-      const sel = editor?.getSelection();
-      if (!model || !sel) return;
-      if (sel.isEmpty()) {
-        const t = normalizeClipboardNewlines(`${model.getLineContent(sel.startLineNumber)}\n`);
-        recordEmptySelectionLineCopyForWebview(t);
-        void writeClipboardText(t);
-      } else {
-        clearEmptySelectionLineCopyMeta();
-        void writeClipboardText(model.getValueInRange(sel));
-      }
-    };
-    let keyDownDispose: monaco.IDisposable | undefined;
-    let pasteDom: HTMLElement | null = null;
-    const onPaste = (ev: ClipboardEvent) => {
-      // AI 指令框在编辑器 DOM 内；捕获阶段否则会一律 doPaste 进 Monaco，导致无法粘贴到输入框
-      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      doPaste();
-    };
-    const onCopy = (ev: ClipboardEvent) => {
-      // AI 指令框在编辑器 DOM 内；捕获阶段否则会先 syncCopyToVscode 把 Monaco 选区写入剪贴板，盖住 input 内复制
-      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) {
-        const t = ev.target;
-        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
-          const start = t.selectionStart ?? 0;
-          const end = t.selectionEnd ?? 0;
-          if (start !== end) {
-            const text = t.value.slice(start, end);
-            ev.preventDefault();
-            ev.stopPropagation();
-            clearEmptySelectionLineCopyMeta();
-            void writeClipboardText(text);
-          }
-          return;
-        }
-      }
-      syncCopyToVscode();
-      // 不 preventDefault，让 Monaco 保持默认复制行为
-    };
-    const onCut = (ev: ClipboardEvent) => {
-      if (aiPanelPhase === "instruct" && aiEditPanel.contains(ev.target as Node)) {
-        const t = ev.target;
-        if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement) {
-          const start = t.selectionStart ?? 0;
-          const end = t.selectionEnd ?? 0;
-          if (start !== end) {
-            const text = t.value.slice(start, end);
-            ev.preventDefault();
-            ev.stopPropagation();
-            clearEmptySelectionLineCopyMeta();
-            void writeClipboardText(text);
-            t.value = t.value.slice(0, start) + t.value.slice(end);
-            t.selectionStart = t.selectionEnd = start;
-            t.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-          return;
-        }
-      }
-      syncCopyToVscode();
-      // 不 preventDefault，让 Monaco 保持默认剪切行为（删除选区）
-    };
-    if (typeof (window as any).acquireVsCodeApi === "function") {
-      keyDownDispose = editor.onKeyDown((e) => {
-        if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "v" || e.keyCode === monaco.KeyCode.KeyV)) {
-          if (aiPanelPhase === "instruct" && isFocusInsideAiPanel()) return;
-          e.preventDefault();
-          e.stopPropagation();
-          doPaste();
-        }
-        if ((e.ctrlKey || e.metaKey) && (e.browserEvent?.key?.toLowerCase() === "x" || e.keyCode === monaco.KeyCode.KeyX)) {
-          if (aiPanelPhase === "instruct" && isFocusInsideAiPanel()) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const model = editor?.getModel();
-          const sel = editor?.getSelection();
-          if (!model || !sel) return;
-          let text: string;
-          if (sel.isEmpty()) {
-            text = normalizeClipboardNewlines(`${model.getLineContent(sel.startLineNumber)}\n`);
-            recordEmptySelectionLineCopyForWebview(text);
-          } else {
-            clearEmptySelectionLineCopyMeta();
-            text = model.getValueInRange(sel);
-          }
-          writeClipboardText(text);
-          if (sel.isEmpty()) {
-            // cut whole line: delete line including newline
-            const lineNumber = sel.startLineNumber;
-            const lineCount = model.getLineCount();
-            const range = lineNumber < lineCount
-              ? { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber + 1, endColumn: 1 }
-              : { startLineNumber: lineNumber, startColumn: 1, endLineNumber: lineNumber, endColumn: model.getLineMaxColumn(lineNumber) };
-            editor!.executeEdits("cut", [{ range, text: "" }]);
-          } else {
-            editor!.executeEdits("cut", [{ range: sel, text: "" }]);
-          }
-        }
-      });
-      const dom = editor.getDomNode();
-      if (dom) {
-        pasteDom = dom;
-        dom.addEventListener("paste", onPaste, true);
-        dom.addEventListener("copy", onCopy, true);
-        dom.addEventListener("cut", onCut, true);
-      }
-    }
-
-    registerSqlEditor(container, editor);
-
     props.onEditorReady?.({ format: doFormat, insertQueryHistoryAtEnd });
 
     onCleanup(() => {
@@ -2116,13 +1995,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       aiRangeOffsets = null;
       aiPreviewSnippetAnchor = null;
       aiAnchorOffset = null;
-      if (pasteDom) {
-        pasteDom.removeEventListener("paste", onPaste, true);
-        pasteDom.removeEventListener("copy", onCopy, true);
-        pasteDom.removeEventListener("cut", onCut, true);
-      }
-      keyDownDispose?.dispose();
-      registerSqlEditor(container, null);
+      disposeClipboardBridge();
       unsub();
     });
   });

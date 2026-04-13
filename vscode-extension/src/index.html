@@ -4,6 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes" />
   <meta http-equiv="Content-Security-Policy" content="{{CSP}}" />
+  <!-- 放宽剪贴板能力策略，便于 Webview 内 Clipboard API（Monaco 仍主要走扩展桥接） -->
+  <meta http-equiv="Permissions-Policy" content="clipboard-read=*, clipboard-write=*" />
   <title>DB Player</title>
   <!-- Monaco Editor CSS - 在其他样式之前加载 -->
   <link rel="stylesheet" href="{{MONACO_BASE_URI}}/editor/editor.main.css" />
@@ -21,42 +23,11 @@
     a { color: var(--vscode-editorLink-foreground, #0066cc); text-decoration: none; }
     a:hover { text-decoration: underline; }
     input, button, select { color: var(--vscode-input-foreground, #1e1e1e); background: var(--vscode-input-background, #fff); }
-    
-    /* 修复 VSCode Webview 下 Monaco 内部输入层可见（白/黑条、光标错位） */
-    /* 完全隐藏 Monaco 的输入层和输入法层 */
-    textarea.inputarea,
-    textarea.ime-text-area {
-      position: absolute !important;
-      top: -9999px !important;
-      left: -9999px !important;
-      width: 1px !important;
-      height: 1px !important;
-      opacity: 0 !important;
-      background: transparent !important;
-      color: transparent !important;
-      border: none !important;
-      outline: none !important;
-      box-shadow: none !important;
-      caret-color: transparent !important;
-      resize: none !important;
-      min-width: 0 !important;
-      min-height: 0 !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      pointer-events: none !important;
-      z-index: -9999 !important;
-    }
 
     /* 修复 Monaco 在 VSCode Webview 中的布局问题 */
     .monaco-editor {
       position: relative !important;
     }
-    
-    /*
-     * 不要写「.monaco-editor input[type="text"] { 移出视口 }」：主编辑输入是 textarea.inputarea（已单独处理），
-     * 而 Ctrl+K AI 对话框挂在 Monaco View Zone 里，仍在 .monaco-editor 下，会把指令输入框一并隐藏。
-     * Cursor 内嵌页无此全局样式故正常；VS Code Webview 需避免误伤。
-     */
 
     /* 确保编辑器框架正确 */
     .monaco-editor-background {
@@ -66,14 +37,6 @@
     /* 修复光标位置 */
     .monaco-editor .cursors-layer {
       z-index: 1 !important;
-    }
-
-    /* 完全隐藏输入法编辑器背景 */
-    .monaco-editor .inputarea,
-    .monaco-editor .ime-text-area {
-      position: absolute !important;
-      top: -9999px !important;
-      left: -9999px !important;
     }
 
     .err { padding: 1em; color: #c00; font-family: sans-serif; white-space: pre-wrap; }
