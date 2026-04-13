@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS user_identities (
   id               SERIAL PRIMARY KEY,
-  user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id          INTEGER NOT NULL,
   provider         TEXT NOT NULL,
   provider_user_id TEXT NOT NULL,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS user_identities (
 
 CREATE TABLE IF NOT EXISTS subscriptions (
   id         SERIAL PRIMARY KEY,
-  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id    INTEGER NOT NULL,
   plan       TEXT NOT NULL DEFAULT 'monthly',
   status     TEXT NOT NULL DEFAULT 'active',
   expires_at TIMESTAMPTZ,
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 CREATE TABLE IF NOT EXISTS payment_orders (
   id                 SERIAL PRIMARY KEY,
   order_no           TEXT NOT NULL UNIQUE,
-  user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_id            INTEGER NOT NULL,
   plan               TEXT NOT NULL,
   amount             INTEGER NOT NULL,
   status             TEXT NOT NULL DEFAULT 'pending',
