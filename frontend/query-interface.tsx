@@ -107,7 +107,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [saving, setSaving] = createSignal(false);
   const [showPendingSql, setShowPendingSql] = createSignal(false);
   const [columnWidths, setColumnWidths] = createStore<number[]>([]);
-  const [tableWidth, setTableWidth] = createSignal<number | null>(null);  // 表格总宽度
   const [modifiedCells, setModifiedCells] = createStore<boolean[][]>([]);  // 单元格修改状态
   const [queryDuration, setQueryDuration] = createSignal<number | null>(null);  // 查询耗时（毫秒）
   const [notices, setNotices] = createSignal<SSEMessage[]>([]);  // 数据库通知消息
@@ -216,6 +215,17 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
   const [tableContainerRef, setTableContainerRef] = createSignal<HTMLDivElement | null>(null);
   let removeTableResizeListener: (() => void) | undefined;
+
+  /** 表 `width` 恒为列宽之和（与 `<col>` 一致）；不设 `min-width:100%`，避免被容器再拉宽 */
+  const resultTableCssWidth = createMemo(() => {
+    const minW = 60;
+    const len = columns().length;
+    let sum = 0;
+    for (let i = 0; i < len; i++) {
+      sum += Math.max(minW, columnWidths[i] || 120);
+    }
+    return Math.max(200, sum);
+  });
 
   // 响应外部查询请求（如侧边栏点击表）
   createEffect(() => {
@@ -444,47 +454,28 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     }
   }
 
-  // 开始拖动调整列宽
+  /**
+   * 竖条在 `th[colIndex]` 右缘：只改**左侧这一列**的 `columnWidths`；表总宽由 `resultTableCssWidth` 从列宽+容器推导。
+   */
   function startResize(colIndex: number, e: MouseEvent) {
     e.preventDefault();
     const startX = e.clientX;
-    const startWidth = columnWidths[colIndex] || 120;
+    const minW = 60;
+    const startLeft = columnWidths[colIndex] || 120;
 
-    const onMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - startX;
-      const newWidth = Math.max(60, startWidth + diff);
-      setColumnWidths(colIndex, newWidth);
+    const onMouseMove = (ev: MouseEvent) => {
+      const diff = ev.clientX - startX;
+      const newLeft = Math.max(minW, startLeft + diff);
+      setColumnWidths(colIndex, newLeft);
     };
 
     const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
     };
 
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }
-
-  // 开始拖动调整表格总宽度
-  function startTableResize(e: MouseEvent) {
-    e.preventDefault();
-    const startX = e.clientX;
-    // 获取当前表格宽度，如果没有设置过就用所有列宽之和
-    const startWidth = tableWidth() || columnWidths.reduce((sum, w) => sum + (w || 120), 0);
-
-    const onMouseMove = (e: MouseEvent) => {
-      const diff = e.clientX - startX;
-      const newWidth = Math.max(200, startWidth + diff);  // 最小宽度200px
-      setTableWidth(newWidth);
-    };
-
-    const onMouseUp = () => {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
   }
 
   async function runUserQuery(overrideSql?: string) {
@@ -518,11 +509,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const newCols = data.columns || [];
       setColumns(newCols);
       const cur = columnWidths;
-      if (cur.length === newCols.length) {
-        setColumnWidths(cur.map((w, i) => w || 120));
-      } else {
-        setColumnWidths(newCols.map(() => 120));
-      }
+      const nextWidths =
+        cur.length === newCols.length
+          ? cur.map((w) => w || 120)
+          : newCols.map(() => 120);
+      setColumnWidths(nextWidths);
 
       // 设置行数据
       const rows = data.rows || [];
@@ -1488,8 +1479,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
           >
             <table style={{
               "border-collapse": "collapse",
-              width: tableWidth() ? `${tableWidth()}px` : "auto",
-              "min-width": "100%",
+              width: `${resultTableCssWidth()}px`,
               "table-layout": "fixed",
             }}>
               <colgroup>
@@ -1645,23 +1635,6 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                 </tr>
               </tbody>
             </table>
-
-            {/* 调整表格总宽度的手柄 */}
-            <div
-              onMouseDown={startTableResize}
-              style={{
-                position: "absolute",
-                right: "-4px",
-                top: "0",
-                bottom: "0",
-                width: "8px",
-                cursor: "ew-resize",
-                "background-color": "transparent",
-                "z-index": "20"
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.success)}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-            />
 
             {/* 统一表格右键菜单 */}
             <Show when={tableContextMenu()}>
@@ -1891,11 +1864,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const newCols = data.columns || [];
       setColumns(newCols);
       const cur = columnWidths;
-      if (cur.length === newCols.length) {
-        setColumnWidths(cur.map((w, i) => w || 120));
-      } else {
-        setColumnWidths(newCols.map(() => 120));
-      }
+      const nextWidths =
+        cur.length === newCols.length
+          ? cur.map((w) => w || 120)
+          : newCols.map(() => 120);
+      setColumnWidths(nextWidths);
 
       const rows = data.rows || [];
       setResult(rows);
