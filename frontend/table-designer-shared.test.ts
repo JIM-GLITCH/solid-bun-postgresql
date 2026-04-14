@@ -628,4 +628,41 @@ describe("buildDdlStatements (edit mode)", () => {
     // CREATE INDEX before COMMENT
     expect(createIdxIdx).toBeLessThan(commentIdx);
   });
+
+  test("rename PK column only: no DROP/ADD PRIMARY KEY", () => {
+    const original: OriginalState = {
+      tableName: "deadlock_demo",
+      tableComment: "",
+      columns: [
+        makeColumn({ name: "id", dataType: "integer", nullable: false, primaryKey: true }),
+      ],
+      indexes: [],
+      foreignKeys: [],
+      uniqueConstraints: [],
+      checkConstraints: [],
+    };
+    const stmts = buildDdlStatements("public", "deadlock_demo", "edit", original, {
+      tableName: "deadlock_demo",
+      tableComment: "",
+      columns: [
+        makeColumn({
+          name: "id1",
+          originalName: "id",
+          dataType: "integer",
+          nullable: false,
+          primaryKey: true,
+        }),
+      ],
+      indexes: [],
+      foreignKeys: [],
+      uniqueConstraints: [],
+      checkConstraints: [],
+    });
+    const renameIdx = stmts.findIndex((s) => s.includes("RENAME COLUMN") && s.includes('"id"') && s.includes('"id1"'));
+    const addPkIdx = stmts.findIndex((s) => s.includes("ADD PRIMARY KEY"));
+    const dropPkIdx = stmts.findIndex((s) => s.includes("DROP CONSTRAINT") && s.includes('"deadlock_demo_pkey"'));
+    expect(renameIdx).toBeGreaterThanOrEqual(0);
+    expect(addPkIdx).toBe(-1);
+    expect(dropPkIdx).toBe(-1);
+  });
 });

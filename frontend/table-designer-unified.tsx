@@ -237,6 +237,39 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   const [errors, setErrors] = createSignal<string[]>([]);
   const [typeSuggestOpenRow, setTypeSuggestOpenRow] = createSignal<number | null>(null);
 
+  const syncColumnNameReferences = (oldName: string, newName: string) => {
+    const from = oldName.trim();
+    const to = newName.trim();
+    if (!from || !to || from === to) return;
+
+    setIndexes(
+      produce((draft) => {
+        for (const idx of draft) {
+          idx.columns = idx.columns.map((c) => (c === from ? to : c));
+        }
+      })
+    );
+    setForeignKeys(
+      produce((draft) => {
+        for (const fk of draft) {
+          if (fk.column === from) fk.column = to;
+        }
+      })
+    );
+    setUniqueConstraints(
+      produce((draft) => {
+        for (const uq of draft) {
+          const cols = uq.columns
+            .split(",")
+            .map((c) => c.trim())
+            .filter(Boolean)
+            .map((c) => (c === from ? to : c));
+          uq.columns = cols.join(", ");
+        }
+      })
+    );
+  };
+
   // ── FK ref data (schemas / tables per schema / columns per schema.table) ──
   const [fkSchemas, setFkSchemas] = createSignal<string[]>([]);
   const [fkTables, setFkTables] = createStore<Record<string, string[]>>({});
@@ -844,6 +877,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                                 type="text"
                                 value={col.name}
                                 onInput={(e) => {
+                                  const oldName = col.name;
                                   const newName = e.currentTarget.value;
                                   if (!col.isNew) {
                                     // Set originalName before updating name (only once)
@@ -852,6 +886,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                                     }
                                   }
                                   setColumns(i(), "name", newName);
+                                  syncColumnNameReferences(oldName, newName);
                                 }}
                                 placeholder="column_name"
                                 style={inputStyle}

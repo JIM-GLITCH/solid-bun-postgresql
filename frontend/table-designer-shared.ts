@@ -660,6 +660,7 @@ function mysqlBuildEditDdl(
     const origKey = (col.originalName || col.name).toLowerCase();
     const orig = origColMap.get(origKey);
     if (!orig) continue;
+    const physicalName = col.originalName && col.originalName !== col.name ? col.originalName : col.name;
 
     const typeChanged = buildColumnTypeSql(orig) !== buildColumnTypeSql(col);
     const nullChanged = orig.nullable !== col.nullable;
@@ -668,11 +669,20 @@ function mysqlBuildEditDdl(
     const commentChanged = (orig.comment ?? "") !== (col.comment ?? "");
 
     if (typeChanged || nullChanged || defaultChanged || aiChanged || commentChanged) {
-      sqls.push(`ALTER TABLE ${qualifiedTbl} MODIFY COLUMN ${qi(col.name)} ${mysqlColumnTail(col)}`);
+      sqls.push(`ALTER TABLE ${qualifiedTbl} MODIFY COLUMN ${qi(physicalName)} ${mysqlColumnTail(col)}`);
     }
   }
 
-  const origPkSet = new Set(original.columns.filter((c) => c.primaryKey).map((c) => c.name.toLowerCase()));
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    if (col.originalName && col.originalName !== col.name) {
+      sqls.push(
+        `ALTER TABLE ${qualifiedTbl} RENAME COLUMN ${qi(col.originalName)} TO ${qi(col.name)}`
+      );
+    }
+  }
+
+  const origPkSet = normalizedOriginalPkSetForRenames(original, current);
   const newPkCols = current.columns.filter((c) => c.primaryKey).map((c) => c.name);
   const newPkSet = new Set(newPkCols.map((n) => n.toLowerCase()));
   const pkChanged =
@@ -685,15 +695,6 @@ function mysqlBuildEditDdl(
     }
     if (newPkCols.length > 0) {
       sqls.push(`ALTER TABLE ${qualifiedTbl} ADD PRIMARY KEY (${newPkCols.map(qi).join(", ")})`);
-    }
-  }
-
-  for (const col of current.columns) {
-    if (col.isNew) continue;
-    if (col.originalName && col.originalName !== col.name) {
-      sqls.push(
-        `ALTER TABLE ${qualifiedTbl} RENAME COLUMN ${qi(col.originalName)} TO ${qi(col.name)}`
-      );
     }
   }
 
@@ -922,6 +923,7 @@ function sqlServerBuildEditDdl(
     const origKey = (col.originalName || col.name).toLowerCase();
     const orig = origColMap.get(origKey);
     if (!orig) continue;
+    const physicalName = col.originalName && col.originalName !== col.name ? col.originalName : col.name;
     const physical =
       col.originalName && col.originalName !== col.name ? col.originalName : col.name;
 
@@ -948,7 +950,7 @@ function sqlServerBuildEditDdl(
     }
   }
 
-  const origPkSet = new Set(original.columns.filter((c) => c.primaryKey).map((c) => c.name.toLowerCase()));
+  const origPkSet = normalizedOriginalPkSetForRenames(original, current);
   const newPkCols = current.columns.filter((c) => c.primaryKey).map((c) => c.name);
   const newPkSet = new Set(newPkCols.map((n) => n.toLowerCase()));
   const pkChanged =
@@ -1090,6 +1092,19 @@ function resolveIndexName(tableName: string, idx: IndexDef): string {
   return idx.name?.trim() || autoIndexName(tableName, idx.columns);
 }
 
+function normalizedOriginalPkSetForRenames(original: OriginalState, current: DesignerDdlCurrent): Set<string> {
+  const renameMap = new Map<string, string>();
+  for (const col of current.columns) {
+    if (!col.originalName || col.originalName === col.name) continue;
+    renameMap.set(col.originalName.toLowerCase(), col.name.toLowerCase());
+  }
+  return new Set(
+    original.columns
+      .filter((c) => c.primaryKey)
+      .map((c) => renameMap.get(c.name.toLowerCase()) ?? c.name.toLowerCase())
+  );
+}
+
 export function buildDdlStatements(
   schema: string,
   tableName: string,
@@ -1215,13 +1230,13 @@ function buildPostgresDdlStatements(
     const origTypeStr = buildColumnTypeSql(orig);
     const newTypeStr = buildColumnTypeSql(col);
     if (origTypeStr !== newTypeStr) {
-      sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(col.name)} TYPE ${newTypeStr}`);
+      sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} TYPE ${newTypeStr}`);
     }
 
     // Nullable change
     if (orig.nullable !== col.nullable) {
       sqls.push(
-        `ALTER TABLE ${qualified} ALTER COLUMN ${q(col.name)} ${col.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`
+        `ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} ${col.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`
       );
     }
 
@@ -1229,15 +1244,25 @@ function buildPostgresDdlStatements(
     if (orig.defaultValue !== col.defaultValue) {
       const d = col.defaultValue.trim();
       if (d) {
-        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(col.name)} SET DEFAULT ${formatDefaultValue(d)}`);
+        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} SET DEFAULT ${formatDefaultValue(d)}`);
       } else {
-        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(col.name)} DROP DEFAULT`);
+        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} DROP DEFAULT`);
       }
     }
   }
 
+  // 2. Column renames
+  for (const col of current.columns) {
+    if (col.isNew) continue;
+    if (col.originalName && col.originalName !== col.name) {
+      sqls.push(
+        `ALTER TABLE ${qualified} RENAME COLUMN ${q(col.originalName)} TO ${q(col.name)}`
+      );
+    }
+  }
+
   // Primary key: compare sets (order-independent), rebuild if changed
-  const origPkSet = new Set(original.columns.filter((c) => c.primaryKey).map((c) => c.name.toLowerCase()));
+  const origPkSet = normalizedOriginalPkSetForRenames(original, current);
   const newPkCols = current.columns.filter((c) => c.primaryKey).map((c) => c.name);
   const newPkSet = new Set(newPkCols.map((n) => n.toLowerCase()));
   const pkChanged =
@@ -1250,16 +1275,6 @@ function buildPostgresDdlStatements(
     }
     if (newPkCols.length > 0) {
       sqls.push(`ALTER TABLE ${qualified} ADD PRIMARY KEY (${newPkCols.map(q).join(", ")})`);
-    }
-  }
-
-  // 2. Column renames
-  for (const col of current.columns) {
-    if (col.isNew) continue;
-    if (col.originalName && col.originalName !== col.name) {
-      sqls.push(
-        `ALTER TABLE ${qualified} RENAME COLUMN ${q(col.originalName)} TO ${q(col.name)}`
-      );
     }
   }
 
