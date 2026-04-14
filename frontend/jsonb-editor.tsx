@@ -1,5 +1,5 @@
 /**
- * JSONB 编辑器：仅 Monaco JSON 模式。
+ * JSONB 编辑器：CodeMirror JSON 模式。
  */
 import { createSignal, Show, onCleanup, onMount } from "solid-js";
 import { serializeCompact, serializePretty, parseJsonSafe, jsonNodesEqual } from "./jsonb-editor-model";

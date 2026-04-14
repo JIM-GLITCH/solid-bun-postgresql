@@ -1,4 +1,8 @@
-import { VSCODE_MONACO_THEME } from "./monaco-vscode-theme";
+/**
+ * 与扩展 `postMessage({ type: 'theme', monacoTheme })` 字段名兼容的历史 id。
+ * CodeMirror 主题只读 `themeKind`；该字符串仅用于与旧逻辑对齐。
+ */
+export const VSCODE_SYNC_THEME_ID = "vscode-editor-theme";
 
 type ThemeInfo = { themeKind: 'light' | 'dark' | 'high-contrast'; monacoTheme: string };
 
@@ -33,7 +37,7 @@ export function initWebviewThemeListener() {
   try {
     const attr = document.documentElement.getAttribute('data-vscode-theme');
     if (attr) {
-      setTheme({ themeKind: attr as ThemeInfo['themeKind'], monacoTheme: VSCODE_MONACO_THEME });
+      setTheme({ themeKind: attr as ThemeInfo['themeKind'], monacoTheme: VSCODE_SYNC_THEME_ID });
     }
   } catch (e) {}
 
@@ -43,7 +47,7 @@ export function initWebviewThemeListener() {
     if (msg.type === 'theme') {
       const kind = (msg.themeKind as ThemeInfo['themeKind']) || 'light';
       // 使用 VSCode CSS 变量构建的自定义主题，Monaco 会跟随 VSCode 主题切换
-      setTheme({ themeKind: kind, monacoTheme: VSCODE_MONACO_THEME });
+      setTheme({ themeKind: kind, monacoTheme: VSCODE_SYNC_THEME_ID });
     }
   });
 }
@@ -58,7 +62,7 @@ export function loadDefaultTheme() {
       return;
     }
   } catch (e) {}
-  // fallback：standalone 整体 UI 默认为黑色（theme.ts），Monaco 与之保持一致
+  // fallback：standalone 整体 UI 默认为黑色（theme.ts），编辑器与之保持一致
   setTheme({ themeKind: 'dark', monacoTheme: 'vs-dark' });
 }
 

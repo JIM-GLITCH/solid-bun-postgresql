@@ -1,6 +1,6 @@
 /**
- * Standalone 开发入口：Node + Hono，仅 API + Monaco
- * 开发模式：Vite (3000) 代理 /api、/vs 到此服务 (3101)；前端由 Vite 提供（HMR）
+ * Standalone 开发入口：Node + Hono，API + 静态前端
+ * 开发模式：Vite (3000) 代理 /api 到此服务 (3101)；前端由 Vite 提供（HMR）
  * 生产/SEA：静态资源从 out/ 或 sea.getAsset() 读取
  * 开发：bun run dev（concurrently 启动 api:3101 + vite:3000）
  */
@@ -70,9 +70,6 @@ async function setupStatic() {
       }
     });
   } else {
-    // Monaco /vs：开发时从 node_modules 提供（生产时 out/vs 由 serveStatic 覆盖）
-    const monacoVs = join(__dirname, "..", "node_modules", "monaco-editor", "min", "vs");
-    app.use("/vs/*", serveStatic({ root: monacoVs, rewriteRequestPath: (p) => p.replace(/^\/?vs\//, "") }));
     app.use(
       "/*",
       serveStatic({
@@ -87,7 +84,7 @@ async function setupStatic() {
   const PORT = Number(process.env.PORT) || (isDev ? 3101 : 3000);
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);
-  if (isDev) console.log(`  → Vite proxies /api, /vs to this port`);
+  if (isDev) console.log(`  → Vite proxies /api to this port`);
 }
 
 setupStatic();

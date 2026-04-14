@@ -5,9 +5,8 @@
 import { $ } from "bun";
 import { SolidPlugin } from "bun-plugin-solid";
 import { join } from "path";
-import { writeFile, cp, readdir, rm, mkdir } from "fs/promises";
+import { writeFile, readdir, rm, mkdir } from "fs/promises";
 
-const root = join(import.meta.dir, "..");
 const outDir = join(import.meta.dir, "out");
 
 await rm(outDir, { recursive: true, force: true });
@@ -22,11 +21,6 @@ await Bun.build({
   minify: true,
   plugins: [SolidPlugin()],
 });
-await cp(
-  join(root, "node_modules", "monaco-editor", "min", "vs", "assets"),
-  join(outDir, "vs", "assets"),
-  { recursive: true }
-);
 console.log("✅ Frontend built\n");
 
 // ========== 2. 构建后端 ==========

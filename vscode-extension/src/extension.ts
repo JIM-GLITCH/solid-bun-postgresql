@@ -214,7 +214,7 @@ export function activate(context: vscode.ExtensionContext) {
   statusBar.show();
   context.subscriptions.push(statusBar);
 
-  // Helper to map VS Code theme to a monaco theme and simple kind
+  // Helper to map VS Code theme kind（与 webview theme-sync 消息字段兼容）
   function getThemeInfo(): { themeKind: 'light' | 'dark' | 'high-contrast'; monacoTheme: string } {
     const kind = vscode.window.activeColorTheme.kind;
     if (kind === vscode.ColorThemeKind.Dark) return { themeKind: 'dark', monacoTheme: 'vs-dark' };
@@ -443,9 +443,6 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
   const scriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(context.extensionUri, "out", "index-webview.js")
   );
-  const monacoBaseUri = webview.asWebviewUri(
-    vscode.Uri.joinPath(context.extensionUri, "out", "vs")
-  );
   const htmlUri = vscode.Uri.joinPath(context.extensionUri, "out", "index.html");
   const bytes = await vscode.workspace.fs.readFile(htmlUri);
   const html = new TextDecoder("utf-8").decode(bytes);
@@ -455,11 +452,8 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
     // 使用 webview.cspSource 即可，不要把具体 script URI 塞进 script-src（会被判定为无效 source）
     "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource,
     "style-src 'unsafe-inline' " + webview.cspSource,
-    // Allow fonts and images from the webview resources and data: URIs (Monaco may load embedded fonts)
     "font-src " + webview.cspSource + " data:",
     "img-src " + webview.cspSource + " data:",
-    // Monaco 依赖 Web Worker；允许从 webview 资源和 blob 启动 worker
-    "worker-src " + webview.cspSource + " blob:",
     // 允许 Webview 同源 fetch（例如连接存储接口）；避免被 CSP 直接拦截
     "connect-src 'self' " + webview.cspSource,
   ].join("; ");
@@ -467,8 +461,7 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
   // Replace placeholders (use global replace for repeated occurrences)
   let newHtml = html
     .split("{{CSP}}").join(csp)
-    .split("{{SCRIPT_URI}}").join(scriptUri.toString())
-    .split("{{MONACO_BASE_URI}}").join(monacoBaseUri.toString());
+    .split("{{SCRIPT_URI}}").join(scriptUri.toString());
 
   const hostBoot = getDesktopOAuthContext();
   const hostScript = `<script>window.__DBPLAYER_DESKTOP_HOST__=${JSON.stringify({

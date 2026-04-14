@@ -10,7 +10,6 @@ import { writeFile, cp, readdir, rm, access } from "fs/promises";
 await rm(join(import.meta.dir, "out"), { recursive: true, force: true });
 const nodeCmd = "node";
 
-const root = join(import.meta.dir, "..");
 const outDir = join(import.meta.dir, "out");
 
 console.log("📦 [1/4] Building frontend (bun build)...");
@@ -20,10 +19,6 @@ await Bun.build({
   target: "browser",
   minify: true,
   plugins: [SolidPlugin()],
-});
-// 只复制 monaco-editor/min/vs/assets 目录下的文件
-await cp(join(root, "node_modules", "monaco-editor", "min", "vs", "assets"), join(outDir, "vs", "assets"), {
-  recursive: true,
 });
 console.log("✅ Frontend built\n");
 

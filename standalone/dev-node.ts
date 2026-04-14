@@ -1,13 +1,11 @@
 /**
  * 前端
  *     bun build 构建 frontend 到 standalone/out
- *     复制 monaco-editor/min/vs 到 out/vs
  * 后端
  *     tsx standalone/server-node.ts
  */
 import { $ } from "bun";
 import { join } from "path";
-import { cp } from "fs/promises";
 import { SolidPlugin } from "bun-plugin-solid";
 
 const root = join(import.meta.dir, "..");
@@ -19,9 +17,6 @@ await Bun.build({
   outdir: outDir,
   target: "browser",
   plugins: [SolidPlugin()],
-});
-await cp(join(root, "node_modules", "monaco-editor", "min", "vs"), join(outDir, "vs"), {
-  recursive: true,
 });
 console.log("✅ Frontend built to " + outDir + "\n");
 

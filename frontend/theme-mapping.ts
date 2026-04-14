@@ -1,6 +1,6 @@
 /**
- * Monaco 编辑器相关颜色映射，供 monaco-vscode-theme 构建主题
- * fallback 与 Monaco vs-dark 一致（themes.js + editorColors.js）
+ * 编辑器相关 VS Code CSS 变量映射（CodeMirror 主题等复用）
+ * fallback 与 VS Code Dark 默认编辑器色一致
  */
 export type MonacoColorKey =
   | "editor.background"

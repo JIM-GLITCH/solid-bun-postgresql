@@ -1,6 +1,6 @@
 /**
  * VS Code 风格主题色
- * fallback 与 Monaco vs-dark 一致（见 monaco-editor themes.js + editorColors.js）
+ * fallback 与 VS Code 深色编辑器默认色一致
  */
 export const vscode = {
   // 主背景
