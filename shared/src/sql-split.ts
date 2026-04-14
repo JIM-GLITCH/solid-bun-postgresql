@@ -17,6 +17,7 @@ export interface GetSqlSegmentsOptions {
  * 将 SQL 文本按块切分，返回每块的 [start, end) 偏移。
  * - 分号在单/双引号、行注释 --、块注释 /* *\/ 内不视为分隔符。
  * - blankLineSeparator 为 true 时，空行（仅空白的一行）也结束当前块。
+ * - 分号后的同一行 `-- 注释` 会并入当前块，避免被拆到下一块。
  */
 export function getSqlSegments(
   text: string,
@@ -86,13 +87,22 @@ export function getSqlSegments(
     }
 
     if (c === ";") {
+      let end = i + 1;
+      // 把分号后同一行的尾注释并入当前块（如: SELECT 1; -- note）
+      let j = i + 1;
+      while (j < text.length && (text[j] === " " || text[j] === "\t" || text[j] === "\r")) j++;
+      if (j + 1 < text.length && text[j] === "-" && text[j + 1] === "-") {
+        j += 2;
+        while (j < text.length && text[j] !== "\n") j++;
+        end = j;
+      }
       if (blockStart < i) {
         let s = blockStart;
-        while (s < i + 1 && /[\s\r\n\t]/.test(text[s])) s++;
-        if (s < i + 1) parts.push({ start: s, end: i + 1 });
+        while (s < end && /[\s\r\n\t]/.test(text[s])) s++;
+        if (s < end) parts.push({ start: s, end });
       }
-      blockStart = i + 1;
-      i++;
+      blockStart = end;
+      i = end;
       continue;
     }
     if (c === "'") {
