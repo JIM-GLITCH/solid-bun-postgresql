@@ -44,6 +44,7 @@ export interface SqlEditorProps {
 }
 
 type SqlBlock = { start: number; end: number; sql: string; label: string };
+type AiChatItem = { role: "user" | "assistant"; text: string };
 
 function getSqlBlockAtCursor(text: string, offset: number): { text: string; start: number; end: number } {
   const parts = getSqlSegments(text, { blankLineSeparator: true });
@@ -66,6 +67,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   const [aiPreviewRange, setAiPreviewRange] = createSignal<{ from: number; to: number } | null>(null);
   const [aiPreviewOriginalRange, setAiPreviewOriginalRange] = createSignal<{ from: number; to: number } | null>(null);
   const [aiStatusMessage, setAiStatusMessage] = createSignal("");
+  const [aiChatHistory, setAiChatHistory] = createSignal<AiChatItem[]>([]);
   let runHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 
   const themeCompartment = new Compartment();
@@ -83,10 +85,16 @@ export default function SqlEditor(props: SqlEditorProps) {
     });
   };
 
-  const getAiPanelInput = (): HTMLInputElement | null => {
+  const getAiPanelInput = (): HTMLTextAreaElement | null => {
     const host = view?.dom;
     if (!host) return null;
     return host.querySelector(".cm-ai-inline-input");
+  };
+
+  const resizeAiInput = (el: HTMLTextAreaElement) => {
+    el.style.height = "auto";
+    const nextHeight = Math.max(32, Math.min(160, el.scrollHeight));
+    el.style.height = `${nextHeight}px`;
   };
 
   const focusAiPanelInput = (selectAll = true) => {
@@ -94,7 +102,7 @@ export default function SqlEditor(props: SqlEditorProps) {
       const input = getAiPanelInput();
       if (!input) return;
       input.focus();
-      if (selectAll) input.select();
+      if (selectAll) input.setSelectionRange(0, input.value.length);
     });
   };
 
@@ -270,28 +278,32 @@ export default function SqlEditor(props: SqlEditorProps) {
         row.className = "cm-ai-inline-row";
 
         if (aiPanelMode() === "instruct") {
-          const badge = document.createElement("span");
-          badge.className = "cm-ai-inline-label";
-          badge.textContent = "AI 编辑要求";
-          row.appendChild(badge);
+          root.classList.add("cm-ai-inline-panel-instruct");
+          const inputWrap = document.createElement("div");
+          inputWrap.className = "cm-ai-inline-input-wrap";
 
-          const input = document.createElement("input");
+          const input = document.createElement("textarea");
           input.className = "cm-ai-inline-input";
-          input.placeholder = "输入 AI 编辑要求";
+          input.placeholder = "输入 AI 编辑要求，Enter 发送，Shift+Enter 换行";
           input.value = aiInstruction();
+          input.rows = 1;
+          resizeAiInput(input);
           input.addEventListener("input", (e) => {
-            const next = (e.target as HTMLInputElement).value;
+            const next = (e.target as HTMLTextAreaElement).value;
             setAiInstruction(next);
             props.onAiEditInstructionChange?.(next);
+            resizeAiInput(input);
+            syncRunBtnState();
           });
           input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") {
+            if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               const v = input.value.trim();
               if (!v) return;
               setAiInstruction(v);
               props.onAiEditInstructionChange?.(v);
               void aiEditCurrent(v);
+              syncRunBtnState();
             } else if (e.key === "Escape") {
               e.preventDefault();
               closeAiPanel();
@@ -300,13 +312,18 @@ export default function SqlEditor(props: SqlEditorProps) {
               focusCodeEditor();
             }
           });
-          row.appendChild(input);
+          inputWrap.appendChild(input);
 
+          const actionRow = document.createElement("div");
+          actionRow.className = "cm-ai-inline-actions";
           const runBtn = document.createElement("button");
           runBtn.type = "button";
           runBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-primary";
-          runBtn.textContent = aiBusy() ? "生成中..." : "确定";
-          runBtn.disabled = aiBusy();
+          runBtn.textContent = aiBusy() ? "generating" : "发送";
+          const syncRunBtnState = () => {
+            runBtn.disabled = aiBusy() || input.value.trim().length === 0;
+          };
+          syncRunBtnState();
           runBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -315,6 +332,7 @@ export default function SqlEditor(props: SqlEditorProps) {
             setAiInstruction(v);
             props.onAiEditInstructionChange?.(v);
             void aiEditCurrent(v);
+            syncRunBtnState();
           });
 
           const copyBtn = document.createElement("button");
@@ -330,8 +348,8 @@ export default function SqlEditor(props: SqlEditorProps) {
             const v = input.value.trim();
             if (ctx.sql) props.onAiCopyPrompt?.(ctx.sql, v || aiInstruction());
           });
-          row.appendChild(copyBtn);
-          row.appendChild(runBtn);
+          actionRow.appendChild(copyBtn);
+          actionRow.appendChild(runBtn);
 
           const cancelBtn = document.createElement("button");
           cancelBtn.type = "button";
@@ -343,12 +361,95 @@ export default function SqlEditor(props: SqlEditorProps) {
             e.stopPropagation();
             closeAiPanel();
           });
-          row.appendChild(cancelBtn);
+          actionRow.appendChild(cancelBtn);
+          inputWrap.appendChild(actionRow);
+          row.appendChild(inputWrap);
         } else if (aiPanelMode() === "preview") {
+          const history = aiChatHistory();
+          if (history.length > 0) {
+            const historyWrap = document.createElement("div");
+            historyWrap.className = "cm-ai-chat-history";
+            for (const item of history) {
+              const msg = document.createElement("div");
+              msg.className = `cm-ai-chat-item ${item.role === "user" ? "cm-ai-chat-user" : "cm-ai-chat-assistant"}`;
+              msg.textContent = `${item.role === "user" ? "你" : "AI"}: ${item.text}`;
+              historyWrap.appendChild(msg);
+            }
+            root.appendChild(historyWrap);
+            requestAnimationFrame(() => {
+              historyWrap.scrollTop = historyWrap.scrollHeight;
+            });
+          }
+          const inputWrap = document.createElement("div");
+          inputWrap.className = "cm-ai-inline-input-wrap";
+          const input = document.createElement("textarea");
+          input.className = "cm-ai-inline-input";
+          input.placeholder = "继续输入要求，Enter 发送，Shift+Enter 换行";
+          input.value = aiInstruction();
+          input.rows = 1;
+          resizeAiInput(input);
+          input.addEventListener("input", (e) => {
+            const next = (e.target as HTMLTextAreaElement).value;
+            setAiInstruction(next);
+            props.onAiEditInstructionChange?.(next);
+            resizeAiInput(input);
+            syncFollowupBtnState();
+          });
+          input.addEventListener("keydown", (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              applyAiPreview();
+            } else if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              const v = input.value.trim();
+              if (!v || aiBusy()) return;
+              setAiInstruction(v);
+              props.onAiEditInstructionChange?.(v);
+              void aiEditCurrent(v);
+              syncFollowupBtnState();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              closeAiPanel();
+            }
+          });
+          inputWrap.appendChild(input);
+          const copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-ghost";
+          copyBtn.textContent = "复制 Prompt";
+          copyBtn.disabled = !props.onAiCopyPrompt;
+          copyBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const target = aiTargetRange();
+            const ctx = target ? getRangeSqlContext(target.from, target.to) : getCurrentSqlContext();
+            const v = input.value.trim();
+            if (ctx.sql) props.onAiCopyPrompt?.(ctx.sql, v || aiInstruction());
+          });
+          const followupBtn = document.createElement("button");
+          followupBtn.type = "button";
+          followupBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-primary";
+          followupBtn.textContent = aiBusy() ? "generating" : "继续对话";
+          const syncFollowupBtnState = () => {
+            followupBtn.disabled = aiBusy() || input.value.trim().length === 0;
+          };
+          syncFollowupBtnState();
+          followupBtn.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const v = input.value.trim();
+            if (!v || aiBusy()) return;
+            setAiInstruction(v);
+            props.onAiEditInstructionChange?.(v);
+            void aiEditCurrent(v);
+            syncFollowupBtnState();
+          });
+          root.appendChild(inputWrap);
           const keepBtn = document.createElement("button");
           keepBtn.type = "button";
           keepBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-keep";
-          keepBtn.textContent = "Keep";
+          keepBtn.textContent = "接受";
           keepBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -359,18 +460,16 @@ export default function SqlEditor(props: SqlEditorProps) {
           const undoBtn = document.createElement("button");
           undoBtn.type = "button";
           undoBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-undo";
-          undoBtn.textContent = "Undo";
+          undoBtn.textContent = "拒绝";
           undoBtn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
             rejectAiPreview();
           });
           row.appendChild(undoBtn);
+          row.appendChild(copyBtn);
+          row.appendChild(followupBtn);
 
-          const hint = document.createElement("span");
-          hint.className = "cm-ai-inline-hint";
-          hint.textContent = "Ctrl/Cmd+N Undo · Ctrl/Cmd+Shift+Y Keep";
-          row.appendChild(hint);
           const closeBtn = document.createElement("button");
           closeBtn.type = "button";
           closeBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-ghost";
@@ -383,10 +482,25 @@ export default function SqlEditor(props: SqlEditorProps) {
           });
           row.appendChild(closeBtn);
         } else {
+          const history = aiChatHistory();
+          if (history.length > 0) {
+            const historyWrap = document.createElement("div");
+            historyWrap.className = "cm-ai-chat-history";
+            for (const item of history) {
+              const msg = document.createElement("div");
+              msg.className = `cm-ai-chat-item ${item.role === "user" ? "cm-ai-chat-user" : "cm-ai-chat-assistant"}`;
+              msg.textContent = `${item.role === "user" ? "你" : "AI"}: ${item.text}`;
+              historyWrap.appendChild(msg);
+            }
+            root.appendChild(historyWrap);
+            requestAnimationFrame(() => {
+              historyWrap.scrollTop = historyWrap.scrollHeight;
+            });
+          }
           const loadingBtn = document.createElement("button");
           loadingBtn.type = "button";
           loadingBtn.className = "cm-ai-inline-btn cm-ai-inline-btn-ghost";
-          loadingBtn.textContent = "生成中...";
+          loadingBtn.textContent = "generating";
           loadingBtn.disabled = true;
           row.appendChild(loadingBtn);
 
@@ -590,13 +704,13 @@ export default function SqlEditor(props: SqlEditorProps) {
         ".cm-ai-inline-panel": {
           display: "flex",
           flexDirection: "column",
-          gap: "6px",
-          padding: "8px",
+          gap: "8px",
+          padding: "10px",
           margin: "0",
-          border: "1px solid var(--vscode-widget-border, #454545)",
-          borderRadius: "8px",
-          background: "var(--vscode-editorWidget-background, #252526)",
-          boxShadow: "none",
+          border: "1px solid color-mix(in srgb, var(--vscode-widget-border, #454545) 86%, transparent)",
+          borderRadius: "10px",
+          background: "var(--vscode-editor-background, #1E1E1E)",
+          boxShadow: "0 6px 20px rgba(0, 0, 0, 0.28)",
           boxSizing: "border-box",
           fontFamily: "var(--vscode-font-family, \"Segoe UI\", \"Microsoft YaHei\", sans-serif)",
           fontSize: "12px",
@@ -609,20 +723,31 @@ export default function SqlEditor(props: SqlEditorProps) {
           gap: "8px",
           flexWrap: "wrap",
         },
+        ".cm-ai-inline-panel-instruct .cm-ai-inline-row": {
+          alignItems: "flex-start",
+          flexDirection: "column",
+        },
         ".cm-ai-inline-label": {
           fontSize: "12px",
           lineHeight: "inherit",
           color: "var(--vscode-foreground, #ddd)",
           whiteSpace: "nowrap",
         },
+        ".cm-ai-inline-input-wrap": {
+          width: "100%",
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+        },
         ".cm-ai-inline-input": {
-          flex: "1 1 240px",
+          width: "100%",
           minWidth: "180px",
-          height: "28px",
-          padding: "0 8px",
-          border: "1px solid var(--vscode-input-border, #3c3c3c)",
-          borderRadius: "6px",
-          background: "var(--vscode-input-background, #3c3c3c)",
+          minHeight: "32px",
+          maxHeight: "160px",
+          padding: "6px 10px",
+          border: "1px solid transparent",
+          borderRadius: "8px",
+          background: "var(--vscode-editor-background, #1E1E1E)",
           color: "var(--vscode-input-foreground, #ddd)",
           fontSize: "12px",
           fontFamily: "inherit",
@@ -630,16 +755,25 @@ export default function SqlEditor(props: SqlEditorProps) {
           lineHeight: "inherit",
           outline: "none",
           boxSizing: "border-box",
+          resize: "none",
+          overflowY: "hidden",
+        },
+        ".cm-ai-inline-actions": {
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
         },
         ".cm-ai-inline-btn": {
           appearance: "none",
           border: "1px solid var(--vscode-widget-border, #454545)",
           background: "transparent",
           color: "var(--vscode-foreground, #ddd)",
-          borderRadius: "6px",
+          borderRadius: "8px",
           boxShadow: "none",
-          height: "28px",
-          padding: "0 10px",
+          height: "30px",
+          padding: "0 12px",
           fontSize: "12px",
           fontFamily: "inherit",
           fontWeight: "500",
@@ -664,8 +798,8 @@ export default function SqlEditor(props: SqlEditorProps) {
           color: "var(--vscode-button-foreground, #ffffff) !important",
         },
         ".cm-ai-inline-btn-undo": {
-          border: "1px solid rgba(255, 255, 255, 0.08)",
-          background: "#2c2c2c",
+          border: "1px solid rgba(255, 255, 255, 0.1)",
+          background: "#2b2b2b",
           color: "#ffffff",
         },
         ".cm-ai-inline-btn-undo:hover": {
@@ -674,12 +808,12 @@ export default function SqlEditor(props: SqlEditorProps) {
           color: "#ffffff",
         },
         ".cm-ai-inline-btn-keep": {
-          border: "1px solid rgba(255, 255, 255, 0.12)",
-          background: "#3d8f60",
+          border: "1px solid rgba(255, 255, 255, 0.14)",
+          background: "#2f7d53",
           color: "#ffffff",
         },
         ".cm-ai-inline-btn-keep:hover": {
-          background: "#44986a",
+          background: "#388d5f",
           borderColor: "rgba(255, 255, 255, 0.16)",
           color: "#ffffff",
         },
@@ -697,6 +831,32 @@ export default function SqlEditor(props: SqlEditorProps) {
           fontFamily: "inherit",
           fontWeight: "400",
           color: "var(--vscode-descriptionForeground, #999)",
+        },
+        ".cm-ai-chat-history": {
+          display: "flex",
+          flexDirection: "column",
+          gap: "6px",
+          maxHeight: "220px",
+          overflowY: "auto",
+          padding: "4px 2px",
+        },
+        ".cm-ai-chat-item": {
+          fontSize: "12px",
+          lineHeight: "1.5",
+          padding: "7px 10px",
+          borderRadius: "8px",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          background: "color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 94%, black)",
+          border: "1px solid color-mix(in srgb, var(--vscode-widget-border, #454545) 75%, transparent)",
+        },
+        ".cm-ai-chat-user": {
+          background: "color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 94%, black)",
+          border: "1px solid color-mix(in srgb, var(--vscode-widget-border, #454545) 75%, transparent)",
+        },
+        ".cm-ai-chat-assistant": {
+          background: "color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 94%, black)",
+          border: "1px solid color-mix(in srgb, var(--vscode-widget-border, #454545) 75%, transparent)",
         },
         ".cm-ai-inline-preview": {
           display: "grid",
@@ -823,6 +983,7 @@ export default function SqlEditor(props: SqlEditorProps) {
     setAiPreviewRange(null);
     setAiPreviewOriginalRange(null);
     setAiStatusMessage("");
+    setAiChatHistory([]);
     setAiPanelOpen(true);
     props.onAiEditPhaseChange?.("instruct");
     refreshInlineWidgets();
@@ -847,6 +1008,7 @@ export default function SqlEditor(props: SqlEditorProps) {
     setAiPreviewRange(null);
     setAiPreviewOriginalRange(null);
     setAiStatusMessage("");
+    setAiChatHistory([]);
     props.onAiPreviewDock?.(null);
     props.onAiEditPhaseChange?.("idle");
     refreshInlineWidgets();
@@ -908,6 +1070,7 @@ export default function SqlEditor(props: SqlEditorProps) {
     try {
       setAiBusy(true);
       setAiStatusMessage("");
+      setAiChatHistory((prev) => [...prev, { role: "user", text: instruction }, { role: "assistant", text: "generating" }]);
       setAiPanelMode("loading");
       refreshInlineWidgets();
       props.onAiEditPhaseChange?.("loading");
@@ -921,6 +1084,12 @@ export default function SqlEditor(props: SqlEditorProps) {
           ),
         ]);
       } catch {
+        setAiChatHistory((prev) => {
+          if (prev.length === 0) return [{ role: "assistant", text: "生成失败或超时，请重试" }];
+          const next = prev.slice();
+          next[next.length - 1] = { role: "assistant", text: "生成失败或超时，请重试" };
+          return next;
+        });
         setAiStatusMessage("生成失败或超时，请重试");
         setAiPanelMode("instruct");
         refreshInlineWidgets();
@@ -933,12 +1102,25 @@ export default function SqlEditor(props: SqlEditorProps) {
         nextSql = (result as any).sql.trim();
       }
       if (!nextSql) {
+        setAiChatHistory((prev) => {
+          if (prev.length === 0) return [{ role: "assistant", text: "未生成可应用的结果" }];
+          const next = prev.slice();
+          next[next.length - 1] = { role: "assistant", text: "未生成可应用的结果" };
+          return next;
+        });
         setAiStatusMessage("未生成可应用的结果");
         setAiPanelMode("instruct");
         refreshInlineWidgets();
         props.onAiEditPhaseChange?.("instruct");
         return;
       }
+      const assistantReply = nextSql.length > 600 ? `${nextSql.slice(0, 600)}...` : nextSql;
+      setAiChatHistory((prev) => {
+        if (prev.length === 0) return [{ role: "assistant", text: assistantReply }];
+        const next = prev.slice();
+        next[next.length - 1] = { role: "assistant", text: assistantReply };
+        return next;
+      });
       setAiPreviewOriginal(sql);
       setAiPreviewEdited(nextSql);
       setAiPreviewOriginalRange({ from, to });
@@ -950,10 +1132,13 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
       const previewTo = from + nextSql.length;
       setAiPreviewRange({ from, to: previewTo });
+      setAiTargetRange({ from, to: previewTo });
+      setAiInstruction("");
+      props.onAiEditInstructionChange?.("");
       setAiStatusMessage("");
       setAiPanelMode("preview");
       refreshInlineWidgets();
-      focusCodeEditor();
+      focusAiPanelInput(false);
       view?.dispatch({
         effects: setAiPreviewDecorEffect.of({ from, to: previewTo, original: sql, edited: nextSql }),
         annotations: [Transaction.addToHistory.of(false)],
@@ -1002,6 +1187,10 @@ export default function SqlEditor(props: SqlEditorProps) {
           {
             key: "Mod-Enter",
             run: () => {
+              if (aiPanelOpen() && aiPanelMode() === "preview") {
+                applyAiPreview();
+                return true;
+              }
               runCurrent();
               return true;
             },
@@ -1009,6 +1198,10 @@ export default function SqlEditor(props: SqlEditorProps) {
           {
             key: "Ctrl-Enter",
             run: () => {
+              if (aiPanelOpen() && aiPanelMode() === "preview") {
+                applyAiPreview();
+                return true;
+              }
               runCurrent();
               return true;
             },
@@ -1048,10 +1241,6 @@ export default function SqlEditor(props: SqlEditorProps) {
           {
             key: "Mod-Shift-y",
             run: () => {
-              if (aiPanelOpen() && aiPanelMode() === "preview") {
-                applyAiPreview();
-                return true;
-              }
               return false;
             },
           },
@@ -1059,6 +1248,12 @@ export default function SqlEditor(props: SqlEditorProps) {
       ),
       EditorView.domEventHandlers({
         keydown: (event) => {
+          if (event.ctrlKey && event.key === "Enter" && aiPanelOpen() && aiPanelMode() === "preview") {
+            event.preventDefault();
+            event.stopPropagation();
+            applyAiPreview();
+            return true;
+          }
           if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
             event.preventDefault();
             event.stopPropagation();
