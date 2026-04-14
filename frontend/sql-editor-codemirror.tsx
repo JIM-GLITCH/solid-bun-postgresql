@@ -541,32 +541,42 @@ export default function SqlEditor(props: SqlEditorProps) {
     const buildDecos = (state: EditorState) => {
       const text = state.doc.toString();
       const blocks = buildSqlBlocks(text);
-      const builder = new RangeSetBuilder<Decoration>();
+      
+      // Collect all decorations with their positions
+      const decos: Array<{ from: number; decoration: Decoration }> = [];
+      
       for (const b of blocks) {
         const line = state.doc.lineAt(Math.min(state.doc.length, b.start + 1));
-        builder.add(
-          line.from,
-          line.from,
-          Decoration.widget({
+        decos.push({
+          from: line.from,
+          decoration: Decoration.widget({
             widget: new SqlBlockToolbarWidget(b, aiBusy()),
             block: true,
             side: -1,
-          })
-        );
+          }),
+        });
       }
+      
       if (aiPanelOpen()) {
         const target = aiTargetRange() ?? { from: 0, to: 0 };
         const safe = Math.min(state.doc.length, Math.max(0, target.from));
         const anchorLine = state.doc.lineAt(Math.min(state.doc.length, safe + 1));
-        builder.add(
-          anchorLine.from,
-          anchorLine.from,
-          Decoration.widget({
+        decos.push({
+          from: anchorLine.from,
+          decoration: Decoration.widget({
             widget: new AiInlinePanelWidget(safe),
             block: true,
             side: -1,
-          })
-        );
+          }),
+        });
+      }
+      
+      // Sort by from position (required for RangeSetBuilder)
+      decos.sort((a, b) => a.from - b.from);
+      
+      const builder = new RangeSetBuilder<Decoration>();
+      for (const { from, decoration } of decos) {
+        builder.add(from, from, decoration);
       }
       return builder.finish();
     };
