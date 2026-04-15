@@ -37,21 +37,12 @@ function postApi<M extends ApiMethod>(method: M): RouteHandler {
   };
 }
 
-/** 旧版路径与笔误 → 当前 `ApiMethod` */
-const LEGACY_POST_PATH_TO_METHOD: Record<string, ApiMethod> = {
-  "/api/db/pg-stat-overview": "db/session-monitor",
-  "/api/db/manage-backend": "db/session-control",
-  "/api/db/pg_stat-overview": "db/session-monitor",
-  "/api/db/pg_stat-overciew": "db/session-monitor",
-  "/api/db/pg-stat-overciew": "db/session-monitor",
-};
+
 
 /** `POST /api/${method}`：与前端 `HttpTransport` 一致；未知 RPC 返回 404 */
 export async function handleApiPost(req: Request): Promise<Response> {
   const pathname = new URL(req.url).pathname;
-  const name =
-    LEGACY_POST_PATH_TO_METHOD[pathname] ??
-    (pathname.startsWith("/api/") ? pathname.slice("/api/".length) : "");
+  const name = (pathname.startsWith("/api/") ? pathname.slice("/api/".length) : "");
   if (!name || !HTTP_API_METHOD_SET.has(name as HttpRpcMethod)) {
     return new Response("Not Found", { status: 404 });
   }
