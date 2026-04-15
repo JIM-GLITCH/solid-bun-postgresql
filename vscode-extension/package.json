@@ -2,7 +2,7 @@
   "name": "db-player",
   "displayName": "DB Player",
   "description": "PostgreSQL, MySQL, and SQL Server in one webview—browse schemas, run queries, and edit with less UI fragmentation than typical multi-panel database extensions.",
-  "version": "0.1.2",
+  "version": "1.0.1",
   "publisher": "lilr",
   "keywords": [
     "dbplayer",

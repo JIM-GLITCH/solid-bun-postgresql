@@ -3,7 +3,14 @@
  * 用于 electrobun-app 桌面构建，无 Rust 依赖
  */
 
-import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
+import type {
+  IApiTransport,
+  ApiMethod,
+  ApiRequestPayload,
+  SSEMessage,
+  ServerPushMessage,
+  TransportOnSubscribe,
+} from "../../shared/src";
 
 /** 全局 RPC 桥，由 index-electrobun 在页面加载时注入 */
 declare global {
@@ -12,20 +19,20 @@ declare global {
   }
 }
 
-/** 按 connectionId 存储的回调，用于分发主进程推送的 backend_event */
-const eventCallbacks = new Map<string, Set<(msg: SSEMessage) => void>>();
+const serverPushListeners = new Set<(msg: ServerPushMessage) => void>();
 
 /** 注册全局事件回调（主进程 push 时由 index-electrobun 调用） */
 export function handleBackendEvent(payload: { connectionId?: string; data?: SSEMessage; error?: string }) {
   const cid = payload.connectionId;
   if (payload.error && cid) {
-    const cbs = eventCallbacks.get(cid);
-    cbs?.forEach((cb) => cb({ type: "ERROR", message: payload.error!, timestamp: Date.now() }));
+    const event: SSEMessage = { type: "ERROR", message: payload.error!, timestamp: Date.now() };
+    for (const listener of serverPushListeners) listener({ topic: "connection-event", connectionId: cid, event });
     return;
   }
   if (payload.data && cid) {
-    const cbs = eventCallbacks.get(cid);
-    cbs?.forEach((cb) => cb(payload.data!));
+    for (const listener of serverPushListeners) {
+      listener({ topic: "connection-event", connectionId: cid, event: payload.data });
+    }
   }
 }
 
@@ -39,17 +46,27 @@ export class ElectrobunTransport implements IApiTransport {
     return fn(method, payload);
   }
 
-  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-    let set = eventCallbacks.get(connectionId);
-    if (!set) {
-      set = new Set();
-      eventCallbacks.set(connectionId, set);
+  on(sub: TransportOnSubscribe): () => void {
+    switch (sub.event) {
+      case "push":
+        serverPushListeners.add(sub.handler);
+        return () => serverPushListeners.delete(sub.handler);
+      case "account": {
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic === "account") sub.handler(msg.account);
+        };
+        serverPushListeners.add(wrapped);
+        return () => serverPushListeners.delete(wrapped);
+      }
+      case "connection": {
+        const { connectionId } = sub;
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic !== "connection-event" || msg.connectionId !== connectionId) return;
+          sub.handler(msg.event);
+        };
+        serverPushListeners.add(wrapped);
+        return () => serverPushListeners.delete(wrapped);
+      }
     }
-    set.add(callback);
-
-    return () => {
-      set?.delete(callback);
-      if (set?.size === 0) eventCallbacks.delete(connectionId);
-    };
   }
 }

@@ -35,7 +35,7 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:3101",
     },
-    port: 3000,
+    port: 3300,
     /** 启动时预转换入口，减轻第一次打开页面的等待 */
     warmup: {
       clientFiles: ["./index.html", "./frontend/index.tsx"],

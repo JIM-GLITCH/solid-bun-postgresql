@@ -8,7 +8,15 @@
  *   setTransport(new VsCodeTransport());
  */
 
-import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
+import type {
+  AccountStateMessage,
+  IApiTransport,
+  ApiMethod,
+  ApiRequestPayload,
+  SSEMessage,
+  ServerPushMessage,
+  TransportOnSubscribe,
+} from "../../shared/src";
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
 import { raiseSubscriptionRequired } from "../subscription/subscription-prompt";
 
@@ -40,6 +48,8 @@ export class VsCodeTransport implements IApiTransport {
   private vscode = getVsCodeWebviewApi();
   private messageId = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private readonly serverPushListeners = new Set<(msg: ServerPushMessage) => void>();
+  private readonly connectionSubscriptions = new Map<string, number>();
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -57,6 +67,27 @@ export class VsCodeTransport implements IApiTransport {
               p.reject(new Error(error));
             }
           } else p.resolve(data);
+        }
+
+        const msg = event.data as {
+          type?: string;
+          data?: unknown;
+          connectionId?: string;
+          loggedIn?: boolean;
+          user?: { id?: number; email?: string | null };
+        };
+        if (msg?.type === "sse" && msg.data && msg.connectionId) {
+          this.emitServerPush({
+            topic: "connection-event",
+            connectionId: msg.connectionId,
+            event: msg.data as SSEMessage,
+          });
+        } else if (msg?.type === "dbplayer/account") {
+          const account: AccountStateMessage = {
+            loggedIn: !!msg.loggedIn,
+            user: msg.user,
+          };
+          this.emitServerPush({ topic: "account", account });
         }
       });
     }
@@ -84,20 +115,47 @@ export class VsCodeTransport implements IApiTransport {
     });
   }
 
-  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-    const handler = (event: MessageEvent) => {
-      const { type, data } = event.data || {};
-      if (type === "sse" && data) callback(data as SSEMessage);
-    };
+  on(sub: TransportOnSubscribe): () => void {
+    switch (sub.event) {
+      case "push":
+        this.serverPushListeners.add(sub.handler);
+        return () => this.serverPushListeners.delete(sub.handler);
+      case "account": {
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic === "account") sub.handler(msg.account);
+        };
+        this.serverPushListeners.add(wrapped);
+        return () => this.serverPushListeners.delete(wrapped);
+      }
+      case "connection": {
+        const { connectionId } = sub;
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic !== "connection-event" || msg.connectionId !== connectionId) return;
+          sub.handler(msg.event);
+        };
+        this.serverPushListeners.add(wrapped);
 
-    if (typeof window !== "undefined") {
-      window.addEventListener("message", handler);
-      this.vscode?.postMessage({ type: "subscribe-events", connectionId });
+        const count = this.connectionSubscriptions.get(connectionId) ?? 0;
+        this.connectionSubscriptions.set(connectionId, count + 1);
+        if (count === 0) {
+          this.vscode?.postMessage({ type: "subscribe-events", connectionId });
+        }
+
+        return () => {
+          this.serverPushListeners.delete(wrapped);
+          const current = this.connectionSubscriptions.get(connectionId) ?? 0;
+          if (current <= 1) {
+            this.connectionSubscriptions.delete(connectionId);
+            this.vscode?.postMessage({ type: "unsubscribe-events", connectionId });
+          } else {
+            this.connectionSubscriptions.set(connectionId, current - 1);
+          }
+        };
+      }
     }
+  }
 
-    return () => {
-      window.removeEventListener("message", handler);
-      this.vscode?.postMessage({ type: "unsubscribe-events", connectionId });
-    };
+  private emitServerPush(msg: ServerPushMessage): void {
+    for (const listener of this.serverPushListeners) listener(msg);
   }
 }

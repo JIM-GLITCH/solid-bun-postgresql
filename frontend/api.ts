@@ -1,5 +1,5 @@
 /**
- * 前端 API 客户端：基于 Transport 抽象，提供类型安全的接口
+ * 前端 API：类型安全的 RPC 封装；底层仅 `getTransport().request` / `getTransport().on`（见 `frontend/transport`）。
  */
 
 import { getTransport } from "./transport";
@@ -7,6 +7,8 @@ import type {
   PostgresLoginParams,
   ColumnEditableInfo,
   SSEMessage,
+  ServerPushMessage,
+  AccountStateMessage,
   DatabaseCapabilities,
   DbKind,
 } from "../shared/src";
@@ -19,8 +21,6 @@ import {
 import { defaultDatabaseCapabilities } from "../shared/src";
 import { normalizeDbDataTypesList } from "./table-designer-shared";
 
-const api = () => getTransport();
-
 /** 与当前会话一致：db/* 请求须带 dbType，与 connectionMap 中方言一致。 */
 function dbConn(connectionId: string) {
   return { connectionId, dbType: getRegisteredDbType(connectionId) };
@@ -32,7 +32,7 @@ export async function connectPostgres(
   params: PostgresLoginParams,
   dbType: DbKind = "postgres"
 ) {
-  const res = (await api().request("db/connect", {
+  const res = (await getTransport().request("db/connect", {
     ...params,
     connectionId,
     dbType,
@@ -48,7 +48,7 @@ export async function connectPostgres(
 /** 断开指定连接 */
 export async function disconnectPostgres(connectionId: string) {
   try {
-    return (await api().request("db/disconnect", dbConn(connectionId))) as { success: boolean; error?: string };
+    return (await getTransport().request("db/disconnect", dbConn(connectionId))) as { success: boolean; error?: string };
   } finally {
     clearServerCapabilities(connectionId);
     unregisterConnectionDbType(connectionId);
@@ -57,7 +57,7 @@ export async function disconnectPostgres(connectionId: string) {
 
 /** 当前会话的方言能力（用于按能力开关 UI） */
 export async function getDbCapabilities(connectionId: string) {
-  return api().request("db/capabilities", dbConn(connectionId)) as Promise<{ capabilities: DatabaseCapabilities }>;
+  return getTransport().request("db/capabilities", dbConn(connectionId)) as Promise<{ capabilities: DatabaseCapabilities }>;
 }
 
 /** 建连后拉取并缓存能力（失败则写入与方言一致的默认矩阵） */
@@ -122,7 +122,7 @@ export async function queryStream(
     typeof queryOrStatements === "string"
       ? { ...base, query: queryOrStatements }
       : { ...base, statements: queryOrStatements };
-  return api().request("db/query-stream", payload) as Promise<{
+  return getTransport().request("db/query-stream", payload) as Promise<{
     rows: any[][];
     columns: ColumnEditableInfo[];
     hasMore: boolean;
@@ -133,7 +133,7 @@ export async function queryStream(
 /** 流式查询 - 加载更多 */
 export async function queryStreamMore(connectionId: string, batchSize = 100, defaultSchema?: string) {
   const ds = defaultSchema?.trim();
-  return api().request("db/query-stream-more", {
+  return getTransport().request("db/query-stream-more", {
     ...dbConn(connectionId),
     batchSize,
     ...(ds ? { defaultSchema: ds } : {}),
@@ -146,7 +146,7 @@ export async function queryStreamMore(connectionId: string, batchSize = 100, def
 
 /** 取消查询 */
 export async function cancelQuery(connectionId: string) {
-  return api().request("db/cancel-query", dbConn(connectionId)) as Promise<{
+  return getTransport().request("db/cancel-query", dbConn(connectionId)) as Promise<{
     success: boolean;
     cancelled?: boolean;
     message?: string;
@@ -156,13 +156,13 @@ export async function cancelQuery(connectionId: string) {
 
 /** 保存修改 */
 export async function saveChanges(connectionId: string, sql: string) {
-  return api().request("db/save-changes", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
+  return getTransport().request("db/save-changes", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; rowCount?: number; error?: string }>;
 }
 
 /** 执行 EXPLAIN ANALYZE，返回 JSON 格式执行计划 */
 export async function explainQuery(connectionId: string, query: string, defaultSchema?: string) {
   const ds = defaultSchema?.trim();
-  return api().request("db/explain", {
+  return getTransport().request("db/explain", {
     ...dbConn(connectionId),
     query,
     ...(ds ? { defaultSchema: ds } : {}),
@@ -174,12 +174,12 @@ export async function explainQuery(connectionId: string, query: string, defaultS
 
 /** 获取 schemas */
 export async function getSchemas(connectionId: string) {
-  return api().request("db/schemas", dbConn(connectionId)) as Promise<{ schemas: string[]; error?: string }>;
+  return getTransport().request("db/schemas", dbConn(connectionId)) as Promise<{ schemas: string[]; error?: string }>;
 }
 
 /** 获取表/视图/函数 */
 export async function getTables(connectionId: string, schema: string) {
-  return api().request("db/tables", { ...dbConn(connectionId), schema }) as Promise<{
+  return getTransport().request("db/tables", { ...dbConn(connectionId), schema }) as Promise<{
     tables: string[];
     views: string[];
     functions?: Array<{ oid: number; schema: string; name: string; args: string }>;
@@ -189,17 +189,17 @@ export async function getTables(connectionId: string, schema: string) {
 
 /** 获取列信息 */
 export async function getColumns(connectionId: string, schema: string, table: string) {
-  return api().request("db/columns", { ...dbConn(connectionId), schema, table }) as Promise<{ columns: any[]; error?: string }>;
+  return getTransport().request("db/columns", { ...dbConn(connectionId), schema, table }) as Promise<{ columns: any[]; error?: string }>;
 }
 
 /** 获取索引 */
 export async function getIndexes(connectionId: string, schema: string, table: string) {
-  return api().request("db/indexes", { ...dbConn(connectionId), schema, table }) as Promise<{ indexes: any[]; error?: string }>;
+  return getTransport().request("db/indexes", { ...dbConn(connectionId), schema, table }) as Promise<{ indexes: any[]; error?: string }>;
 }
 
 /** 获取主键列名 */
 export async function getPrimaryKeys(connectionId: string, schema: string, table: string) {
-  return api().request("db/primary-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
+  return getTransport().request("db/primary-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
     columns: string[];
     constraintName?: string;
     error?: string;
@@ -208,7 +208,7 @@ export async function getPrimaryKeys(connectionId: string, schema: string, table
 
 /** 获取唯一约束（含主键），用于导入时冲突处理 */
 export async function getUniqueConstraints(connectionId: string, schema: string, table: string) {
-  return api().request("db/unique-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{
+  return getTransport().request("db/unique-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{
     constraints: Array<{ name: string; type: string; columns: string[] }>;
     error?: string;
   }>;
@@ -216,7 +216,7 @@ export async function getUniqueConstraints(connectionId: string, schema: string,
 
 /** 获取外键 */
 export async function getForeignKeys(connectionId: string, schema: string, table: string) {
-  return api().request("db/foreign-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
+  return getTransport().request("db/foreign-keys", { ...dbConn(connectionId), schema, table }) as Promise<{
     outgoing: any[];
     incoming: any[];
     error?: string;
@@ -225,32 +225,32 @@ export async function getForeignKeys(connectionId: string, schema: string, table
 
 /** 获取 PostgreSQL 数据类型列表 */
 export async function getDataTypes(connectionId: string) {
-  return api().request("db/data-types", dbConn(connectionId)) as Promise<{ types: string[]; error?: string }>;
+  return getTransport().request("db/data-types", dbConn(connectionId)) as Promise<{ types: string[]; error?: string }>;
 }
 
 /** 执行 DDL（CREATE/ALTER TABLE 等） */
 export async function executeDdl(connectionId: string, sql: string) {
-  return api().request("db/execute-ddl", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; error?: string }>;
+  return getTransport().request("db/execute-ddl", { ...dbConn(connectionId), sql }) as Promise<{ success: boolean; error?: string }>;
 }
 
 /** 获取表/视图的 DDL */
 export async function getTableDdl(connectionId: string, schema: string, table: string) {
-  return api().request("db/table-ddl", { ...dbConn(connectionId), schema, table }) as Promise<{ ddl: string; error?: string }>;
+  return getTransport().request("db/table-ddl", { ...dbConn(connectionId), schema, table }) as Promise<{ ddl: string; error?: string }>;
 }
 
 /** 获取函数的源码 DDL */
 export async function getFunctionDdl(connectionId: string, schema: string, funcName: string, oid?: number) {
-  return api().request("db/function-ddl", { ...dbConn(connectionId), schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
+  return getTransport().request("db/function-ddl", { ...dbConn(connectionId), schema, function: funcName, oid }) as Promise<{ ddl: string; error?: string }>;
 }
 
 /** 导出指定 schema 的 SQL dump */
 export async function getSchemaDump(connectionId: string, schema: string, includeData = false) {
-  return api().request("db/schema-dump", { ...dbConn(connectionId), schema, includeData }) as Promise<{ dump: string; error?: string }>;
+  return getTransport().request("db/schema-dump", { ...dbConn(connectionId), schema, includeData }) as Promise<{ dump: string; error?: string }>;
 }
 
 /** 导出全库的 SQL dump */
 export async function getDatabaseDump(connectionId: string, includeData = false) {
-  return api().request("db/database-dump", { ...dbConn(connectionId), includeData }) as Promise<{ dump: string; error?: string }>;
+  return getTransport().request("db/database-dump", { ...dbConn(connectionId), includeData }) as Promise<{ dump: string; error?: string }>;
 }
 
 /** 批量导入行到表 */
@@ -266,7 +266,7 @@ export async function importRows(
     onError?: "rollback" | "discard";
   }
 ) {
-  return api().request("db/import-rows", {
+  return getTransport().request("db/import-rows", {
     ...dbConn(connectionId),
     schema,
     table,
@@ -280,17 +280,17 @@ export async function importRows(
 
 /** 获取表注释 */
 export async function getTableComment(connectionId: string, schema: string, table: string): Promise<{ comment: string | null }> {
-  return api().request("db/table-comment", { ...dbConn(connectionId), schema, table }) as Promise<{ comment: string | null }>;
+  return getTransport().request("db/table-comment", { ...dbConn(connectionId), schema, table }) as Promise<{ comment: string | null }>;
 }
 
 /** 获取检查约束列表 */
 export async function getCheckConstraints(connectionId: string, schema: string, table: string): Promise<{ constraints: Array<{ name: string; expression: string }> }> {
-  return api().request("db/check-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
+  return getTransport().request("db/check-constraints", { ...dbConn(connectionId), schema, table }) as Promise<{ constraints: Array<{ name: string; expression: string }> }>;
 }
 
 /** 分区表：父表/分区子表元数据（非分区表返回 role:none） */
 export async function getPartitionInfo(connectionId: string, schema: string, table: string) {
-  return api().request("db/partition-info", { ...dbConn(connectionId), schema, table }) as Promise<
+  return getTransport().request("db/partition-info", { ...dbConn(connectionId), schema, table }) as Promise<
     | { role: "none" }
     | {
         role: "parent";
@@ -312,12 +312,12 @@ export async function getPartitionInfo(connectionId: string, schema: string, tab
 
 /** EXPLAIN 文本计划（不执行查询），用于分区裁剪预览 */
 export async function explainQueryText(connectionId: string, query: string) {
-  return api().request("db/explain-text", { ...dbConn(connectionId), query }) as Promise<{ lines: string[] }>;
+  return getTransport().request("db/explain-text", { ...dbConn(connectionId), query }) as Promise<{ lines: string[] }>;
 }
 
 /** 会话与锁监控摘要（PG / MySQL 共用 `db/session-monitor`） */
 export async function getSessionMonitor(connectionId: string, limit = 20) {
-  return api().request("db/session-monitor", { ...dbConn(connectionId), limit }) as Promise<{
+  return getTransport().request("db/session-monitor", { ...dbConn(connectionId), limit }) as Promise<{
     connectionStats: { total: number; active: number; idle: number; waiting: number };
     lockWaits: Array<{
       waiting_pid: number;
@@ -342,7 +342,7 @@ export async function getSessionMonitor(connectionId: string, limit = 20) {
 
 /** 当前数据库已安装的扩展（名称、版本、说明） */
 export async function getInstalledExtensions(connectionId: string) {
-  return api().request("db/installed-extensions", dbConn(connectionId)) as Promise<{
+  return getTransport().request("db/installed-extensions", dbConn(connectionId)) as Promise<{
     extensions: Array<{
       name: string;
       installedVersion: string;
@@ -356,21 +356,32 @@ export async function getInstalledExtensions(connectionId: string) {
 
 /** 取消当前语句或终止连接（PG cancel/terminate backend；MySQL KILL QUERY / KILL） */
 export async function sessionControl(connectionId: string, pid: number, action: "cancel" | "terminate") {
-  return api().request("db/session-control", { ...dbConn(connectionId), pid, action }) as Promise<{
+  return getTransport().request("db/session-control", { ...dbConn(connectionId), pid, action }) as Promise<{
     success: boolean;
     pid: number;
     action: "cancel" | "terminate";
   }>;
 }
 
-/** 订阅服务端推送事件 */
+/** 以下为 `getTransport().on(...)` 的薄封装，便于与本模块 RPC 函数一并从 `./api` 引入。 */
+/** 订阅指定连接的会话事件（NOTICE/ERROR/…） */
 export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
-  return api().subscribeEvents(connectionId, callback);
+  return getTransport().on({ event: "connection", connectionId, handler: callback });
+}
+
+/** 订阅全部服务端推送（统一 `ServerPushMessage`） */
+export function subscribeServerMessages(callback: (msg: ServerPushMessage) => void): () => void {
+  return getTransport().on({ event: "push", handler: callback });
+}
+
+/** 订阅账号状态（如 VSCode 扩展推送）；Web 端若无对应推送源则可能从不触发 */
+export function subscribeAccountState(handler: (msg: AccountStateMessage) => void): () => void {
+  return getTransport().on({ event: "account", handler });
 }
 
 /** VSCode 插件内：保存文件到用户选择路径。返回 true 表示已保存，false 表示用户取消，抛错时可回退到浏览器下载。 */
 export async function saveFileViaVscode(content: string, filename: string, options?: { isBase64?: boolean }): Promise<boolean> {
-  const result = await api().request("vscode/save-file", {
+  const result = await getTransport().request("vscode/save-file", {
     content,
     filename,
     isBase64: options?.isBase64,
@@ -381,7 +392,7 @@ export async function saveFileViaVscode(content: string, filename: string, optio
 
 /** VSCode 插件内：打开文件选择器并返回内容。返回 null 表示用户取消。 */
 export async function readFileViaVscode(options?: { accept?: string[] }): Promise<{ content: string; filename: string } | { contentBase64: string; filename: string } | null> {
-  const result = await api().request("vscode/read-file", { accept: options?.accept ?? [".csv", ".json", ".xlsx", ".xls"] }) as { cancelled?: boolean; content?: string; filename?: string; contentBase64?: string };
+  const result = await getTransport().request("vscode/read-file", { accept: options?.accept ?? [".csv", ".json", ".xlsx", ".xls"] }) as { cancelled?: boolean; content?: string; filename?: string; contentBase64?: string };
   if (result?.cancelled) return null;
   if (result?.contentBase64 != null && result?.filename) return { contentBase64: result.contentBase64, filename: result.filename };
   if (result?.content != null && result?.filename) return { content: result.content, filename: result.filename };
@@ -389,7 +400,7 @@ export async function readFileViaVscode(options?: { accept?: string[] }): Promis
 }
 
 export async function getAiConfig() {
-  return api().request("ai/config/get", {}) as Promise<{
+  return getTransport().request("ai/config/get", {}) as Promise<{
     apiMode: "openai-compatible" | "anthropic";
     baseUrl?: string;
     model: string;
@@ -413,11 +424,11 @@ export async function setAiConfig(payload: {
   stream?: boolean;
   maxTokens?: number;
 }) {
-  return api().request("ai/config/set", payload) as Promise<{ success: boolean }>;
+  return getTransport().request("ai/config/set", payload) as Promise<{ success: boolean }>;
 }
 
 export async function deleteAiKey(payload?: { keyRef?: string }) {
-  return api().request("ai/key/delete", payload ?? {}) as Promise<{ success: boolean }>;
+  return getTransport().request("ai/key/delete", payload ?? {}) as Promise<{ success: boolean }>;
 }
 
 export async function testAiConnection(payload?: {
@@ -430,7 +441,7 @@ export async function testAiConnection(payload?: {
   stream?: boolean;
   maxTokens?: number;
 }) {
-  return api().request("ai/test-connection", payload ?? {}) as Promise<{ success: boolean }>;
+  return getTransport().request("ai/test-connection", payload ?? {}) as Promise<{ success: boolean }>;
 }
 
 export async function aiSqlEdit(payload: {
@@ -440,7 +451,7 @@ export async function aiSqlEdit(payload: {
   keyRef?: string;
   schema?: string;
 }) {
-  return api().request("ai/sql-edit", payload) as Promise<{
+  return getTransport().request("ai/sql-edit", payload) as Promise<{
     sql: string;
     rationale: string;
     warnings: string[];
@@ -457,7 +468,7 @@ export async function aiBuildPrompt(payload: {
   schema?: string;
   instructions?: string;
 }) {
-  return api().request("ai/prompt-build", payload) as Promise<{
+  return getTransport().request("ai/prompt-build", payload) as Promise<{
     prompt: string;
     schemaInjected?: string[];
   }>;
@@ -468,18 +479,18 @@ export async function aiBuildDiffPrompt(payload: {
   sql: string;
   schema?: string;
 }) {
-  return api().request("ai/prompt-build-diff", payload) as Promise<{
+  return getTransport().request("ai/prompt-build-diff", payload) as Promise<{
     prompt: string;
     schemaInjected?: string[];
   }>;
 }
 
 export async function setAiKeyViaVscode(keyRef: string, apiKey: string) {
-  return api().request("vscode/ai-key-set", { keyRef, apiKey }) as Promise<{ success: boolean }>;
+  return getTransport().request("vscode/ai-key-set", { keyRef, apiKey }) as Promise<{ success: boolean }>;
 }
 
 export async function deleteAiKeyViaVscode(keyRef: string) {
-  return api().request("vscode/ai-key-delete", { keyRef }) as Promise<{ success: boolean }>;
+  return getTransport().request("vscode/ai-key-delete", { keyRef }) as Promise<{ success: boolean }>;
 }
 
 /**
@@ -491,14 +502,14 @@ export async function deleteAiKeyViaVscode(keyRef: string) {
 export async function assertFeatureSubscription(feature: "visual-query-builder" | "table-designer"): Promise<void> {
   const w = window as Window & { __electrobunApiRequest?: unknown };
   if (typeof w.__electrobunApiRequest === "function") return;
-  await api().request("subscription/assert", { feature });
+  await getTransport().request("subscription/assert", { feature });
 }
 
 export async function getSubscriptionAccount(): Promise<{
   loggedIn: boolean;
   user?: { id?: number; email?: string | null };
 }> {
-  return api().request("subscription/account", {}) as Promise<{
+  return getTransport().request("subscription/account", {}) as Promise<{
     loggedIn: boolean;
     user?: { id?: number; email?: string | null };
   }>;

@@ -2,7 +2,16 @@ import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
-import { getSchemas, getTables, getColumns, getIndexes, getTableDdl, getFunctionDdl, getSubscriptionAccount } from "./api";
+import {
+  getSchemas,
+  getTables,
+  getColumns,
+  getIndexes,
+  getTableDdl,
+  getFunctionDdl,
+  getSubscriptionAccount,
+  subscribeAccountState,
+} from "./api";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
@@ -257,6 +266,12 @@ export default function Sidebar(props: SidebarProps) {
     }
     await refreshAccountState();
   }
+
+  // 登录态变更统一从 transport.on({ event: "account" }) 接收（VSCode 为 postMessage）
+  createEffect(() => {
+    const unsubscribe = subscribeAccountState((account) => applyAccountFromHost(account));
+    onCleanup(() => unsubscribe());
+  });
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {

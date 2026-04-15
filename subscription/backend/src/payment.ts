@@ -15,8 +15,8 @@ import { pool } from "./db";
 // ─── 套餐定义 ─────────────────────────────────────────────────────────────────
 
 export const PLANS: Record<string, { label: string; amount: number; days: number }> = {
-  monthly: { label: "月付订阅", amount: 2900, days: 30 }, // 单位：分
-  yearly: { label: "年付订阅", amount: 19900, days: 365 },
+  monthly: { label: "月付订阅", amount: 1000, days: 30 }, // 单位：分
+  yearly: { label: "年付订阅", amount: 5000, days: 365 },
 };
 
 // ─── 生成订单号 ───────────────────────────────────────────────────────────────

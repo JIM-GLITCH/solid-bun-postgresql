@@ -5,7 +5,14 @@
  * 数据库相关 RPC 统一为 db/*，载荷中须带 dbType（postgres / mysql 等）。
  */
 
-import type { SSEMessage, ConnectDbRequest, DbKind, ConnectionSavePayload } from "./types";
+import type {
+  AccountStateMessage,
+  ServerPushMessage,
+  SSEMessage,
+  ConnectDbRequest,
+  DbKind,
+  ConnectionSavePayload,
+} from "./types";
 
 /** 需已有会话的 db 请求公共字段 */
 export type DbRpcBase = { connectionId: string; dbType: DbKind };
@@ -192,9 +199,19 @@ export type ApiRequestPayload = {
   "db/installed-extensions": DbRpcBase;
 };
 
-/** 传输层接口：前端通过此接口与后端通信 */
+/** `transport.on(...)` 订阅形态：仅 `request` + `on` 两入口 */
+export type TransportOnSubscribe =
+  | { event: "push"; handler: (msg: ServerPushMessage) => void }
+  | { event: "connection"; connectionId: string; handler: (msg: SSEMessage) => void }
+  | { event: "account"; handler: (msg: AccountStateMessage) => void };
+
+/**
+ * 传输层接口：与宿主后端的唯一通信面（RPC + 推送）。
+ * 业务若只依赖 transport：`request` + `on` 即可，勿在业务里直接使用 EventSource / VSCode postMessage 协议细节。
+ */
 export interface IApiTransport {
   request<M extends ApiMethod>(method: M, payload: ApiRequestPayload[M]): Promise<unknown>;
 
-  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void;
+  /** 订阅服务端推送（SSE / postMessage / IPC 封装在实现内） */
+  on(sub: TransportOnSubscribe): () => void;
 }

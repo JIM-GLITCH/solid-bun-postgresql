@@ -184,6 +184,8 @@ function init(): void {
   if (token) {
     $btnLogin.classList.add("hidden");
     $btnLogout.classList.remove("hidden");
+    $userInfo.classList.remove("hidden");
+    $userInfo.textContent = "加载中…";
     fetchSubscription(token);
     syncBackButtonVisibility(true);
   } else {
@@ -191,6 +193,8 @@ function init(): void {
     $btnLogout.classList.add("hidden");
     $btnBackVscode.classList.add("hidden");
     $subscriptionStatus.classList.add("hidden");
+    $userInfo.classList.add("hidden");
+    $userInfo.replaceChildren();
   }
 }
 
@@ -214,11 +218,48 @@ $btnBackVscode.addEventListener("click", () => {
 
 interface SubscriptionRes {
   success: boolean;
+  user?: { name: string | null; avatarUrl: string | null };
   subscription?: { active: boolean; plan: string; expiresAt: number | null };
   error?: string;
   detail?: string;
   reason?: string;
   hint?: string;
+}
+
+function safeHttpAvatarUrl(raw: string | null | undefined): string | null {
+  const u = raw?.trim();
+  if (!u) return null;
+  try {
+    const parsed = new URL(u);
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
+    return u;
+  } catch {
+    return null;
+  }
+}
+
+function renderUserNav(user: { name: string | null; avatarUrl: string | null }): void {
+  $userInfo.classList.remove("hidden");
+  $userInfo.replaceChildren();
+  const wrap = document.createElement("span");
+  wrap.className = "user-badge";
+  const avatarSrc = safeHttpAvatarUrl(user.avatarUrl);
+  if (avatarSrc) {
+    const img = document.createElement("img");
+    img.className = "user-avatar";
+    img.src = avatarSrc;
+    img.alt = "";
+    img.width = 28;
+    img.height = 28;
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    wrap.appendChild(img);
+  }
+  const label = document.createElement("span");
+  label.className = "user-name";
+  label.textContent = user.name?.trim() || "GitHub 用户";
+  wrap.appendChild(label);
+  $userInfo.appendChild(wrap);
 }
 
 interface PaymentRes {
@@ -260,14 +301,23 @@ async function fetchSubscription(token: string): Promise<void> {
     const parsed = await parseResJson<SubscriptionRes>(res);
     if (!parsed.ok) {
       console.error("[subscription] 非 JSON:", parsed.rawText);
+      $userInfo.classList.remove("hidden");
       $userInfo.textContent = `订阅接口异常 HTTP ${res.status}（见控制台）`;
       return;
     }
     const data = parsed.data;
     if (!data.success) {
       console.error("[subscription]", formatApiErr(data));
+      $userInfo.classList.remove("hidden");
       $userInfo.textContent = formatApiErr(data) || "获取订阅状态失败";
       return;
+    }
+
+    if (data.user) {
+      renderUserNav(data.user);
+    } else {
+      $userInfo.classList.remove("hidden");
+      $userInfo.textContent = "已登录";
     }
 
     if (data.success && data.subscription) {
@@ -280,11 +330,12 @@ async function fetchSubscription(token: string): Promise<void> {
       const isActive = sub.active;
       ($btnSubscribe as HTMLButtonElement).disabled = isActive;
       ($btnSubscribeYearly as HTMLButtonElement).disabled = isActive;
-      $btnSubscribe.textContent = isActive ? "已订阅" : "月付 ¥29";
-      $btnSubscribeYearly.textContent = isActive ? "已订阅" : "年付 ¥199";
+      $btnSubscribe.textContent = isActive ? "已订阅" : "月付 ¥10";
+      $btnSubscribeYearly.textContent = isActive ? "已订阅" : "年付 ¥50";
     }
   } catch (e) {
     console.error("fetch subscription:", e);
+    $userInfo.classList.remove("hidden");
     $userInfo.textContent = "获取订阅状态失败";
   }
 }

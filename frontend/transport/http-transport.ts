@@ -2,7 +2,14 @@
  * HTTP 传输实现：Web 环境使用 fetch + EventSource
  */
 
-import type { IApiTransport, ApiMethod, ApiRequestPayload, SSEMessage } from "../../shared/src";
+import type {
+  IApiTransport,
+  ApiMethod,
+  ApiRequestPayload,
+  SSEMessage,
+  ServerPushMessage,
+  TransportOnSubscribe,
+} from "../../shared/src";
 import { formatUnknownError } from "../format-unknown-error";
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
 import { raiseSubscriptionRequired } from "../subscription/subscription-prompt";
@@ -15,6 +22,9 @@ export type HttpTransportOptions = {
 };
 
 export class HttpTransport implements IApiTransport {
+  private readonly serverPushListeners = new Set<(msg: ServerPushMessage) => void>();
+  private readonly connectionStreams = new Map<string, { source: EventSource; refs: number }>();
+
   constructor(private readonly opts: HttpTransportOptions = {}) {}
 
   async request<M extends ApiMethod>(
@@ -72,27 +82,70 @@ export class HttpTransport implements IApiTransport {
     return data;
   }
 
-  subscribeEvents(connectionId: string, callback: (msg: SSEMessage) => void): () => void {
+  on(sub: TransportOnSubscribe): () => void {
+    switch (sub.event) {
+      case "push":
+        this.serverPushListeners.add(sub.handler);
+        return () => this.serverPushListeners.delete(sub.handler);
+      case "account": {
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic === "account") sub.handler(msg.account);
+        };
+        this.serverPushListeners.add(wrapped);
+        return () => this.serverPushListeners.delete(wrapped);
+      }
+      case "connection": {
+        const { connectionId } = sub;
+        const wrapped = (msg: ServerPushMessage) => {
+          if (msg.topic !== "connection-event" || msg.connectionId !== connectionId) return;
+          sub.handler(msg.event);
+        };
+        this.serverPushListeners.add(wrapped);
+        this.ensureConnectionStream(connectionId);
+        return () => {
+          this.serverPushListeners.delete(wrapped);
+          this.releaseConnectionStream(connectionId);
+        };
+      }
+    }
+  }
+
+  private emitServerPush(msg: ServerPushMessage): void {
+    for (const listener of this.serverPushListeners) listener(msg);
+  }
+
+  private ensureConnectionStream(connectionId: string): void {
+    const existing = this.connectionStreams.get(connectionId);
+    if (existing) {
+      existing.refs += 1;
+      return;
+    }
     const q = new URLSearchParams();
     q.set("connectionSessionId", connectionId);
     q.set("client", "web");
     const t = this.opts.getBearerToken?.() ?? null;
     if (t) q.set("access_token", t);
     const url = `${API_BASE}/api/events?${q.toString()}`;
-    const eventSource = new EventSource(url, { withCredentials: true });
+    const source = new EventSource(url, { withCredentials: true });
 
-    eventSource.onmessage = (event) => {
+    source.onmessage = (event) => {
       try {
         const message: SSEMessage = JSON.parse(event.data);
-        callback(message);
+        this.emitServerPush({ topic: "connection-event", connectionId, event: message });
       } catch (e) {
         console.error("解析 SSE 消息失败:", e);
       }
     };
-
-    return () => {
-      eventSource.close();
-    };
+    this.connectionStreams.set(connectionId, { source, refs: 1 });
   }
 
+  private releaseConnectionStream(connectionId: string): void {
+    const existing = this.connectionStreams.get(connectionId);
+    if (!existing) return;
+    existing.refs -= 1;
+    if (existing.refs <= 0) {
+      existing.source.close();
+      this.connectionStreams.delete(connectionId);
+    }
+  }
 }

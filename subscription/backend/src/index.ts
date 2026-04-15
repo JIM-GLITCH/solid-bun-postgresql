@@ -307,6 +307,10 @@ app.get("/api/auth/github/callback", async (c) => {
 
     if (identity) {
       userId = identity.user_id;
+      await pool.query(
+        `UPDATE users SET name = $1, avatar_url = $2, updated_at = NOW() WHERE id = $3`,
+        [ghUser.name ?? ghUser.login, ghUser.avatar_url ?? null, userId]
+      );
     } else {
       // 新建用户
       const insertUser = await pool.query(
@@ -378,6 +382,11 @@ app.get("/api/subscription", async (c) => {
   if (!auth.ok) return unauthorizedJson(c, auth.hadBearerToken);
   const { user } = auth;
 
+  const profile = await queryOne<{ name: string | null; avatar_url: string | null }>(
+    `SELECT name, avatar_url FROM users WHERE id = $1`,
+    [user.userId]
+  );
+
   const sub = await queryOne<{ plan: string; status: string; expires_at: Date | null }>(
     `SELECT plan, status, expires_at FROM subscriptions
      WHERE user_id = $1 AND status = 'active'
@@ -398,6 +407,10 @@ app.get("/api/subscription", async (c) => {
 
   return c.json({
     success: true,
+    user: {
+      name: profile?.name?.trim() || null,
+      avatarUrl: profile?.avatar_url?.trim() || null,
+    },
     subscription: { active, plan, expiresAt },
   });
 });
@@ -407,6 +420,11 @@ app.get("/api/me", async (c) => {
   const auth = await authorize(c);
   if (!auth.ok) return unauthorizedJson(c, auth.hadBearerToken);
   const { user } = auth;
+
+  const profile = await queryOne<{ name: string | null; avatar_url: string | null }>(
+    `SELECT name, avatar_url FROM users WHERE id = $1`,
+    [user.userId]
+  );
 
   const sub = await queryOne<{ plan: string; status: string; expires_at: Date | null }>(
     `SELECT plan, status, expires_at FROM subscriptions
@@ -431,6 +449,8 @@ app.get("/api/me", async (c) => {
     user: {
       id: user.userId,
       email: user.email,
+      name: profile?.name?.trim() || null,
+      avatarUrl: profile?.avatar_url?.trim() || null,
     },
     subscription: {
       active,

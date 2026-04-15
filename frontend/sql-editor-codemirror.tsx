@@ -12,7 +12,7 @@ import {
 } from "@codemirror/state";
 import { indentUnit } from "@codemirror/language";
 import { sql } from "@codemirror/lang-sql";
-import { onCleanup, onMount, createEffect } from "solid-js";
+import { onCleanup, onMount, createEffect, batch } from "solid-js";
 import { getSqlSegments } from "../shared/src";
 import { getTheme, subscribe } from "./theme-sync";
 import { buildVsCodeCodeMirrorTheme } from "./codemirror-vscode-theme";
@@ -61,6 +61,7 @@ export default function SqlEditor(props: SqlEditorProps) {
   const [aiPanelOpen, setAiPanelOpen] = createSignal(false);
   const [aiInstruction, setAiInstruction] = createSignal("补全");
   const [aiTargetRange, setAiTargetRange] = createSignal<{ from: number; to: number } | null>(null);
+  const [aiPanelAnchor, setAiPanelAnchor] = createSignal<number | null>(null);
   const [aiPanelMode, setAiPanelMode] = createSignal<"instruct" | "loading" | "preview">("instruct");
   const [aiPreviewOriginal, setAiPreviewOriginal] = createSignal("");
   const [aiPreviewEdited, setAiPreviewEdited] = createSignal("");
@@ -88,7 +89,11 @@ export default function SqlEditor(props: SqlEditorProps) {
   const getAiPanelInput = (): HTMLTextAreaElement | null => {
     const host = view?.dom;
     if (!host) return null;
-    return host.querySelector(".cm-ai-inline-input");
+    // Find the AI panel first, then get the input within it
+    // This is safer because only one panel can be open at a time
+    const panel = host.querySelector(".cm-ai-inline-panel");
+    if (!panel) return null;
+    return panel.querySelector(".cm-ai-inline-input");
   };
 
   const resizeAiInput = (el: HTMLTextAreaElement) => {
@@ -139,6 +144,17 @@ export default function SqlEditor(props: SqlEditorProps) {
     if (!sql.trim()) return;
     flashExecutionRange(from, to);
     props.onRun?.(sql);
+  };
+
+  const openAiPanelForBlock = (block: SqlBlock) => {
+    if (!view) return;
+    const from = Math.max(0, Math.min(block.start, view.state.doc.length));
+    const to = Math.max(from, Math.min(block.end, view.state.doc.length));
+    view.dispatch({
+      selection: EditorSelection.range(from, to),
+      annotations: [Transaction.addToHistory.of(false)],
+    });
+    openAiPanel({ from, to });
   };
 
   const runCurrent = () => {
@@ -223,6 +239,10 @@ export default function SqlEditor(props: SqlEditorProps) {
           textEl.textContent = text;
           btn.append(iconEl, textEl);
           btn.disabled = disabled;
+          btn.addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          });
           btn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -250,7 +270,7 @@ export default function SqlEditor(props: SqlEditorProps) {
         appendAction("Explain", () => props.onExplain?.(this.block.sql), !props.onExplain);
         appendAction(
           this.busy ? "AI Editing..." : "AI Edit",
-          () => openAiPanel({ from: this.block.start, to: this.block.end }),
+          () => openAiPanelForBlock(this.block),
           !props.onAiEdit || this.busy
         );
         return root;
@@ -558,8 +578,9 @@ export default function SqlEditor(props: SqlEditorProps) {
       }
       
       if (aiPanelOpen()) {
-        const target = aiTargetRange() ?? { from: 0, to: 0 };
-        const safe = Math.min(state.doc.length, Math.max(0, target.from));
+        const anchor = aiPanelAnchor();
+        const fallback = aiTargetRange()?.from ?? 0;
+        const safe = Math.min(state.doc.length, Math.max(0, anchor ?? fallback));
         const anchorLine = state.doc.lineAt(Math.min(state.doc.length, safe + 1));
         decos.push({
           from: anchorLine.from,
@@ -670,6 +691,9 @@ export default function SqlEditor(props: SqlEditorProps) {
           fontSize: "10px",
           color: "var(--vscode-editorCodeLens-foreground, #999)",
           background: "transparent",
+          position: "relative",
+          zIndex: "2",
+          pointerEvents: "auto",
         },
         ".cm-sql-block-toolbar-btn": {
           border: "none",
@@ -986,23 +1010,34 @@ export default function SqlEditor(props: SqlEditorProps) {
   const openAiPanel = (target?: { from: number; to: number }) => {
     if (!props.onAiEdit || aiBusy()) return;
     const resolvedTarget = target ?? getCurrentSqlContext();
-    setAiTargetRange({ from: resolvedTarget.from, to: resolvedTarget.to });
-    setAiPanelMode("instruct");
-    setAiPreviewOriginal("");
-    setAiPreviewEdited("");
-    setAiPreviewRange(null);
-    setAiPreviewOriginalRange(null);
-    setAiStatusMessage("");
-    setAiChatHistory([]);
-    setAiPanelOpen(true);
+    const safeFrom = view ? Math.max(0, Math.min(resolvedTarget.from, view.state.doc.length)) : Math.max(0, resolvedTarget.from);
+    const safeTo = view ? Math.max(safeFrom, Math.min(resolvedTarget.to, view.state.doc.length)) : Math.max(safeFrom, resolvedTarget.to);
+    
+    // Use batch to ensure all state updates happen in a single reactive transaction
+    batch(() => {
+      setAiTargetRange({ from: safeFrom, to: safeTo });
+      setAiPanelAnchor(safeFrom);
+      setAiPanelMode("instruct");
+      setAiPreviewOriginal("");
+      setAiPreviewEdited("");
+      setAiPreviewRange(null);
+      setAiPreviewOriginalRange(null);
+      setAiStatusMessage("");
+      setAiChatHistory([]);
+      setAiPanelOpen(true);
+    });
+    
     props.onAiEditPhaseChange?.("instruct");
-    refreshInlineWidgets();
-    focusAiPanelInput(true);
+    
+    // Defer refreshInlineWidgets to allow Solid signals to propagate
+    queueMicrotask(() => {
+      refreshInlineWidgets();
+      focusAiPanelInput(true);
+    });
+    
     if (view) {
-      const from = Math.max(0, Math.min(resolvedTarget.from, view.state.doc.length));
-      const to = Math.max(from, Math.min(resolvedTarget.to, view.state.doc.length));
       view.dispatch({
-        selection: EditorSelection.range(from, to),
+        selection: EditorSelection.range(safeFrom, safeTo),
         annotations: [Transaction.addToHistory.of(false)],
       });
     }
@@ -1012,6 +1047,7 @@ export default function SqlEditor(props: SqlEditorProps) {
     const target = aiTargetRange();
     setAiPanelOpen(false);
     setAiTargetRange(null);
+    setAiPanelAnchor(null);
     setAiPanelMode("instruct");
     setAiPreviewOriginal("");
     setAiPreviewEdited("");

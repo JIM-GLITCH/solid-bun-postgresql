@@ -117,6 +117,27 @@ export interface SSEMessage {
   detail?: string;
 }
 
+export interface AccountStateMessage {
+  loggedIn: boolean;
+  user?: { id?: number; email?: string | null };
+}
+
+/**
+ * 传输层统一服务端推送消息：
+ * - connection-event：数据库会话消息（底层可为 SSE / postMessage / IPC）
+ * - account：账号状态变更（如 VSCode 扩展推送登录态）
+ */
+export type ServerPushMessage =
+  | {
+      topic: "connection-event";
+      connectionId: string;
+      event: SSEMessage;
+    }
+  | {
+      topic: "account";
+      account: AccountStateMessage;
+    };
+
 export interface ColumnEditableInfo {
   name: string;
   tableID: number;

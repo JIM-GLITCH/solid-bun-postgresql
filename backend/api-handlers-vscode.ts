@@ -39,6 +39,7 @@ function postRpcError(
       // subscribe-events 无 id：用伪 SSE 推给已注册的 onmessage
       void webview.postMessage({
         type: "sse",
+        connectionId: (e as { connectionId?: string }).connectionId,
         data: { type: "ERROR", message: msg, timestamp: Date.now() },
       });
     }
@@ -76,7 +77,7 @@ export function createVscodeMessageHandler(webview: VscodeWebview, opts?: Vscode
           await assertLicensed();
         }
         const unsub = subscribeSessionEvents(sid, (msg) => {
-          webview.postMessage({ type: "sse", data: msg });
+          webview.postMessage({ type: "sse", connectionId: sid, data: msg });
         });
         eventUnsubscribes.set(sid, unsub);
       } catch (e) {
