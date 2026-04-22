@@ -1,0 +1,8 @@
+# Changelog
+
+## 2026-04-22
+
+- Added `TimestampEditor` for result-grid timestamp cells.
+- Supports visual selection for date, hour/minute, second, microsecond, and timezone offset.
+- Added timezone labels (e.g. `+08:00 Asia/Shanghai`) in the timestamp editor.
+- Integrated context-menu entry to open timestamp editor for `timestamp`/`timestamptz` columns.
