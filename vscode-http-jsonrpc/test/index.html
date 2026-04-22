@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vscode-http-jsonrpc Frontend Demo</title>
+    <style>
+      body { font-family: sans-serif; max-width: 900px; margin: 32px auto; padding: 0 16px; }
+      .row { display: flex; gap: 8px; margin-bottom: 12px; }
+      input { padding: 6px 8px; min-width: 180px; }
+      button { padding: 6px 10px; cursor: pointer; }
+      pre { background: #111; color: #9ef39f; padding: 12px; border-radius: 8px; min-height: 240px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h2>Real Frontend JSON-RPC Demo</h2>
+    <p>This page uses <code>createHttpClientMessageConnection</code> from your library.</p>
+
+    <div class="row">
+      <input id="echoInput" value="hello from browser ts client" />
+      <button id="echoBtn">Send demo/echo</button>
+    </div>
+
+    <div class="row">
+      <input id="aInput" type="number" value="20" />
+      <input id="bInput" type="number" value="22" />
+      <button id="sumBtn">Send demo/sum</button>
+    </div>
+
+    <div class="row">
+      <button id="pingBtn">Send demo/ping notification</button>
+      <button id="clearBtn">Clear log</button>
+    </div>
+
+    <pre id="log"></pre>
+    <script type="module" src="./frontend-client.ts"></script>
+  </body>
+</html>

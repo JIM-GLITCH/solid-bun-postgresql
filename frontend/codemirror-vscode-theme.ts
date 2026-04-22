@@ -78,11 +78,29 @@ export function buildVsCodeCodeMirrorTheme(themeKind: "light" | "dark" | "high-c
       ".cm-cursor, .cm-dropCursor": {
         borderLeftColor: cssVar("--vscode-editorCursor-foreground", isDark ? darkModern.cursor : "#111111"),
       },
-      ".cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection": {
-        backgroundColor: `${isDark ? "rgba(33, 150, 243, 0.4)" : "rgba(33, 150, 243, 0.28)"} !important`,
+      "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
+        backgroundColor: cssVar(
+          "--vscode-editor-selectionBackground",
+          isDark ? "rgba(33, 150, 243, 0.4)" : "rgba(33, 150, 243, 0.28)"
+        ),
       },
-      ".cm-focused .cm-selectionLayer .cm-selectionBackground": {
-        backgroundColor: `${isDark ? "rgba(33, 150, 243, 0.4)" : "rgba(33, 150, 243, 0.28)"} !important`,
+      "& > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
+        backgroundColor: cssVar(
+          "--vscode-editor-inactiveSelectionBackground",
+          isDark ? "rgba(63, 138, 189, 0.24)" : "rgba(33, 150, 243, 0.18)"
+        ),
+      },
+      "&.cm-focused > .cm-scroller > .cm-content ::selection": {
+        backgroundColor: cssVar(
+          "--vscode-editor-selectionBackground",
+          isDark ? "rgba(33, 150, 243, 0.4)" : "rgba(33, 150, 243, 0.28)"
+        ),
+      },
+      "& > .cm-scroller > .cm-content ::selection": {
+        backgroundColor: cssVar(
+          "--vscode-editor-inactiveSelectionBackground",
+          isDark ? "rgba(63, 138, 189, 0.24)" : "rgba(33, 150, 243, 0.18)"
+        ),
       },
       ".cm-activeLine": {
         backgroundColor: cssVar(

@@ -24,4 +24,3 @@ export function setTransport(t: IApiTransport): void {
 }
 
 export { HttpTransport } from "./http-transport";
-export { ElectrobunTransport } from "./electrobun-transport";

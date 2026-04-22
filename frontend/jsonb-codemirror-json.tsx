@@ -1,5 +1,5 @@
 import { Compartment, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
+import { Decoration, EditorView, WidgetType, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { json } from "@codemirror/lang-json";
 import { onCleanup, onMount, createEffect } from "solid-js";
@@ -104,6 +104,7 @@ export default function JsonbCodeMirrorJson(props: JsonbCodeMirrorJsonProps) {
     const extensions: Extension[] = [
       lineNumbers(),
       highlightActiveLine(),
+      drawSelection(),
       history(),
       json(),
       EditorView.lineWrapping,

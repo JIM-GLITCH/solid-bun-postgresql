@@ -104,7 +104,6 @@ export function createApiRoutes(): Record<
             // 不在此断开 DB：SSE 可能因网络/代理短暂断开，断会话会导致误杀。释放连接由前端 pagehide → db/disconnect。
           },
         });
-
         return new Response(stream, {
           headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
         });
