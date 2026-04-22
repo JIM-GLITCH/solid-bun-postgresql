@@ -86,6 +86,13 @@ function cellValueToJsonbInitial(raw: unknown): string | null {
   }
 }
 
+function cellValueToTimestampInitial(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return raw;
+  if (raw instanceof Date) return raw.toISOString();
+  return String(raw);
+}
+
 export default function QueryInterface(props: QueryInterfaceProps = {}) {
   function mysqlDefaultSchemaForConn(cid: string): string | undefined {
     const s = props.mysqlDefaultSchemaFor?.(cid)?.trim();
@@ -95,7 +102,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const dbCaps = createMemo(() => getEffectiveDbCapabilities(props.activeConnectionId?.() ?? null));
 
   const AI_MODEL_PREF_KEY = "dbplayer.ai.model";
-  const { openJsonbEditor, showAlert } = useDialog();
+  const { openJsonbEditor, openTimestampEditor, showAlert } = useDialog();
   const [sql, setSql] = createSignal(`select a.id ,a.name, b.id,b.name from student a left join student b on a.id = b.id `);
   const [result, setResult] = createStore<any[][]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -964,8 +971,24 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       }
       return null;
     }
-    const colNames = tableCols.map((c) => c.columnName!);
-    const values = tableCols.map((c) => formatSqlValueShared(row[c.colIndex], c.dataTypeOid, dialect));
+    // 新增行里“未编辑且为 null/undefined”的单元格按 OMIT 处理，不写入 INSERT，
+    // 让数据库列 DEFAULT 生效。若用户明确编辑后设置为 null，则仍显式写 NULL。
+    const effectiveCols = tableCols.filter((c) => {
+      const cellValue = row[c.colIndex];
+      const touched = !!modifiedCells[rowIndex]?.[c.colIndex];
+      return touched || (cellValue !== null && cellValue !== undefined);
+    });
+    if (effectiveCols.length === 0) {
+      if (dialect === "sqlserver" || dialect === "postgres") {
+        return `INSERT INTO ${firstTable} DEFAULT VALUES`;
+      }
+      if (dialect === "mysql") {
+        return `INSERT INTO ${firstTable} () VALUES ()`;
+      }
+      return null;
+    }
+    const colNames = effectiveCols.map((c) => c.columnName!);
+    const values = effectiveCols.map((c) => formatSqlValueShared(row[c.colIndex], c.dataTypeOid, dialect));
     return `INSERT INTO ${firstTable} (${colNames.join(", ")}) VALUES (${values.join(", ")})`;
   }
 
@@ -1655,6 +1678,10 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                   const oid = colInfo()?.dataTypeOid;
                   return oid === PG_OID.json || oid === PG_OID.jsonb;
                 };
+                const isTimestampColumn = () => {
+                  const oid = colInfo()?.dataTypeOid;
+                  return oid === PG_OID.timestamp || oid === PG_OID.timestamptz;
+                };
                 return (
                   <div
                     ref={(el) => (tableContextMenuRef = el)}
@@ -1730,6 +1757,36 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
                         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
                       >
                         打开 JSON/JSONB 编辑器
+                      </button>
+                    </Show>
+                    <Show when={hasContextCell() && isTimestampColumn()}>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const ri = rowIndex();
+                          const ci = colIndex();
+                          const col = columns()[ci];
+                          const raw = result[ri][ci];
+                          const editable =
+                            dbCaps().resultCellEdit &&
+                            col &&
+                            (col.isEditable ||
+                              (pendingInserts().some((p) => p.rowIndex === ri) && !!col.tableName && !!col.columnName));
+                          openTimestampEditor({
+                            initialValue: cellValueToTimestampInitial(raw),
+                            isReadOnly: !editable,
+                            withTimeZone: col?.dataTypeOid === PG_OID.timestamptz,
+                            onSave: (v) => handleCellSave(ri, ci, v),
+                          });
+                          setTableContextMenu(null);
+                        }}
+                        style={{ display: "block", width: "100%", padding: "6px 12px", border: "none", background: "none", "text-align": "left", cursor: "pointer", "font-size": "inherit", color: vscode.foreground, "font-weight": "500" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = vscode.listHover)}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        打开时间戳编辑器
                       </button>
                     </Show>
                     <Show when={hasContextCell() && isCellEditable()}>

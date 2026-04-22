@@ -116,6 +116,11 @@ export default function EditableCell(props: EditableCellProps) {
     return "transparent";
   };
 
+  const isInsertOmit = () =>
+    !!props.isPendingInsert
+    && !props.isModified
+    && (getValue() === null || getValue() === undefined);
+
   return (
     <td
       data-rowindex={props.rowIndex}
@@ -158,12 +163,14 @@ export default function EditableCell(props: EditableCellProps) {
                   : ""
             }
             style={
-              getValue() === null || getValue() === undefined
+              isInsertOmit()
+                ? { "font-style": "italic", opacity: 0.68, color: vscode.foregroundDim }
+                : (getValue() === null || getValue() === undefined)
                 ? { "font-style": "italic", opacity: 0.5, color: vscode.foregroundDim }
                 : undefined
             }
           >
-            {formatCellDisplay(getValue(), props.dataTypeOid)}
+            {isInsertOmit() ? "OMIT" : formatCellDisplay(getValue(), props.dataTypeOid)}
           </span>
         }
       >

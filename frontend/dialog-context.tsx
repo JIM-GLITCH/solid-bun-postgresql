@@ -5,6 +5,7 @@
 import { createContext, createSignal, useContext, onMount, onCleanup, type JSX } from "solid-js";
 import { vscode, MODAL_Z_DIALOG_OVERLAY } from "./theme";
 import { JSONB_Editor } from "./jsonb-editor";
+import { TimestampEditor } from "./timestamp-editor";
 import RenameTableModal from "./rename-table-modal";
 import { SUBSCRIPTION_REQUIRED_EVENT } from "./subscription/subscription-prompt";
 import { openSubscriptionPortalForCurrentEnvironment } from "./subscription/portal";
@@ -23,11 +24,19 @@ export interface OpenRenameTableOptions {
   onSuccess: (connectionId: string, schema: string) => void;
 }
 
+export interface OpenTimestampEditorOptions {
+  initialValue: string | null;
+  isReadOnly: boolean;
+  withTimeZone: boolean;
+  onSave: (value: string | null) => void;
+}
+
 export interface DialogContextValue {
   showAlert: (message: string, title?: string) => void;
   showConfirm: (message: string, title?: string) => Promise<boolean>;
   showPrompt: (message: string, title?: string, defaultValue?: string) => Promise<string | null>;
   openJsonbEditor: (opts: OpenJsonbEditorOptions) => void;
+  openTimestampEditor: (opts: OpenTimestampEditorOptions) => void;
   openRenameTable: (opts: OpenRenameTableOptions) => void;
 }
 
@@ -48,6 +57,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
   } | null>(null);
 
   const [jsonbEditorState, setJsonbEditorState] = createSignal<OpenJsonbEditorOptions | null>(null);
+  const [timestampEditorState, setTimestampEditorState] = createSignal<OpenTimestampEditorOptions | null>(null);
   const [renameTableState, setRenameTableState] = createSignal<OpenRenameTableOptions | null>(null);
   const [subscriptionRequiredState, setSubscriptionRequiredState] = createSignal<{ message: string } | null>(null);
 
@@ -67,11 +77,19 @@ export function DialogProvider(props: { children: JSX.Element }) {
 
   const openJsonbEditor = (opts: OpenJsonbEditorOptions) => {
     setRenameTableState(null);
+    setTimestampEditorState(null);
     setJsonbEditorState(opts);
+  };
+
+  const openTimestampEditor = (opts: OpenTimestampEditorOptions) => {
+    setRenameTableState(null);
+    setJsonbEditorState(null);
+    setTimestampEditorState(opts);
   };
 
   const openRenameTable = (opts: OpenRenameTableOptions) => {
     setJsonbEditorState(null);
+    setTimestampEditorState(null);
     setRenameTableState(opts);
   };
 
@@ -80,6 +98,7 @@ export function DialogProvider(props: { children: JSX.Element }) {
     showConfirm,
     showPrompt,
     openJsonbEditor,
+    openTimestampEditor,
     openRenameTable,
   };
 
@@ -367,6 +386,19 @@ export function DialogProvider(props: { children: JSX.Element }) {
             st?.onSave(v);
           }}
           onClose={() => setJsonbEditorState(null)}
+        />
+      )}
+      {timestampEditorState() && (
+        <TimestampEditor
+          initialValue={timestampEditorState()!.initialValue}
+          isReadOnly={timestampEditorState()!.isReadOnly}
+          withTimeZone={timestampEditorState()!.withTimeZone}
+          onSave={(v) => {
+            const st = timestampEditorState();
+            setTimestampEditorState(null);
+            st?.onSave(v);
+          }}
+          onClose={() => setTimestampEditorState(null)}
         />
       )}
     </DialogContext.Provider>
