@@ -5,6 +5,7 @@ import { Electroview } from "electrobun/view";
 import type { AppRPCType } from "../shared/src/electrobun-rpc";
 import { setTransport } from "./transport";
 import { ElectrobunTransport, handleBackendEvent } from "./transport/electrobun-transport";
+import type { PostMessageClientMsg } from "./transport/post-message-client-transport";
 import { getBrowserJwt } from "./subscription/browser-token";
 import { render } from "solid-js/web";
 import App from "./app";
@@ -18,11 +19,24 @@ const rpc = Electroview.defineRPC<AppRPCType>({
   },
 });
 const electroview = new Electroview({ rpc });
+const rpcApi = electroview.rpc!;
 
-window.__electrobunApiRequest = (method, payload) =>
-  electroview.rpc.request.api_request({ method, payload, licenseJwt: getBrowserJwt() });
+(window as Window & {
+  __electrobunApiRequest?: (method: string, payload: Record<string, unknown>) => Promise<unknown>;
+}).__electrobunApiRequest = (method, payload) =>
+  rpcApi.request.api_request({ method, payload, licenseJwt: getBrowserJwt() });
 
-setTransport(new ElectrobunTransport());
+setTransport(
+  new ElectrobunTransport({
+    // jsonrpc 会话消息经 api_request("rpc-transport") 上行，下行由 backend_event.rpcMsg 承载
+    post: (m: PostMessageClientMsg) =>
+      rpcApi.request.api_request({
+        method: "rpc-transport",
+        payload: m as unknown as Record<string, unknown>,
+        licenseJwt: getBrowserJwt(),
+      }),
+  })
+);
 
 const root = document.getElementById("root");
 if (root) {

@@ -1,26 +1,26 @@
 /**
- * Standalone 入口：Bun 服务启动，静态资源 + API 路由
- * 后端逻辑在 backend/api-handlers-http（路由）与 api-core（业务）
+ * Standalone 入口：Bun 服务启动，静态资源 + RPC 后端
+ * 后端逻辑在 backend/rpc-server（组装）与 api-core/*-db-handlers（业务）
  */
 
 import { serve } from "bun";
 import index from "../index.html";
-import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
+import { createRpcBackend } from "../backend/rpc-server";
 
-const apiRoutes = createApiRoutes();
+const { app: rpcApp } = createRpcBackend();
 
 const server = serve({
   idleTimeout: 120,
   routes: {
     "/": index,
-    ...apiRoutes,
   },
   async fetch(req) {
     const url = new URL(req.url);
     const pathname = url.pathname;
 
-    if (req.method === "POST" && pathname.startsWith("/api/")) {
-      return handleApiPost(req);
+    // RPC 会话路由：shakehand / buildconnection(SSE) / call
+    if (pathname.startsWith("/rpc/")) {
+      return rpcApp.fetch(req);
     }
 
     if (pathname.startsWith("/chunk-") && pathname.endsWith(".js")) {

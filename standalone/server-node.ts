@@ -1,12 +1,12 @@
 /**
- * Standalone 开发入口：Node + Hono，API + 静态前端
- * 开发模式：Vite (3000) 代理 /api 到此服务 (3101)；前端由 Vite 提供（HMR）
+ * Standalone 开发入口：Node + Hono，RPC 后端 + 静态前端
+ * 开发模式：Vite (3300) 代理 /rpc 到此服务 (3101)；前端由 Vite 提供（HMR）
  * 生产/SEA：静态资源从 out/ 或 sea.getAsset() 读取
- * 开发：bun run dev（concurrently 启动 api:3101 + vite:3000）
+ * 开发：bun run dev（concurrently 启动 api:3101 + vite:3300）
  */
 
 import { Hono } from "hono";
-import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
+import { createRpcBackend } from "../backend/rpc-server";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
@@ -17,18 +17,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = new Hono();
 registerDbPlayerSubscriptionRoutes(app);
-const apiRoutes = createApiRoutes();
 
-// API 路由：GET 逐项注册；POST 统一 `/api/*` → handleApiPost（与 `HttpTransport` 路径规则一致）
-for (const [path, handlers] of Object.entries(apiRoutes)) {
-  if (handlers.GET) {
-    app.get(path, (c) => handlers.GET!(c.req.raw));
-  }
-  if (handlers.POST) {
-    app.post(path, (c) => handlers.POST!(c.req.raw));
-  }
-}
-app.post("/api/*", (c) => handleApiPost(c.req.raw));
+// RPC 后端：/rpc/shakehand、/rpc/buildconnection/:sessionId、/rpc/call/:sessionId
+const { app: rpcApp } = createRpcBackend();
+app.route("/", rpcApp);
 
 function frontendBaseUri() {
   const bundled = __filename.endsWith(".js");
@@ -84,7 +76,7 @@ async function setupStatic() {
   const PORT = Number(process.env.PORT) || (isDev ? 3101 : 3000);
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);
-  if (isDev) console.log(`  → Vite proxies /api to this port`);
+  if (isDev) console.log(`  → Vite proxies /rpc to this port`);
 }
 
 setupStatic();

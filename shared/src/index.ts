@@ -3,6 +3,7 @@
 export * from "./types";
 export * from "./database-capabilities";
 export * from "./transport";
+export * from "./rpc-messages";
 export * from "./format-cell";
 export * from "./sql-split";
 export * from "./sql-format";

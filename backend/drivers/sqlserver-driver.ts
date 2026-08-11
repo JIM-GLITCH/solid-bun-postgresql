@@ -1,28 +1,39 @@
 /**
- * Microsoft SQL Server：node-mssql
+ * SQL Server 驱动：全部 db/* 业务逻辑内化为类方法，纯函数辅助保留为模块函数。
  */
+
 import sql from "mssql";
 import type {
+  ApiRequestPayload,
   ColumnEditableInfo,
-  ConnectDbRequest,
   DatabaseCapabilities,
   DbKind,
   PostgresLoginParams,
-  SSEMessage,
-} from "../shared/src";
-import { getSqlSegments } from "../shared/src";
-import { getSqlServerDbConfig, openSqlServerPool } from "./connect-sqlserver";
-import type { SessionConnection, SqlServerSessionConnection } from "./session-connection";
+} from "../../shared/src";
+import { getSqlSegments } from "../../shared/src";
+import {
+  assertSessionDbType,
+  capabilitiesForKind,
+  connectionMap,
+  disconnectConnection,
+  getSession,
+  sendSSEMessage,
+  startMysqlUserClientKeepalive,
+  stopUserClientKeepalive,
+} from "../session-connection";
+import { getSqlServerDbConfig, openSqlServerPool } from "../connect-sqlserver";
+import type { DbConnectOutcome, DbDriver, DriverContext } from "../driver";
+import type { SqlServerSessionConnection } from "../session-connection";
 import {
   normalizeMssqlJsType,
   runSqlServerQueryWithColumnMetadata,
   type SqlServerColumnMeta,
-} from "./sqlserver-mssql-query";
+} from "../sqlserver-mssql-query";
 import {
   drainSqlServerStreamBatch,
   startSqlServerStreamingQuery,
   teardownSqlServerRowStream,
-} from "./sqlserver-mssql-stream";
+} from "../sqlserver-mssql-stream";
 import {
   sqlServerFetchEstimatedPlanXml,
   sqlServerFetchExplainTextLines,
@@ -30,10 +41,12 @@ import {
   sqlServerFetchSessionMonitor,
   sqlServerGetOwnSpid,
   sqlServerSessionControl,
-} from "./sqlserver-support";
+} from "../sqlserver-support";
 
-function sqlServerSession(getSWithDb: (cid: string) => SessionConnection, cid: string): SqlServerSessionConnection {
-  const s = getSWithDb(cid);
+/** 从 connectionMap 取当前会话并断言为 SQL Server */
+function sqlServerSession(cid: string): SqlServerSessionConnection {
+  const s = getSession(cid);
+  if (!s) throw new Error("未找到数据库连接，请先连接数据库");
   if (s.dbKind !== "sqlserver") throw new Error("内部错误：期望 SQL Server 会话");
   return s;
 }
@@ -389,7 +402,6 @@ async function buildSqlServerGridQueryResult(
   const columns = await enrichSqlServerQueryColumnsEditable(pool, base, columnMeta, browseRows);
   return { rows, columns };
 }
-
 
 function sumRowsAffected(rowsAffected: number[] | undefined): number {
   if (!rowsAffected?.length) return 0;
@@ -916,6 +928,7 @@ function formatMssqlErrorChain(e: unknown): string {
   return parts.length > 0 ? parts.join(" → ") : "未知错误";
 }
 
+/** 被 api-core 的 AI prompt 构建引用——迁入驱动文件继续导出 */
 export async function buildSqlServerSchemaContext(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pool: any,
@@ -976,842 +989,741 @@ export async function buildSqlServerSchemaContext(
   return { context: chunks.join("\n"), injected };
 }
 
-export interface SqlServerDbHandlerContext {
-  connectionMap: Map<string, SessionConnection>;
-  getConnId: () => string;
-  getS: (cid: string) => SessionConnection;
-  getSWithDb: (cid: string) => SessionConnection;
-  sendSSEMessage: (cid: string, msg: SSEMessage) => void;
-  disconnectConnection: (cid: string) => Promise<void>;
-  assertSessionDbType: (session: SessionConnection, dbType: DbKind | undefined) => void;
-  capabilitiesForKind: (kind: DbKind) => DatabaseCapabilities;
-  startSqlServerUserClientKeepalive: (cid: string) => void;
-  stopUserClientKeepalive: (session: SessionConnection) => void;
-}
+export class SqlServerDriver implements DbDriver<SqlServerSessionConnection> {
+  readonly kind = "sqlserver" as const;
+  readonly kinds = ["sqlserver"] as const;
 
-export async function handleSqlServerDbRequest(
-  method: string,
-  payload: unknown,
-  ctx: SqlServerDbHandlerContext
-): Promise<unknown> {
-  const {
-    connectionMap,
-    getConnId,
-    getS,
-    getSWithDb,
-    sendSSEMessage,
-    disconnectConnection,
-    assertSessionDbType,
-    capabilitiesForKind,
-    startSqlServerUserClientKeepalive,
-    stopUserClientKeepalive,
-  } = ctx;
+  async connect(
+    params: ApiRequestPayload["db/connect"],
+    ctx: DriverContext,
+  ): Promise<DbConnectOutcome<SqlServerSessionConnection>> {
+    const { connectionId: cid, dbType: _dbT, ...connectParams } = params;
+    if (params.dbType !== "sqlserver") {
+      throw new Error("内部错误：db/connect 此分支须 dbType=sqlserver");
+    }
+    const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
 
-  const unsupported = () => {
-    throw new Error(`当前 SQL Server 连接尚不支持该操作（${method}），请使用 PostgreSQL / MySQL 或等待后续版本。`);
-  };
-
-  switch (method) {
-    case "db/connect": {
-      const params = payload as ConnectDbRequest;
-      if (params.dbType !== "sqlserver") {
-        throw new Error("内部错误：db/connect 此分支须 dbType=sqlserver");
-      }
-      const { connectionId: cid, dbType, ...connectParams } = params;
-      void dbType;
-      const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
-
-      const existing = connectionMap.get(cid);
-      if (existing) {
-        connectionMap.delete(cid);
-        stopUserClientKeepalive(existing);
-        if (existing.dbKind === "postgres") {
-          await existing.userUsedClient.end().catch(() => {});
-          await existing.backGroundPool.end().catch(() => {});
-        } else if (existing.dbKind === "sqlserver") {
-          const ex = existing as SqlServerSessionConnection;
-          if (ex.sqlServerRowStream) {
-            await teardownSqlServerRowStream(ex.sqlServerRowStream);
-            ex.sqlServerRowStream = undefined;
-          }
-          await existing.userUsedClient.close().catch(() => {});
-        } else {
-          try {
-            existing.userUsedClient.release();
-          } catch {
-            /* ignore */
-          }
-          await existing.backGroundPool.end().catch(() => {});
+    const existing = connectionMap.get(cid);
+    if (existing) {
+      connectionMap.delete(cid);
+      stopUserClientKeepalive(existing);
+      if (existing.dbKind === "postgres") {
+        await existing.userUsedClient.end().catch(() => {});
+        await existing.backGroundPool.end().catch(() => {});
+      } else if (existing.dbKind === "sqlserver") {
+        const ex = existing as SqlServerSessionConnection;
+        if (ex.sqlServerRowStream) {
+          await teardownSqlServerRowStream(ex.sqlServerRowStream);
+          ex.sqlServerRowStream = undefined;
         }
-        await existing.closeTunnel?.().catch(() => {});
-      }
-
-      const db = await getSqlServerDbConfig(loginParams);
-      const pool = await openSqlServerPool(db);
-
-      connectionMap.set(cid, {
-        dbKind: "sqlserver",
-        userUsedClient: pool,
-        backGroundPool: pool,
-        dbForReconnect: db,
-        eventPushers: new Set(),
-        closeTunnel: db.closeTunnel,
-      });
-      startSqlServerUserClientKeepalive(cid);
-      return { success: true, connectionId: cid, dbType: "sqlserver" as const };
-    }
-
-    case "db/disconnect": {
-      const { connectionId: cid, dbType } = payload as { connectionId: string; dbType: DbKind };
-      assertSessionDbType(getS(cid), dbType);
-      await disconnectConnection(cid);
-      return { success: true };
-    }
-
-    case "db/capabilities": {
-      const { connectionId, dbType } = payload as { connectionId: string; dbType: DbKind };
-      const session = getS(connectionId);
-      assertSessionDbType(session, dbType);
-      return { capabilities: capabilitiesForKind(session.dbKind) };
-    }
-
-    case "db/query-stream": {
-      const cid = getConnId();
-      const { query, statements: payloadStatements, batchSize = 100 } = payload as {
-        connectionId: string;
-        query?: string;
-        statements?: string[];
-        batchSize?: number;
-        defaultSchema?: string;
-      };
-      const statements = payloadStatements?.length ? payloadStatements : getStatementsFromSql(query ?? "");
-      if (statements.length === 0) {
-        return { rows: [], columns: [], hasMore: false };
-      }
-
-      const bs = Math.max(1, batchSize ?? 100);
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-
-      if (session.sqlServerRowStream) {
-        await teardownSqlServerRowStream(session.sqlServerRowStream);
-        session.sqlServerRowStream = undefined;
-      }
-
-      const preamble = statements.slice(0, -1);
-      const lastStatement = statements[statements.length - 1]!;
-
-      let h;
-      try {
-        h = await startSqlServerStreamingQuery(pool, {
-          preambleBatches: preamble,
-          selectSql: lastStatement,
-          browseSourceSql: lastStatement,
-          batchSize: bs,
-        });
-      } catch (e: unknown) {
-        throw new Error(formatMssqlErrorChain(e));
-      }
-
-      const base: ColumnEditableInfo[] = h.columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
-      let columns: ColumnEditableInfo[];
-      try {
-        const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, lastStatement);
-        columns = await enrichSqlServerQueryColumnsEditable(pool, base, h.columnMeta, browseRows);
-      } catch (e: unknown) {
-        await teardownSqlServerRowStream(h);
-        throw new Error(formatMssqlErrorChain(e));
-      }
-
-      let rows: unknown[][];
-      let hasMore: boolean;
-      try {
-        ({ rows, hasMore } = await drainSqlServerStreamBatch(h, bs));
-      } catch (e: unknown) {
-        await teardownSqlServerRowStream(h);
-        throw new Error(formatMssqlErrorChain(e));
-      }
-
-      if (hasMore) {
-        session.sqlServerRowStream = h;
+        await existing.userUsedClient.close().catch(() => {});
       } else {
-        await teardownSqlServerRowStream(h);
-      }
-
-      return { rows, columns, hasMore };
-    }
-
-    case "db/query-stream-more": {
-      const cid = getConnId();
-      const { batchSize = 100 } = payload as { connectionId: string; batchSize?: number; defaultSchema?: string };
-      const bs = Math.max(1, batchSize ?? 100);
-      const session = sqlServerSession(getSWithDb, cid);
-      const h = session.sqlServerRowStream;
-      if (!h) {
-        return { rows: [], hasMore: false };
-      }
-      try {
-        const { rows, hasMore } = await drainSqlServerStreamBatch(h, bs);
-        if (!hasMore) {
-          session.sqlServerRowStream = undefined;
-          await teardownSqlServerRowStream(h);
-        }
-        return { rows, hasMore };
-      } catch (e: unknown) {
-        session.sqlServerRowStream = undefined;
-        await teardownSqlServerRowStream(h);
-        throw new Error(formatMssqlErrorChain(e));
-      }
-    }
-
-    case "db/query": {
-      const cid = getConnId();
-      const { query } = payload as { connectionId: string; query: string; defaultSchema?: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      if (session.sqlServerRowStream) {
-        await teardownSqlServerRowStream(session.sqlServerRowStream);
-        session.sqlServerRowStream = undefined;
-      }
-      const pool = session.userUsedClient;
-      try {
-        sendSSEMessage(cid, {
-          type: "QUERY",
-          message: `执行查询: ${query.slice(0, 100)}...`,
-          timestamp: Date.now(),
-        });
-        const { rows, columns } = await buildSqlServerGridQueryResult(pool, query.trim(), undefined, (r) => {
-          session.sqlServerActiveRequest = r ?? undefined;
-        });
-        sendSSEMessage(cid, {
-          type: "INFO",
-          message: `完成: ${rows.length} 行`,
-          timestamp: Date.now(),
-        });
-        return { result: rows, columns };
-      } catch (e: unknown) {
-        const msg = formatMssqlErrorChain(e);
-        sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${msg}`, timestamp: Date.now() });
-        throw new Error(msg);
-      }
-    }
-
-    case "db/cancel-query": {
-      const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const stream = session.sqlServerRowStream;
-      if (stream?.mssqlRequest) {
         try {
-          stream.mssqlRequest.cancel();
+          existing.userUsedClient.release();
         } catch {
           /* ignore */
         }
-        session.sqlServerRowStream = undefined;
-        await teardownSqlServerRowStream(stream);
-        return { success: true, cancelled: true, message: "已请求中断流式查询" };
+        await existing.backGroundPool.end().catch(() => {});
       }
-      const ar = session.sqlServerActiveRequest;
-      if (ar) {
-        try {
-          ar.cancel();
-        } catch {
-          /* ignore */
-        }
-        return { success: true, cancelled: true, message: "已请求中断查询" };
-      }
-      return { success: false, cancelled: false, message: "没有正在执行的查询" };
+      await existing.closeTunnel?.().catch(() => {});
     }
 
-    case "db/explain": {
-      const cid = getConnId();
-      const { query } = payload as { connectionId: string; query: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      sendSSEMessage(cid, { type: "QUERY", message: "获取执行计划 (SHOWPLAN_XML)...", timestamp: Date.now() });
-      const xml = await sqlServerFetchEstimatedPlanXml(session.backGroundPool, query);
-      if (xml.trim()) {
-        sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() });
-        return { plan: [{ Plan: xml, Format: "mssql-showplan-xml" as const }] };
-      }
-      sendSSEMessage(cid, { type: "QUERY", message: "SHOWPLAN_XML 无结果，尝试 SHOWPLAN_ALL 文本...", timestamp: Date.now() });
-      let lines: string[] = [];
-      try {
-        lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
-      } catch {
-        lines = [];
-      }
-      const placeholder = "（无 SHOWPLAN 行；可能仅含 SET 语句或批处理为空）";
-      const text = lines.filter((l) => l.trim() && l.trim() !== placeholder).join("\n").trim();
-      if (text.length > 0) {
-        sendSSEMessage(cid, { type: "INFO", message: "已返回 SHOWPLAN_ALL 文本计划", timestamp: Date.now() });
-        return { plan: [{ Plan: text, Format: "mssql-showplan-all" as const }] };
-      }
-      const stmts = query
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      const useOnly = stmts.length === 1 && /^\s*USE\s/i.test(stmts[0]!);
-      throw new Error(
-        useOnly
-          ? "USE 语句无法生成 SHOWPLAN_XML；请对 SELECT/INSERT/UPDATE/DELETE 等使用解释分析（多语句时用分号分隔，将自动跳过开头的 USE）。"
-          : "未能取得执行计划：SHOWPLAN_XML 与 SHOWPLAN_ALL 均无可用输出。该批处理可能不支持估算计划（如部分 DDL），请改为单条 SELECT 验证。"
-      );
+    const db = await getSqlServerDbConfig(loginParams);
+    const pool = await openSqlServerPool(db);
+
+    const session: SqlServerSessionConnection = {
+      dbKind: "sqlserver",
+      userUsedClient: pool,
+      backGroundPool: pool,
+      dbForReconnect: db,
+      closeTunnel: db.closeTunnel,
+    };
+    connectionMap.set(cid, session);
+    startMysqlUserClientKeepalive(cid);
+    session.rpcPush = (msg) => ctx.push(cid, msg);
+    return { session, result: { success: true, connectionId: cid, dbType: "sqlserver" as const } };
+  }
+
+  async disconnect(
+    session: SqlServerSessionConnection,
+    params: ApiRequestPayload["db/disconnect"],
+  ): Promise<unknown> {
+    assertSessionDbType(session, params.dbType);
+    if (session.sqlServerRowStream) {
+      await teardownSqlServerRowStream(session.sqlServerRowStream);
+      session.sqlServerRowStream = undefined;
     }
+    await disconnectConnection(params.connectionId);
+    return { success: true };
+  }
 
-    case "db/explain-text": {
-      const cid = getConnId();
-      const { query } = payload as { connectionId: string; query: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        const lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
-        return { lines };
-      } catch (e: unknown) {
-        throw new Error(`explain-text: ${formatMssqlErrorChain(e)}`);
-      }
+  capabilities(kind: DbKind): DatabaseCapabilities {
+    return capabilitiesForKind(kind);
+  }
+
+  async query(session: SqlServerSessionConnection, params: ApiRequestPayload["db/query"]): Promise<unknown> {
+    const cid = params.connectionId;
+    if (session.sqlServerRowStream) {
+      await teardownSqlServerRowStream(session.sqlServerRowStream);
+      session.sqlServerRowStream = undefined;
     }
-
-    case "db/partition-info": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        return await sqlServerFetchPartitionInfo(session.backGroundPool, schema, table);
-      } catch (e: unknown) {
-        throw new Error(`partition-info: ${formatMssqlErrorChain(e)}`);
-      }
-    }
-
-    case "db/session-monitor": {
-      const cid = getConnId();
-      const { limit = 20 } = payload as { connectionId: string; limit?: number };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        return await sqlServerFetchSessionMonitor(session.backGroundPool, limit);
-      } catch (e: unknown) {
-        throw new Error(`session-monitor: ${formatMssqlErrorChain(e)}`);
-      }
-    }
-
-    case "db/session-control": {
-      const cid = getConnId();
-      const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
-      const session = sqlServerSession(getSWithDb, cid);
-      const self = await sqlServerGetOwnSpid(session.backGroundPool);
-      if (pid === self) throw new Error("不允许操作当前监控连接自身会话");
-      const ok = await sqlServerSessionControl(session.backGroundPool, pid, action);
-      return { success: ok, pid, action };
-    }
-
-    case "db/save-changes": {
-      const cid = getConnId();
-      const { sql: ddl } = payload as { connectionId: string; sql: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        const result = await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
-        const affected = sumRowsAffected(result.rowsAffected);
-        sendSSEMessage(cid, {
-          type: "INFO",
-          message: `保存成功: ${affected} 行受影响`,
-          timestamp: Date.now(),
-        });
-        return { success: true, rowCount: affected };
-      } catch (e: unknown) {
-        const msg = formatMssqlErrorChain(e);
-        sendSSEMessage(cid, { type: "ERROR", message: `保存失败: ${msg}`, timestamp: Date.now() });
-        throw new Error(msg);
-      }
-    }
-
-    case "db/import-rows": {
-      const cid = getConnId();
-      const {
-        schema,
-        table,
-        columns: colNames,
-        rows,
-        conflictColumns,
-        onConflict,
-        onError = "rollback",
-      } = payload as {
-        connectionId: string;
-        schema: string;
-        table: string;
-        columns: string[];
-        rows: unknown[][];
-        conflictColumns?: string[];
-        onConflict?: "nothing" | "update";
-        onError?: "rollback" | "discard";
-      };
-      if (!colNames?.length || !Array.isArray(rows)) {
-        throw new Error("缺少 columns 或 rows");
-      }
-      if (conflictColumns?.length && !onConflict) {
-        throw new Error("指定 conflictColumns 时必须提供 onConflict（nothing 或 update）");
-      }
-      const useMerge = !!(conflictColumns?.length && onConflict);
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-      const colWidth = Math.max(1, colNames.length);
-      const batchRows = Math.max(1, Math.floor(MSSQL_IMPORT_MAX_PARAMS / colWidth));
-
-      let total = 0;
-      try {
-        if (onError === "rollback") {
-          const tx = new sql.Transaction(pool);
-          await tx.begin();
-          try {
-            for (let i = 0; i < rows.length; i += batchRows) {
-              const chunk = rows.slice(i, i + batchRows);
-              if (useMerge) {
-                total += await sqlServerRunMergeChunk(
-                  pool,
-                  tx,
-                  schema,
-                  table,
-                  colNames,
-                  chunk,
-                  conflictColumns!,
-                  onConflict!
-                );
-              } else {
-                total += await sqlServerRunInsertChunk(pool, tx, schema, table, colNames, chunk);
-              }
-            }
-            await tx.commit();
-          } catch (e) {
-            await tx.rollback().catch(() => {});
-            throw e;
-          }
-        } else {
-          for (let i = 0; i < rows.length; i += batchRows) {
-            const chunk = rows.slice(i, i + batchRows);
-            try {
-              if (useMerge) {
-                total += await sqlServerRunMergeChunk(
-                  pool,
-                  undefined,
-                  schema,
-                  table,
-                  colNames,
-                  chunk,
-                  conflictColumns!,
-                  onConflict!
-                );
-              } else {
-                total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, chunk);
-              }
-            } catch {
-              for (const row of chunk) {
-                try {
-                  if (useMerge) {
-                    total += await sqlServerRunMergeChunk(
-                      pool,
-                      undefined,
-                      schema,
-                      table,
-                      colNames,
-                      [row],
-                      conflictColumns!,
-                      onConflict!
-                    );
-                  } else {
-                    total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, [row]);
-                  }
-                } catch {
-                  /* 丢弃该行 */
-                }
-              }
-            }
-          }
-        }
-      } catch (e: unknown) {
-        const msg = formatMssqlErrorChain(e);
-        sendSSEMessage(cid, { type: "ERROR", message: `导入失败: ${msg}`, timestamp: Date.now() });
-        throw new Error(msg);
-      }
+    const pool = session.userUsedClient;
+    try {
       sendSSEMessage(cid, {
-        type: "INFO",
-        message: `导入成功: ${total} 行`,
+        type: "QUERY",
+        message: `执行查询: ${params.query.slice(0, 100)}...`,
         timestamp: Date.now(),
       });
-      return { success: true, rowCount: total };
+      const { rows, columns } = await buildSqlServerGridQueryResult(pool, params.query.trim(), undefined, (r) => {
+        session.sqlServerActiveRequest = r ?? undefined;
+      });
+      sendSSEMessage(cid, {
+        type: "INFO",
+        message: `完成: ${rows.length} 行`,
+        timestamp: Date.now(),
+      });
+      return { result: rows, columns };
+    } catch (e: unknown) {
+      const msg = formatMssqlErrorChain(e);
+      sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${msg}`, timestamp: Date.now() });
+      throw new Error(msg);
+    }
+  }
+
+  async queryStream(session: SqlServerSessionConnection, params: ApiRequestPayload["db/query-stream"]): Promise<unknown> {
+    const cid = params.connectionId;
+    const { query, statements: payloadStatements, batchSize = 100 } = params;
+    const statements = payloadStatements?.length ? payloadStatements : getStatementsFromSql(query ?? "");
+    if (statements.length === 0) {
+      return { rows: [], columns: [], hasMore: false };
     }
 
-    case "db/execute-ddl": {
-      const cid = getConnId();
-      const { sql: ddl } = payload as { connectionId: string; sql: string };
-      const session = sqlServerSession(getSWithDb, cid);
+    const bs = Math.max(1, batchSize ?? 100);
+    const pool = session.backGroundPool;
+
+    if (session.sqlServerRowStream) {
+      await teardownSqlServerRowStream(session.sqlServerRowStream);
+      session.sqlServerRowStream = undefined;
+    }
+
+    const preamble = statements.slice(0, -1);
+    const lastStatement = statements[statements.length - 1]!;
+
+    let h;
+    try {
+      h = await startSqlServerStreamingQuery(pool, {
+        preambleBatches: preamble,
+        selectSql: lastStatement,
+        browseSourceSql: lastStatement,
+        batchSize: bs,
+      });
+    } catch (e: unknown) {
+      throw new Error(formatMssqlErrorChain(e));
+    }
+
+    const base: ColumnEditableInfo[] = h.columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
+    let columns: ColumnEditableInfo[];
+    try {
+      const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, lastStatement);
+      columns = await enrichSqlServerQueryColumnsEditable(pool, base, h.columnMeta, browseRows);
+    } catch (e: unknown) {
+      await teardownSqlServerRowStream(h);
+      throw new Error(formatMssqlErrorChain(e));
+    }
+
+    let rows: unknown[][];
+    let hasMore: boolean;
+    try {
+      ({ rows, hasMore } = await drainSqlServerStreamBatch(h, bs));
+    } catch (e: unknown) {
+      await teardownSqlServerRowStream(h);
+      throw new Error(formatMssqlErrorChain(e));
+    }
+
+    if (hasMore) {
+      session.sqlServerRowStream = h;
+    } else {
+      await teardownSqlServerRowStream(h);
+    }
+
+    return { rows, columns, hasMore };
+  }
+
+  async queryStreamMore(session: SqlServerSessionConnection, params: ApiRequestPayload["db/query-stream-more"]): Promise<unknown> {
+    const { batchSize = 100 } = params;
+    const bs = Math.max(1, batchSize ?? 100);
+    const h = session.sqlServerRowStream;
+    if (!h) {
+      return { rows: [], hasMore: false };
+    }
+    try {
+      const { rows, hasMore } = await drainSqlServerStreamBatch(h, bs);
+      if (!hasMore) {
+        session.sqlServerRowStream = undefined;
+        await teardownSqlServerRowStream(h);
+      }
+      return { rows, hasMore };
+    } catch (e: unknown) {
+      session.sqlServerRowStream = undefined;
+      await teardownSqlServerRowStream(h);
+      throw new Error(formatMssqlErrorChain(e));
+    }
+  }
+
+  async cancelQuery(session: SqlServerSessionConnection, _params: ApiRequestPayload["db/cancel-query"]): Promise<unknown> {
+    const stream = session.sqlServerRowStream;
+    if (stream?.mssqlRequest) {
       try {
-        sendSSEMessage(cid, {
-          type: "QUERY",
-          message: `执行 DDL: ${ddl.slice(0, 80)}...`,
-          timestamp: Date.now(),
-        });
-        await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
-        sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
-        return { success: true };
-      } catch (e: unknown) {
-        const msg = formatMssqlErrorChain(e);
-        sendSSEMessage(cid, { type: "ERROR", message: `DDL 错误: ${msg}`, timestamp: Date.now() });
-        throw new Error(msg);
+        stream.mssqlRequest.cancel();
+      } catch {
+        /* ignore */
       }
+      session.sqlServerRowStream = undefined;
+      await teardownSqlServerRowStream(stream);
+      return { success: true, cancelled: true, message: "已请求中断流式查询" };
     }
-
-    case "db/schemas": {
-      const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool.request().query(`
-        SELECT SCHEMA_NAME AS schema_name
-        FROM INFORMATION_SCHEMA.SCHEMATA
-        WHERE SCHEMA_NAME NOT IN (
-          N'guest', N'INFORMATION_SCHEMA', N'sys', N'db_owner', N'db_accessadmin',
-          N'db_backupoperator', N'db_datareader', N'db_datawriter', N'db_ddladmin',
-          N'db_denydatareader', N'db_denydatawriter', N'db_securityadmin'
-        )
-        ORDER BY SCHEMA_NAME
-      `);
-      const schemas = ((r.recordset ?? []) as Array<Record<string, unknown>>)
-        .map((row) => String(row.schema_name ?? row.SCHEMA_NAME ?? ""))
-        .filter((name) => name.length > 0);
-      return { schemas };
-    }
-
-    case "db/tables": {
-      const cid = getConnId();
-      const { schema } = payload as { connectionId: string; schema: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .query(`
-          SELECT TABLE_NAME AS table_name, TABLE_TYPE AS table_type
-          FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = @sch
-          ORDER BY TABLE_TYPE, TABLE_NAME
-        `);
-      const tableName = (row: Record<string, unknown>) => String(row.table_name ?? row.TABLE_NAME ?? "");
-      const tableType = (row: Record<string, unknown>) => String(row.table_type ?? row.TABLE_TYPE ?? "");
-      const resultRows = (r.recordset ?? []) as Record<string, unknown>[];
-      return {
-        tables: resultRows.filter((row) => tableType(row) === "BASE TABLE").map((row) => tableName(row)),
-        views: resultRows.filter((row) => tableType(row) === "VIEW").map((row) => tableName(row)),
-        functions: [] as Array<{ oid: number; schema: string; name: string; args: string }>,
-      };
-    }
-
-    case "db/columns": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT
-            col.COLUMN_NAME AS column_name,
-            col.DATA_TYPE AS data_type,
-            col.IS_NULLABLE AS is_nullable,
-            col.COLUMN_DEFAULT AS column_default,
-            col.CHARACTER_MAXIMUM_LENGTH AS character_maximum_length,
-            col.NUMERIC_PRECISION AS numeric_precision,
-            col.NUMERIC_SCALE AS numeric_scale,
-            CAST(NULL AS NVARCHAR(MAX)) AS column_comment,
-            CASE WHEN ic.object_id IS NOT NULL THEN N'ALWAYS' ELSE NULL END AS identity_generation
-          FROM INFORMATION_SCHEMA.COLUMNS col
-          INNER JOIN sys.schemas sch ON sch.name = col.TABLE_SCHEMA
-          INNER JOIN sys.tables st ON st.schema_id = sch.schema_id AND st.name = col.TABLE_NAME
-          LEFT JOIN sys.columns sc ON sc.object_id = st.object_id AND sc.name = col.COLUMN_NAME
-          LEFT JOIN sys.identity_columns ic
-            ON ic.object_id = sc.object_id AND ic.column_id = sc.column_id AND ic.is_identity = 1
-          WHERE col.TABLE_SCHEMA = @sch AND col.TABLE_NAME = @tbl
-          ORDER BY col.ORDINAL_POSITION
-        `);
-      return { columns: r.recordset ?? [] };
-    }
-
-    case "db/indexes": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT
-            i.name AS index_name,
-            i.type_desc AS index_type,
-            i.is_unique AS is_unique,
-            i.is_primary_key AS is_primary,
-            c.name AS column_name,
-            ic.key_ordinal AS key_ordinal
-          FROM sys.indexes i
-          INNER JOIN sys.tables t ON i.object_id = t.object_id
-          INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-          INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
-          INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-          WHERE s.name = @sch AND t.name = @tbl AND i.type > 0
-          ORDER BY i.name, ic.key_ordinal
-        `);
-      const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
-      return { indexes: aggregateIndexRows(rows) };
-    }
-
-    case "db/primary-keys": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT kc.name AS constraint_name, c.name AS column_name, ic.key_ordinal AS key_ordinal
-          FROM sys.key_constraints kc
-          INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
-          INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-          INNER JOIN sys.index_columns ic ON ic.object_id = t.object_id AND ic.index_id = kc.unique_index_id
-          INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
-          WHERE kc.type = N'PK' AND s.name = @sch AND t.name = @tbl
-          ORDER BY ic.key_ordinal
-        `);
-      const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
-      const columns = rows
-        .slice()
-        .sort((a, b) => (Number(a.key_ordinal) || 0) - (Number(b.key_ordinal) || 0))
-        .map((x) => String(x.column_name ?? ""));
-      const constraintName =
-        rows.length > 0 ? String(rows[0]?.constraint_name ?? rows[0]?.CONSTRAINT_NAME ?? "") : "";
-      return {
-        columns,
-        ...(constraintName ? { constraintName } : {}),
-      };
-    }
-
-    case "db/foreign-keys": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-      const outR = await pool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT fk.name AS constraint_name,
-            scol.name AS source_column,
-            ref_s.name AS target_schema,
-            ref_t.name AS target_table,
-            rcol.name AS target_column,
-            fk.delete_referential_action_desc AS delete_rule,
-            fk.update_referential_action_desc AS update_rule
-          FROM sys.foreign_keys fk
-          INNER JOIN sys.tables st ON fk.parent_object_id = st.object_id
-          INNER JOIN sys.schemas ss ON st.schema_id = ss.schema_id
-          INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
-          INNER JOIN sys.columns scol ON fkc.parent_object_id = scol.object_id AND fkc.parent_column_id = scol.column_id
-          INNER JOIN sys.tables ref_t ON fk.referenced_object_id = ref_t.object_id
-          INNER JOIN sys.schemas ref_s ON ref_t.schema_id = ref_s.schema_id
-          INNER JOIN sys.columns rcol ON fkc.referenced_object_id = rcol.object_id AND fkc.referenced_column_id = rcol.column_id
-          WHERE ss.name = @sch AND st.name = @tbl
-        `);
-      const inR = await pool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT fk.name AS constraint_name,
-            src_s.name AS source_schema,
-            src_t.name AS source_table,
-            scol.name AS source_column,
-            ref_s.name AS target_schema,
-            ref_t.name AS target_table,
-            rcol.name AS target_column
-          FROM sys.foreign_keys fk
-          INNER JOIN sys.tables ref_t ON fk.referenced_object_id = ref_t.object_id
-          INNER JOIN sys.schemas ref_s ON ref_t.schema_id = ref_s.schema_id
-          INNER JOIN sys.tables src_t ON fk.parent_object_id = src_t.object_id
-          INNER JOIN sys.schemas src_s ON src_t.schema_id = src_s.schema_id
-          INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
-          INNER JOIN sys.columns scol ON fkc.parent_object_id = scol.object_id AND fkc.parent_column_id = scol.column_id
-          INNER JOIN sys.columns rcol ON fkc.referenced_object_id = rcol.object_id AND fkc.referenced_column_id = rcol.column_id
-          WHERE ref_s.name = @sch AND ref_t.name = @tbl
-        `);
-      const mapOut = (r: Record<string, unknown>) => ({
-        constraint_name: r.constraint_name ?? r.CONSTRAINT_NAME ?? null,
-        source_column: r.source_column ?? r.SOURCE_COLUMN ?? null,
-        target_schema: r.target_schema ?? r.TARGET_SCHEMA ?? null,
-        target_table: r.target_table ?? r.TARGET_TABLE ?? null,
-        target_column: r.target_column ?? r.TARGET_COLUMN ?? null,
-        delete_rule: r.delete_rule ?? r.DELETE_RULE ?? null,
-        update_rule: r.update_rule ?? r.UPDATE_RULE ?? null,
-        source_schema: null,
-        source_table: null,
-      });
-      const mapIn = (r: Record<string, unknown>) => ({
-        constraint_name: r.constraint_name ?? r.CONSTRAINT_NAME ?? null,
-        source_schema: r.source_schema ?? r.SOURCE_SCHEMA ?? null,
-        source_table: r.source_table ?? r.SOURCE_TABLE ?? null,
-        source_column: r.source_column ?? r.SOURCE_COLUMN ?? null,
-        target_schema: r.target_schema ?? r.TARGET_SCHEMA ?? null,
-        target_table: r.target_table ?? r.TARGET_TABLE ?? null,
-        target_column: r.target_column ?? r.TARGET_COLUMN ?? null,
-        delete_rule: null,
-        update_rule: null,
-      });
-      return {
-        outgoing: ((outR.recordset ?? []) as Record<string, unknown>[]).map(mapOut),
-        incoming: ((inR.recordset ?? []) as Record<string, unknown>[]).map(mapIn),
-      };
-    }
-
-    case "db/unique-constraints": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT tc.CONSTRAINT_NAME AS constraint_name, tc.CONSTRAINT_TYPE AS constraint_type,
-            kcu.COLUMN_NAME AS column_name, kcu.ORDINAL_POSITION AS ordinal_position
-          FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
-          INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
-            ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
-           AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
-           AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
-           AND tc.TABLE_NAME = kcu.TABLE_NAME
-          WHERE tc.TABLE_SCHEMA = @sch AND tc.TABLE_NAME = @tbl
-            AND tc.CONSTRAINT_TYPE IN (N'UNIQUE', N'PRIMARY KEY')
-          ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
-        `);
-      const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
-      const constraints = aggregateConstraintColumns(
-        rows.map((row) => ({
-          name: row.constraint_name ?? row.CONSTRAINT_NAME,
-          type: row.constraint_type ?? row.CONSTRAINT_TYPE,
-          column_name: row.column_name ?? row.COLUMN_NAME,
-          ordinal_position: row.ordinal_position ?? row.ORDINAL_POSITION,
-        })),
-        "name",
-        "type",
-        "column_name",
-        "ordinal_position"
-      ).map((c) => ({ name: c.name, type: c.type, columns: c.columns }));
-      return { constraints };
-    }
-
-    case "db/check-constraints": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT cc.name AS name, cc.definition AS expression
-          FROM sys.check_constraints cc
-          INNER JOIN sys.tables t ON cc.parent_object_id = t.object_id
-          INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-          WHERE s.name = @sch AND t.name = @tbl
-        `);
-      const constraints = ((r.recordset ?? []) as Array<Record<string, unknown>>).map((row) => ({
-        name: String(row.name ?? row.NAME ?? ""),
-        expression: String(row.expression ?? row.EXPRESSION ?? ""),
-      }));
-      return { constraints };
-    }
-
-    case "db/table-comment": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT CAST(ep.value AS NVARCHAR(MAX)) AS comment
-          FROM sys.tables t
-          INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
-          LEFT JOIN sys.extended_properties ep
-            ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.class = 1 AND ep.name = N'MS_Description'
-          WHERE s.name = @sch AND t.name = @tbl
-        `);
-      const row = (r.recordset ?? [])[0] as Record<string, unknown> | undefined;
-      const raw = row ? String(row.comment ?? row.COMMENT ?? "") : "";
-      return { comment: raw.trim() ? raw : null };
-    }
-
-    case "db/data-types": {
-      const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool.request().query(`
-        SELECT name FROM sys.types WHERE is_user_defined = 0 AND name NOT IN (N'sysname') ORDER BY name
-      `);
-      const fromSys = ((r.recordset ?? []) as Array<Record<string, unknown>>).map((x) =>
-        String(x.name ?? x.NAME ?? "")
-      ).filter(Boolean);
-      return { types: [...new Set(fromSys)].sort((a, b) => a.localeCompare(b)) };
-    }
-
-    case "db/table-ddl": {
-      const cid = getConnId();
-      const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-
-      const meta = await pool
-        .request()
-        .input("sch", sql.NVarChar, schema)
-        .input("tbl", sql.NVarChar, table)
-        .query(`
-          SELECT TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = @sch AND TABLE_NAME = @tbl
-        `);
-      if (!(meta.recordset?.length)) {
-        throw new Error(`表或视图 ${schema}.${table} 不存在`);
+    const ar = session.sqlServerActiveRequest;
+    if (ar) {
+      try {
+        ar.cancel();
+      } catch {
+        /* ignore */
       }
-      const tableType = String((meta.recordset[0] as Record<string, unknown>).TABLE_TYPE ?? "")
-        .trim()
-        .toUpperCase();
+      return { success: true, cancelled: true, message: "已请求中断查询" };
+    }
+    return { success: false, cancelled: false, message: "没有正在执行的查询" };
+  }
 
-      if (tableType === "VIEW") {
-        const defR = await pool
+  async saveChanges(session: SqlServerSessionConnection, params: ApiRequestPayload["db/save-changes"]): Promise<unknown> {
+    const cid = params.connectionId;
+    const { sql: ddl } = params;
+    try {
+      const result = await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
+      const affected = sumRowsAffected(result.rowsAffected);
+      sendSSEMessage(cid, {
+        type: "INFO",
+        message: `保存成功: ${affected} 行受影响`,
+        timestamp: Date.now(),
+      });
+      return { success: true, rowCount: affected };
+    } catch (e: unknown) {
+      const msg = formatMssqlErrorChain(e);
+      sendSSEMessage(cid, { type: "ERROR", message: `保存失败: ${msg}`, timestamp: Date.now() });
+      throw new Error(msg);
+    }
+  }
+
+  async importRows(session: SqlServerSessionConnection, params: ApiRequestPayload["db/import-rows"]): Promise<unknown> {
+    const cid = params.connectionId;
+    const {
+      schema,
+      table,
+      columns: colNames,
+      rows,
+      conflictColumns,
+      onConflict,
+      onError = "rollback",
+    } = params;
+    if (!colNames?.length || !Array.isArray(rows)) {
+      throw new Error("缺少 columns 或 rows");
+    }
+    if (conflictColumns?.length && !onConflict) {
+      throw new Error("指定 conflictColumns 时必须提供 onConflict（nothing 或 update）");
+    }
+    const useMerge = !!(conflictColumns?.length && onConflict);
+    const pool = session.backGroundPool;
+    const colWidth = Math.max(1, colNames.length);
+    const batchRows = Math.max(1, Math.floor(MSSQL_IMPORT_MAX_PARAMS / colWidth));
+
+    let total = 0;
+    try {
+      if (onError === "rollback") {
+        const tx = new sql.Transaction(pool);
+        await tx.begin();
+        try {
+          for (let i = 0; i < rows.length; i += batchRows) {
+            const chunk = rows.slice(i, i + batchRows);
+            if (useMerge) {
+              total += await sqlServerRunMergeChunk(
+                pool, tx, schema, table, colNames, chunk, conflictColumns!, onConflict!
+              );
+            } else {
+              total += await sqlServerRunInsertChunk(pool, tx, schema, table, colNames, chunk);
+            }
+          }
+          await tx.commit();
+        } catch (e) {
+          await tx.rollback().catch(() => {});
+          throw e;
+        }
+      } else {
+        for (let i = 0; i < rows.length; i += batchRows) {
+          const chunk = rows.slice(i, i + batchRows);
+          try {
+            if (useMerge) {
+              total += await sqlServerRunMergeChunk(
+                pool, undefined, schema, table, colNames, chunk, conflictColumns!, onConflict!
+              );
+            } else {
+              total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, chunk);
+            }
+          } catch {
+            for (const row of chunk) {
+              try {
+                if (useMerge) {
+                  total += await sqlServerRunMergeChunk(
+                    pool, undefined, schema, table, colNames, [row], conflictColumns!, onConflict!
+                  );
+                } else {
+                  total += await sqlServerRunInsertChunk(pool, undefined, schema, table, colNames, [row]);
+                }
+              } catch {
+                /* 丢弃该行 */
+              }
+            }
+          }
+        }
+      }
+    } catch (e: unknown) {
+      const msg = formatMssqlErrorChain(e);
+      sendSSEMessage(cid, { type: "ERROR", message: `导入失败: ${msg}`, timestamp: Date.now() });
+      throw new Error(msg);
+    }
+    sendSSEMessage(cid, {
+      type: "INFO",
+      message: `导入成功: ${total} 行`,
+      timestamp: Date.now(),
+    });
+    return { success: true, rowCount: total };
+  }
+
+  async explain(session: SqlServerSessionConnection, params: ApiRequestPayload["db/explain"]): Promise<unknown> {
+    const cid = params.connectionId;
+    const { query } = params;
+    sendSSEMessage(cid, { type: "QUERY", message: "获取执行计划 (SHOWPLAN_XML)...", timestamp: Date.now() });
+    const xml = await sqlServerFetchEstimatedPlanXml(session.backGroundPool, query);
+    if (xml.trim()) {
+      sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() });
+      return { plan: [{ Plan: xml, Format: "mssql-showplan-xml" as const }] };
+    }
+    sendSSEMessage(cid, { type: "QUERY", message: "SHOWPLAN_XML 无结果，尝试 SHOWPLAN_ALL 文本...", timestamp: Date.now() });
+    let lines: string[] = [];
+    try {
+      lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+    } catch {
+      lines = [];
+    }
+    const placeholder = "（无 SHOWPLAN 行；可能仅含 SET 语句或批处理为空）";
+    const text = lines.filter((l) => l.trim() && l.trim() !== placeholder).join("\n").trim();
+    if (text.length > 0) {
+      sendSSEMessage(cid, { type: "INFO", message: "已返回 SHOWPLAN_ALL 文本计划", timestamp: Date.now() });
+      return { plan: [{ Plan: text, Format: "mssql-showplan-all" as const }] };
+    }
+    const stmts = query
+      .split(";")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const useOnly = stmts.length === 1 && /^\s*USE\s/i.test(stmts[0]!);
+    throw new Error(
+      useOnly
+        ? "USE 语句无法生成 SHOWPLAN_XML；请对 SELECT/INSERT/UPDATE/DELETE 等使用解释分析（多语句时用分号分隔，将自动跳过开头的 USE）。"
+        : "未能取得执行计划：SHOWPLAN_XML 与 SHOWPLAN_ALL 均无可用输出。该批处理可能不支持估算计划（如部分 DDL），请改为单条 SELECT 验证。"
+    );
+  }
+
+  async explainText(session: SqlServerSessionConnection, params: ApiRequestPayload["db/explain-text"]): Promise<unknown> {
+    const { query } = params;
+    try {
+      const lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+      return { lines };
+    } catch (e: unknown) {
+      throw new Error(`explain-text: ${formatMssqlErrorChain(e)}`);
+    }
+  }
+
+  async getSchemas(session: SqlServerSessionConnection, _params: ApiRequestPayload["db/schemas"]): Promise<unknown> {
+    const r = await session.backGroundPool.request().query(`
+      SELECT SCHEMA_NAME AS schema_name
+      FROM INFORMATION_SCHEMA.SCHEMATA
+      WHERE SCHEMA_NAME NOT IN (
+        N'guest', N'INFORMATION_SCHEMA', N'sys', N'db_owner', N'db_accessadmin',
+        N'db_backupoperator', N'db_datareader', N'db_datawriter', N'db_ddladmin',
+        N'db_denydatareader', N'db_denydatawriter', N'db_securityadmin'
+      )
+      ORDER BY SCHEMA_NAME
+    `);
+    const schemas = ((r.recordset ?? []) as Array<Record<string, unknown>>)
+      .map((row) => String(row.schema_name ?? row.SCHEMA_NAME ?? ""))
+      .filter((name) => name.length > 0);
+    return { schemas };
+  }
+
+  async getTables(session: SqlServerSessionConnection, params: ApiRequestPayload["db/tables"]): Promise<unknown> {
+    const { schema } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .query(`
+        SELECT TABLE_NAME AS table_name, TABLE_TYPE AS table_type
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = @sch
+        ORDER BY TABLE_TYPE, TABLE_NAME
+      `);
+    const tableName = (row: Record<string, unknown>) => String(row.table_name ?? row.TABLE_NAME ?? "");
+    const tableType = (row: Record<string, unknown>) => String(row.table_type ?? row.TABLE_TYPE ?? "");
+    const resultRows = (r.recordset ?? []) as Record<string, unknown>[];
+    return {
+      tables: resultRows.filter((row) => tableType(row) === "BASE TABLE").map((row) => tableName(row)),
+      views: resultRows.filter((row) => tableType(row) === "VIEW").map((row) => tableName(row)),
+      functions: [] as Array<{ oid: number; schema: string; name: string; args: string }>,
+    };
+  }
+
+  async getColumns(session: SqlServerSessionConnection, params: ApiRequestPayload["db/columns"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT
+          col.COLUMN_NAME AS column_name,
+          col.DATA_TYPE AS data_type,
+          col.IS_NULLABLE AS is_nullable,
+          col.COLUMN_DEFAULT AS column_default,
+          col.CHARACTER_MAXIMUM_LENGTH AS character_maximum_length,
+          col.NUMERIC_PRECISION AS numeric_precision,
+          col.NUMERIC_SCALE AS numeric_scale,
+          CAST(NULL AS NVARCHAR(MAX)) AS column_comment,
+          CASE WHEN ic.object_id IS NOT NULL THEN N'ALWAYS' ELSE NULL END AS identity_generation
+        FROM INFORMATION_SCHEMA.COLUMNS col
+        INNER JOIN sys.schemas sch ON sch.name = col.TABLE_SCHEMA
+        INNER JOIN sys.tables st ON st.schema_id = sch.schema_id AND st.name = col.TABLE_NAME
+        LEFT JOIN sys.columns sc ON sc.object_id = st.object_id AND sc.name = col.COLUMN_NAME
+        LEFT JOIN sys.identity_columns ic
+          ON ic.object_id = sc.object_id AND ic.column_id = sc.column_id AND ic.is_identity = 1
+        WHERE col.TABLE_SCHEMA = @sch AND col.TABLE_NAME = @tbl
+        ORDER BY col.ORDINAL_POSITION
+      `);
+    return { columns: r.recordset ?? [] };
+  }
+
+  async getIndexes(session: SqlServerSessionConnection, params: ApiRequestPayload["db/indexes"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT
+          i.name AS index_name,
+          i.type_desc AS index_type,
+          i.is_unique AS is_unique,
+          i.is_primary_key AS is_primary,
+          c.name AS column_name,
+          ic.key_ordinal AS key_ordinal
+        FROM sys.indexes i
+        INNER JOIN sys.tables t ON i.object_id = t.object_id
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE s.name = @sch AND t.name = @tbl AND i.type > 0
+        ORDER BY i.name, ic.key_ordinal
+      `);
+    const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
+    return { indexes: aggregateIndexRows(rows) };
+  }
+
+  async getPrimaryKeys(session: SqlServerSessionConnection, params: ApiRequestPayload["db/primary-keys"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT kc.name AS constraint_name, c.name AS column_name, ic.key_ordinal AS key_ordinal
+        FROM sys.key_constraints kc
+        INNER JOIN sys.tables t ON kc.parent_object_id = t.object_id
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        INNER JOIN sys.index_columns ic ON ic.object_id = t.object_id AND ic.index_id = kc.unique_index_id
+        INNER JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+        WHERE kc.type = N'PK' AND s.name = @sch AND t.name = @tbl
+        ORDER BY ic.key_ordinal
+      `);
+    const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
+    const columns = rows
+      .slice()
+      .sort((a, b) => (Number(a.key_ordinal) || 0) - (Number(b.key_ordinal) || 0))
+      .map((x) => String(x.column_name ?? ""));
+    const constraintName =
+      rows.length > 0 ? String(rows[0]?.constraint_name ?? rows[0]?.CONSTRAINT_NAME ?? "") : "";
+    return {
+      columns,
+      ...(constraintName ? { constraintName } : {}),
+    };
+  }
+
+  async getUniqueConstraints(session: SqlServerSessionConnection, params: ApiRequestPayload["db/unique-constraints"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT tc.CONSTRAINT_NAME AS constraint_name, tc.CONSTRAINT_TYPE AS constraint_type,
+          kcu.COLUMN_NAME AS column_name, kcu.ORDINAL_POSITION AS ordinal_position
+        FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+          ON tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+         AND tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+         AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+         AND tc.TABLE_NAME = kcu.TABLE_NAME
+        WHERE tc.TABLE_SCHEMA = @sch AND tc.TABLE_NAME = @tbl
+          AND tc.CONSTRAINT_TYPE IN (N'UNIQUE', N'PRIMARY KEY')
+        ORDER BY tc.CONSTRAINT_NAME, kcu.ORDINAL_POSITION
+      `);
+    const rows = (r.recordset ?? []) as Array<Record<string, unknown>>;
+    const constraints = aggregateConstraintColumns(
+      rows.map((row) => ({
+        name: row.constraint_name ?? row.CONSTRAINT_NAME,
+        type: row.constraint_type ?? row.CONSTRAINT_TYPE,
+        column_name: row.column_name ?? row.COLUMN_NAME,
+        ordinal_position: row.ordinal_position ?? row.ORDINAL_POSITION,
+      })),
+      "name",
+      "type",
+      "column_name",
+      "ordinal_position"
+    ).map((c) => ({ name: c.name, type: c.type, columns: c.columns }));
+    return { constraints };
+  }
+
+  async getCheckConstraints(session: SqlServerSessionConnection, params: ApiRequestPayload["db/check-constraints"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT cc.name AS name, cc.definition AS expression
+        FROM sys.check_constraints cc
+        INNER JOIN sys.tables t ON cc.parent_object_id = t.object_id
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        WHERE s.name = @sch AND t.name = @tbl
+      `);
+    const constraints = ((r.recordset ?? []) as Array<Record<string, unknown>>).map((row) => ({
+      name: String(row.name ?? row.NAME ?? ""),
+      expression: String(row.expression ?? row.EXPRESSION ?? ""),
+    }));
+    return { constraints };
+  }
+
+  async getForeignKeys(session: SqlServerSessionConnection, params: ApiRequestPayload["db/foreign-keys"]): Promise<unknown> {
+    const { schema, table } = params;
+    const pool = session.backGroundPool;
+    const outR = await pool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT fk.name AS constraint_name,
+          scol.name AS source_column,
+          ref_s.name AS target_schema,
+          ref_t.name AS target_table,
+          rcol.name AS target_column,
+          fk.delete_referential_action_desc AS delete_rule,
+          fk.update_referential_action_desc AS update_rule
+        FROM sys.foreign_keys fk
+        INNER JOIN sys.tables st ON fk.parent_object_id = st.object_id
+        INNER JOIN sys.schemas ss ON st.schema_id = ss.schema_id
+        INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        INNER JOIN sys.columns scol ON fkc.parent_object_id = scol.object_id AND fkc.parent_column_id = scol.column_id
+        INNER JOIN sys.tables ref_t ON fk.referenced_object_id = ref_t.object_id
+        INNER JOIN sys.schemas ref_s ON ref_t.schema_id = ref_s.schema_id
+        INNER JOIN sys.columns rcol ON fkc.referenced_object_id = rcol.object_id AND fkc.referenced_column_id = rcol.column_id
+        WHERE ss.name = @sch AND st.name = @tbl
+      `);
+    const inR = await pool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT fk.name AS constraint_name,
+          src_s.name AS source_schema,
+          src_t.name AS source_table,
+          scol.name AS source_column,
+          ref_s.name AS target_schema,
+          ref_t.name AS target_table,
+          rcol.name AS target_column
+        FROM sys.foreign_keys fk
+        INNER JOIN sys.tables ref_t ON fk.referenced_object_id = ref_t.object_id
+        INNER JOIN sys.schemas ref_s ON ref_t.schema_id = ref_s.schema_id
+        INNER JOIN sys.tables src_t ON fk.parent_object_id = src_t.object_id
+        INNER JOIN sys.schemas src_s ON src_t.schema_id = src_s.schema_id
+        INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        INNER JOIN sys.columns scol ON fkc.parent_object_id = scol.object_id AND fkc.parent_column_id = scol.column_id
+        INNER JOIN sys.columns rcol ON fkc.referenced_object_id = rcol.object_id AND fkc.referenced_column_id = rcol.column_id
+        WHERE ref_s.name = @sch AND ref_t.name = @tbl
+      `);
+    const mapOut = (r: Record<string, unknown>) => ({
+      constraint_name: r.constraint_name ?? r.CONSTRAINT_NAME ?? null,
+      source_column: r.source_column ?? r.SOURCE_COLUMN ?? null,
+      target_schema: r.target_schema ?? r.TARGET_SCHEMA ?? null,
+      target_table: r.target_table ?? r.TARGET_TABLE ?? null,
+      target_column: r.target_column ?? r.TARGET_COLUMN ?? null,
+      delete_rule: r.delete_rule ?? r.DELETE_RULE ?? null,
+      update_rule: r.update_rule ?? r.UPDATE_RULE ?? null,
+      source_schema: null,
+      source_table: null,
+    });
+    const mapIn = (r: Record<string, unknown>) => ({
+      constraint_name: r.constraint_name ?? r.CONSTRAINT_NAME ?? null,
+      source_schema: r.source_schema ?? r.SOURCE_SCHEMA ?? null,
+      source_table: r.source_table ?? r.SOURCE_TABLE ?? null,
+      source_column: r.source_column ?? r.SOURCE_COLUMN ?? null,
+      target_schema: r.target_schema ?? r.TARGET_SCHEMA ?? null,
+      target_table: r.target_table ?? r.TARGET_TABLE ?? null,
+      target_column: r.target_column ?? r.TARGET_COLUMN ?? null,
+      delete_rule: null,
+      update_rule: null,
+    });
+    return {
+      outgoing: ((outR.recordset ?? []) as Record<string, unknown>[]).map(mapOut),
+      incoming: ((inR.recordset ?? []) as Record<string, unknown>[]).map(mapIn),
+    };
+  }
+
+  async getTableComment(session: SqlServerSessionConnection, params: ApiRequestPayload["db/table-comment"]): Promise<unknown> {
+    const { schema, table } = params;
+    const r = await session.backGroundPool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT CAST(ep.value AS NVARCHAR(MAX)) AS comment
+        FROM sys.tables t
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        LEFT JOIN sys.extended_properties ep
+          ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.class = 1 AND ep.name = N'MS_Description'
+        WHERE s.name = @sch AND t.name = @tbl
+      `);
+    const row = (r.recordset ?? [])[0] as Record<string, unknown> | undefined;
+    const raw = row ? String(row.comment ?? row.COMMENT ?? "") : "";
+    return { comment: raw.trim() ? raw : null };
+  }
+
+  async getDataTypes(session: SqlServerSessionConnection, _params: ApiRequestPayload["db/data-types"]): Promise<unknown> {
+    const r = await session.backGroundPool.request().query(`
+      SELECT name FROM sys.types WHERE is_user_defined = 0 AND name NOT IN (N'sysname') ORDER BY name
+    `);
+    const fromSys = ((r.recordset ?? []) as Array<Record<string, unknown>>).map((x) =>
+      String(x.name ?? x.NAME ?? "")
+    ).filter(Boolean);
+    return { types: [...new Set(fromSys)].sort((a, b) => a.localeCompare(b)) };
+  }
+
+  async getPartitionInfo(session: SqlServerSessionConnection, params: ApiRequestPayload["db/partition-info"]): Promise<unknown> {
+    const { schema, table } = params;
+    try {
+      return await sqlServerFetchPartitionInfo(session.backGroundPool, schema, table);
+    } catch (e: unknown) {
+      throw new Error(`partition-info: ${formatMssqlErrorChain(e)}`);
+    }
+  }
+
+  async executeDdl(session: SqlServerSessionConnection, params: ApiRequestPayload["db/execute-ddl"]): Promise<unknown> {
+    const cid = params.connectionId;
+    const { sql: ddl } = params;
+    try {
+      sendSSEMessage(cid, {
+        type: "QUERY",
+        message: `执行 DDL: ${ddl.slice(0, 80)}...`,
+        timestamp: Date.now(),
+      });
+      await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
+      sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
+      return { success: true };
+    } catch (e: unknown) {
+      const msg = formatMssqlErrorChain(e);
+      sendSSEMessage(cid, { type: "ERROR", message: `DDL 错误: ${msg}`, timestamp: Date.now() });
+      throw new Error(msg);
+    }
+  }
+
+  async getTableDdl(session: SqlServerSessionConnection, params: ApiRequestPayload["db/table-ddl"]): Promise<unknown> {
+    const { schema, table } = params;
+    const pool = session.backGroundPool;
+
+    const meta = await pool
+      .request()
+      .input("sch", sql.NVarChar, schema)
+      .input("tbl", sql.NVarChar, table)
+      .query(`
+        SELECT TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = @sch AND TABLE_NAME = @tbl
+      `);
+    if (!(meta.recordset?.length)) {
+      throw new Error(`表或视图 ${schema}.${table} 不存在`);
+    }
+    const tableType = String((meta.recordset[0] as Record<string, unknown>).TABLE_TYPE ?? "")
+      .trim()
+      .toUpperCase();
+
+    if (tableType === "VIEW") {
+      const defR = await pool
+        .request()
+        .input("sch", sql.NVarChar, schema)
+        .input("tbl", sql.NVarChar, table)
+        .query(`
+          SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl))) AS def
+        `);
+      let def = String((defR.recordset?.[0] as Record<string, unknown> | undefined)?.def ?? "").trim();
+      if (!def) {
+        const modR = await pool
           .request()
           .input("sch", sql.NVarChar, schema)
           .input("tbl", sql.NVarChar, table)
           .query(`
-            SELECT OBJECT_DEFINITION(OBJECT_ID(QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl))) AS def
+            SELECT sm.definition AS def
+            FROM sys.sql_modules sm
+            WHERE sm.object_id = OBJECT_ID(QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl))
           `);
-        let def = String((defR.recordset?.[0] as Record<string, unknown> | undefined)?.def ?? "").trim();
-        if (!def) {
-          const modR = await pool
-            .request()
-            .input("sch", sql.NVarChar, schema)
-            .input("tbl", sql.NVarChar, table)
-            .query(`
-              SELECT sm.definition AS def
-              FROM sys.sql_modules sm
-              WHERE sm.object_id = OBJECT_ID(QUOTENAME(@sch) + N'.' + QUOTENAME(@tbl))
-            `);
-          def = String((modR.recordset?.[0] as Record<string, unknown> | undefined)?.def ?? "").trim();
-        }
-        return { ddl: def || "-- 无法读取视图定义（权限不足或非 T-SQL 视图）" };
+        def = String((modR.recordset?.[0] as Record<string, unknown> | undefined)?.def ?? "").trim();
       }
-
-      if (tableType !== "BASE TABLE") {
-        throw new Error(`对象 ${schema}.${table}（类型 ${tableType}）暂不支持导出 DDL`);
-      }
-
-      const body = await sqlServerBuildBaseTableDdl(pool, schema, table);
-      return {
-        ddl: `-- SQL Server 近似 DDL（由系统目录生成，可能与当时建表脚本不完全一致）\n${body}`.trim(),
-      };
+      return { ddl: def || "-- 无法读取视图定义（权限不足或非 T-SQL 视图）" };
     }
 
-    default:
-      return unsupported();
+    if (tableType !== "BASE TABLE") {
+      throw new Error(`对象 ${schema}.${table}（类型 ${tableType}）暂不支持导出 DDL`);
+    }
+
+    const body = await sqlServerBuildBaseTableDdl(pool, schema, table);
+    return {
+      ddl: `-- SQL Server 近似 DDL（由系统目录生成，可能与当时建表脚本不完全一致）\n${body}`.trim(),
+    };
+  }
+
+  async sessionMonitor(session: SqlServerSessionConnection, params: ApiRequestPayload["db/session-monitor"]): Promise<unknown> {
+    const { limit = 20 } = params;
+    try {
+      return await sqlServerFetchSessionMonitor(session.backGroundPool, limit);
+    } catch (e: unknown) {
+      throw new Error(`session-monitor: ${formatMssqlErrorChain(e)}`);
+    }
+  }
+
+  async sessionControl(session: SqlServerSessionConnection, params: ApiRequestPayload["db/session-control"]): Promise<unknown> {
+    const { pid, action } = params;
+    const self = await sqlServerGetOwnSpid(session.backGroundPool);
+    if (pid === self) throw new Error("不允许操作当前监控连接自身会话");
+    const ok = await sqlServerSessionControl(session.backGroundPool, pid, action);
+    return { success: ok, pid, action };
+  }
+
+  async installedExtensions(
+    _session: SqlServerSessionConnection,
+    _params: ApiRequestPayload["db/installed-extensions"],
+  ): Promise<unknown> {
+    return { extensions: [] };
   }
 }

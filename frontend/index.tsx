@@ -3,11 +3,11 @@ import App from './app';
 import { DialogProvider } from './dialog-context';
 import { loadDefaultTheme } from './theme-sync';
 import { setTransport } from './transport';
-import { HttpTransport } from './transport/http-transport';
+import { RpcTransport } from './transport/rpc-transport';
 import { getBrowserJwt } from './subscription/browser-token';
 
 setTransport(
-  new HttpTransport({
+  new RpcTransport({
     getBearerToken: getBrowserJwt,
   })
 );

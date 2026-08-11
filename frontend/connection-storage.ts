@@ -82,11 +82,10 @@ export async function removeStoredConnection(id: string): Promise<void> {
 
 /** 使用已保存连接进行连接（服务端解密并建立连接，密码不经过前端） */
 export async function connectFromSaved(
-  id: string,
-  sessionId?: string
+  id: string
 ): Promise<{ success: boolean; connectionId?: string; error?: string; subscriptionRequired?: boolean }> {
   try {
-    const data = (await getTransport().request("connections/connect", { id, sessionId })) as {
+    const data = (await getTransport().request("connections/connect", { id })) as {
       success?: boolean;
       connectionId?: string;
       dbType?: DbKind;

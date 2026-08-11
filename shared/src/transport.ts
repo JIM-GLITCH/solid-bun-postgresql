@@ -79,15 +79,8 @@ export const API_METHODS = [
 
 export type ApiMethod = (typeof API_METHODS)[number];
 
-/** Web HTTP 可调用的 RPC（不含 vscode/*） */
+/** RPC 可调用的方法（不含 vscode/*，宿主拦截方法） */
 export type HttpRpcMethod = Exclude<ApiMethod, `vscode/${string}`>;
-
-function isHttpRpcMethod(m: ApiMethod): m is HttpRpcMethod {
-  return !m.startsWith("vscode/");
-}
-
-/** `POST /api/${method}` 合法方法名集合 */
-export const HTTP_API_METHOD_SET: ReadonlySet<HttpRpcMethod> = new Set(API_METHODS.filter(isHttpRpcMethod));
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -97,7 +90,7 @@ export type ApiRequestPayload = {
   "connections/update-meta": { id: string; name?: string };
   "connections/reorder": { list: unknown[] };
   "connections/get-params": { id: string };
-  "connections/connect": { id: string; sessionId?: string };
+  "connections/connect": { id: string };
   "query-history/add": { sql: string; connectionId?: string };
   "query-history/search": { keyword?: string; since?: number; until?: number };
   "query-history/delete": { id: string };

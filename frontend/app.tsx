@@ -86,7 +86,6 @@ export default function App() {
   /** MySQL：侧栏单击 schema 后作为查询/EXPLAIN 的默认库；有值时后端才执行 USE */
   const [mysqlDefaultSchemaByConn, setMysqlDefaultSchemaByConn] = createStore<Record<string, string>>({});
   const [connectionSwitcherOpen, setConnectionSwitcherOpen] = createSignal(false);
-  const [sessionId] = createSignal(crypto.randomUUID?.() ?? `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 
   const refreshSavedConnections = async () => {
     try {
@@ -154,7 +153,7 @@ export default function App() {
     }
     setConnectingSavedId(stored.id);
     try {
-      const { success, connectionId, error, subscriptionRequired } = await connectFromSaved(stored.id, sessionId());
+      const { success, connectionId, error, subscriptionRequired } = await connectFromSaved(stored.id);
       if (success && connectionId) {
         setConnections(connections.length, { id: connectionId, info: stored.label });
         setShowConnectionForm(false);
