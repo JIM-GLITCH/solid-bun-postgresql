@@ -6,20 +6,19 @@
 import type { RPCSchema } from "electrobun";
 import type { SSEMessage } from "./types";
 
-/** 主进程执行的 api_request：浏览器调用，返回后端结果（rpc-transport 消息由 jsonrpc 传输层处理） */
+/** 主进程执行的 api_request：浏览器调用，返回后端结果 */
 export type ApiRequestParams = {
   method: string;
   payload: Record<string, unknown> & { sessionId?: string };
-  /** 订阅 JWT；主进程在校验通过后才转发请求 */
+  /** 订阅 JWT；主进程在校验通过后才执行 handleApiRequest */
   licenseJwt?: string | null;
 };
 
-/** 主进程推送给浏览器的后端事件（rpcMsg 为 jsonrpc 下行消息，承载会话与推送） */
+/** 主进程推送给浏览器的后端事件 */
 export type BackendEventPayload = {
   sessionId?: string;
   data?: SSEMessage;
   error?: string;
-  rpcMsg?: unknown;
 };
 
 export type AppRPCType = {

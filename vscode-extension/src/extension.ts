@@ -1,13 +1,8 @@
-// 前端 Webview 使用 frontend 打包的 webview.js；后端在 Extension Host 进程内承载 jsonrpc 会话
-// （PostMessageServerTransport + buildRpcStack），经 postMessage 通信
+// 前端 Webview 使用 frontend 打包的 webview.js，后端使用 backend/api-handlers-vscode，通过 postMessage 通信
 import * as vscode from "vscode";
-import { buildRpcStack } from "../../backend/rpc-server.js";
-import {
-  PostMessageServerTransport,
-  type PostMessageClientMsg,
-} from "../../backend/transport/post-message-server-transport.js";
+import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
 import { assertSubscriptionLicensed } from "../../backend/subscription-license.js";
-import { setAiKeyResolver } from "../../backend/ai-service.js";
+import { setAiKeyResolver } from "../../backend/api-core.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
@@ -331,29 +326,11 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
     const token = (await deps.tokenStorage.getToken()) ?? null;
     await assertSubscriptionLicensed(token, getSubscriptionConfig().apiBase.replace(/\/$/, ""));
   };
-
-  // 进程内承载 jsonrpc 会话：与 standalone/electrobun 共用同一套 DbServer/AppServer 栈
-  const serverTransport = new PostMessageServerTransport(
-    (msg) => void webview.postMessage({ type: "rpc-server-msg", msg }),
-    {
-      // token 存 SecretStorage 不落 webview：subscription/assert 进 jsonrpc 前注入 accessToken
-      transformRequest: async (msg) => {
-        const m = msg as { method?: string; params?: Record<string, unknown> };
-        if (m.method === "subscription/assert") {
-          const token = (await deps.tokenStorage.getToken()) ?? null;
-          return { ...m, params: { ...(m.params ?? {}), accessToken: token } } as unknown as typeof msg;
-        }
-        return msg;
-      },
-    },
-  );
-  buildRpcStack(serverTransport, {
+  const baseHandler = createVscodeMessageHandler(webview, {
     assertLicensed,
-    // vscode 宿主的账号态来自 SecretStorage（而非服务端 token store）
-    getSubscriptionAccount: () => getAccountStateFromTokenStorage(deps.tokenStorage),
+    // 仅对显式订阅入口做校验；其他功能默认可用
+    shouldAssertLicensed: ({ kind, method }) => kind === "rpc" && method === "subscription/assert",
   });
-  // 面板关闭时释放本 webview 名下的 DB 连接（替代旧 SSE 断开释放语义）
-  panel.onDidDispose(() => serverTransport.dispose());
   webview.onDidReceiveMessage(async (message: unknown) => {
     const safe = redactPayload(message);
     output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
@@ -378,17 +355,6 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       await deps.tokenStorage.clearToken();
       deps.licenseValidator.invalidateCache();
       webview.postMessage({ type: "dbplayer/account", loggedIn: false });
-      return;
-    }
-    // jsonrpc 传输层消息：喂给进程内服务端传输，以 rpc-transport-ack 回包（tid 配对）
-    if ((message as { type?: string }).type === "rpc-transport") {
-      const { tid, m } = message as { tid: number; m: PostMessageClientMsg };
-      try {
-        const result = await serverTransport.handleClientMessage(m);
-        webview.postMessage({ type: "rpc-transport-ack", tid, result });
-      } catch (e: any) {
-        webview.postMessage({ type: "rpc-transport-ack", tid, error: e?.message ?? String(e) });
-      }
       return;
     }
     const msg = message as { id?: number; method?: string; payload?: unknown };
@@ -449,7 +415,28 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       }
       return;
     }
-    // 其余非 vscode/* 消息均由 jsonrpc 传输层（rpc-transport）承载，此处不再兼容旧 { id, method, payload } 分发
+    if (typeof msg.id === "number" && msg.method === "subscription/assert") {
+      try {
+        await assertLicensed();
+        webview.postMessage({ id: msg.id, data: { success: true } });
+      } catch (e: any) {
+        webview.postMessage({
+          id: msg.id,
+          error: e?.message ?? String(e),
+          subscriptionRequired: true,
+        });
+      }
+      return;
+    }
+    if (typeof msg.id === "number" && msg.method === "subscription/account") {
+      try {
+        webview.postMessage({ id: msg.id, data: await getAccountStateFromTokenStorage(deps.tokenStorage) });
+      } catch (e: any) {
+        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
+      }
+      return;
+    }
+    baseHandler(message as any);
   });
 
   // HTML 来自 src/index.html，构建时复制到 out/index.html
