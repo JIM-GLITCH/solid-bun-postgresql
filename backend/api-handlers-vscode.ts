@@ -8,8 +8,11 @@
  *   webview.webview.onDidReceiveMessage(handleMessage);
  */
 
-import type { ApiMethod, ApiRequestPayload } from "../shared/src";
-import { handleApiRequest, subscribeSessionEvents } from "./api-core";
+import type { ApiMethod } from "../shared/src";
+import { routeApiRequest } from "./api/ApiCoreRefactored";
+import { subscribeSessionEvents } from "./api/sse";
+import { VscodeAppRuntime as AppRuntime } from "./runtime/vscode-runtime";
+import { SubscriptionRequiredError as CoreSubscriptionRequiredError } from "./core/errors";
 import { SubscriptionRequiredError } from "./subscription-license";
 
 export interface VscodeWebview {
@@ -31,8 +34,8 @@ function postRpcError(
   id: number | undefined,
   e: unknown
 ): void {
-  if (e instanceof SubscriptionRequiredError) {
-    const msg = e.message;
+  if (e instanceof SubscriptionRequiredError || e instanceof CoreSubscriptionRequiredError) {
+    const msg = (e as Error).message;
     if (typeof id === "number") {
       void webview.postMessage({ id, error: msg, subscriptionRequired: true });
     } else {
@@ -76,10 +79,25 @@ export function createVscodeMessageHandler(webview: VscodeWebview, opts?: Vscode
         if (assertLicensed && shouldAssertLicensed({ kind: "subscribe-events" })) {
           await assertLicensed();
         }
-        const unsub = subscribeSessionEvents(sid, (msg) => {
-          webview.postMessage({ type: "sse", connectionId: sid, data: msg });
+        // 订阅为异步（Effect）：先登记占位退订，若在订阅完成前收到
+        // unsubscribe-events，则标记 cancelled，待 unsub 返回后立即退订。
+        let cancelled = false;
+        let realUnsub: (() => void) | undefined;
+        eventUnsubscribes.set(sid, () => {
+          cancelled = true;
+          realUnsub?.();
         });
-        eventUnsubscribes.set(sid, unsub);
+        const unsub = await AppRuntime.runPromise(
+          subscribeSessionEvents(sid, (msg) => {
+            void webview.postMessage({ type: "sse", connectionId: sid, data: msg });
+          })
+        );
+        if (cancelled) {
+          unsub();
+          eventUnsubscribes.delete(sid);
+        } else {
+          realUnsub = unsub;
+        }
       } catch (e) {
         postRpcError(webview, id, e);
       }
@@ -92,14 +110,16 @@ export function createVscodeMessageHandler(webview: VscodeWebview, opts?: Vscode
       return;
     }
 
-    // RPC 请求（统一转发到 api-core）
+    // RPC 请求（统一转发到 Effect 路由）
     if (typeof id !== "number" || !method || payload == null) return;
 
     try {
       if (assertLicensed && shouldAssertLicensed({ kind: "rpc", method })) {
         await assertLicensed();
       }
-      const result = await handleApiRequest(method as ApiMethod, payload as any);
+      const result = await AppRuntime.runPromise(
+        routeApiRequest(method as ApiMethod, payload as any)
+      );
       webview.postMessage({ id, data: result });
     } catch (e: unknown) {
       postRpcError(webview, id, e);

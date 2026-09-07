@@ -1,11 +1,16 @@
 /**
  * 后端 API 处理器 - Web 实现：HTTP + SSE
  * 用于 standalone (Node + Hono) 构建
+ *
+ * 已切换到 Effect 重构后的路由（ApiCoreRefactored）+ 运行时单例（AppRuntime）。
  */
 
 import type { ApiMethod, ApiRequestPayload, HttpRpcMethod, SSEMessage } from "../shared/src";
 import { HTTP_API_METHOD_SET } from "../shared/src";
-import { handleApiRequest, getSession, subscribeSessionEvents } from "./api-core";
+import { routeApiRequest } from "./api/ApiCoreRefactored";
+import { subscribeSessionEvents, hasSession } from "./api/sse";
+import { AppRuntime } from "./runtime/app-runtime";
+import { SubscriptionRequiredError as CoreSubscriptionRequiredError } from "./core/errors";
 import {
   assertSubscriptionLicensed,
   parseSubscriptionAccessToken,
@@ -14,8 +19,12 @@ import {
 
 type RouteHandler = (req: Request) => Response | Promise<Response>;
 
-function subscriptionJsonResponse(e: SubscriptionRequiredError): Response {
-  return Response.json({ error: e.message, success: false, subscriptionRequired: true }, { status: 403 });
+function subscriptionJsonResponse(message: string): Response {
+  return Response.json({ error: message, success: false, subscriptionRequired: true }, { status: 403 });
+}
+
+function isSubscriptionRequired(e: unknown): boolean {
+  return e instanceof SubscriptionRequiredError || e instanceof CoreSubscriptionRequiredError;
 }
 
 /** 通用 POST 处理器：成功 200 + JSON；失败 500 + `{ error, success: false }`（与 HttpTransport `res.ok` 一致） */
@@ -27,10 +36,12 @@ function postApi<M extends ApiMethod>(method: M): RouteHandler {
         await assertSubscriptionLicensed(parseSubscriptionAccessToken(req));
       }
       const data = (await req.json()) as ApiRequestPayload[M];
-      const result = await handleApiRequest(method, data);
+      const result = await AppRuntime.runPromise(routeApiRequest(method, data));
       return Response.json(result);
     } catch (e: unknown) {
-      if (e instanceof SubscriptionRequiredError) return subscriptionJsonResponse(e);
+      if (isSubscriptionRequired(e)) {
+        return subscriptionJsonResponse((e as Error).message);
+      }
       const err = e instanceof Error ? e.message : String(e);
       return Response.json({ error: err, success: false }, { status: 500 });
     }
@@ -67,18 +78,22 @@ export function createApiRoutes(): Record<
         if (!connectionSessionId) {
           return new Response("缺少 connectionSessionId（旧客户端可仍传 connectionId）", { status: 400 });
         }
-        const session = getSession(connectionSessionId);
-        if (!session) return new Response("未找到数据库连接，请先连接数据库", { status: 400 });
+        const exists = AppRuntime.runSync(hasSession(connectionSessionId));
+        if (!exists) return new Response("未找到数据库连接，请先连接数据库", { status: 400 });
 
         let cleanup: (() => void) | undefined;
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             const encoder = new TextEncoder();
+            // 订阅退订句柄与取消标记（在 push 定义前声明，避免 TDZ）
+            let unsubscribe: (() => void) | undefined;
+            let cancelled = false;
             const push = (msg: SSEMessage) => {
               try {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify(msg)}\n\n`));
               } catch {
-                unsubscribe();
+                // 客户端已断开：停止心跳并退订
+                cleanup?.();
               }
             };
             push({ type: "NOTIFICATION", message: "SSE 连接已建立", timestamp: Date.now() });
@@ -93,10 +108,20 @@ export function createApiRoutes(): Record<
             };
             sendHeartbeat();
             heartbeatInterval = setInterval(sendHeartbeat, 10000);
-            const unsubscribe = subscribeSessionEvents(connectionSessionId, push);
+
+            // 订阅为异步（Effect）：完成前若流已取消，则立即退订
+            void AppRuntime.runPromise(subscribeSessionEvents(connectionSessionId, push))
+              .then((unsub) => {
+                if (cancelled) unsub();
+                else unsubscribe = unsub;
+              })
+              .catch(() => {
+                /* 会话已消失，忽略 */
+              });
             cleanup = () => {
+              cancelled = true;
               clearInterval(heartbeatInterval);
-              unsubscribe();
+              unsubscribe?.();
             };
           },
           cancel() {

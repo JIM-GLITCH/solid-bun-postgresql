@@ -1,10 +1,12 @@
 /**
- * Electrobun 主进程：直接集成 api-core，通过 RPC 与渲染进程通信
- * 无 Rust 依赖，前后端均为 TypeScript
+ * Electrobun 主进程：集成 Effect 重构后的路由（ApiCoreRefactored）+ 运行时单例（AppRuntime），
+ * 通过 RPC 与渲染进程通信。无 Rust 依赖，前后端均为 TypeScript。
  */
 import { BrowserWindow, BrowserView } from "electrobun/bun";
 import type { AppRPCType } from "../../../shared/src/electrobun-rpc";
-import { handleApiRequest, getSession, subscribeSessionEvents } from "../../../backend/api-core";
+import { routeApiRequest } from "../../../backend/api/ApiCoreRefactored";
+import { subscribeSessionEvents, hasSession } from "../../../backend/api/sse";
+import { AppRuntime } from "../../../backend/runtime/app-runtime";
 import { assertSubscriptionLicensed } from "../../../backend/subscription-license";
 import type { ApiMethod } from "../../../shared/src";
 
@@ -24,15 +26,34 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
           const sessionId = (payload as { sessionId?: string })?.sessionId;
           if (!sessionId) throw new Error("subscribe-events requires sessionId");
           if (eventUnsubscribes.has(sessionId)) return { ok: true };
-          const session = getSession(sessionId);
-          if (!session) {
+          const exists = AppRuntime.runSync(hasSession(sessionId));
+          if (!exists) {
             mainWebview?.rpc.send.backend_event({ sessionId, error: "未找到数据库连接" });
             return { ok: true };
           }
-          const unsub = subscribeSessionEvents(sessionId, (msg) => {
-            mainWebview?.rpc.send.backend_event({ sessionId, data: msg });
+          // 订阅为异步（Effect）：先登记占位退订，若在订阅完成前收到
+          // unsubscribe-events，则标记 cancelled，待 unsub 返回后立即退订。
+          let cancelled = false;
+          let realUnsub: (() => void) | undefined;
+          eventUnsubscribes.set(sessionId, () => {
+            cancelled = true;
+            realUnsub?.();
           });
-          eventUnsubscribes.set(sessionId, unsub);
+          try {
+            const unsub = await AppRuntime.runPromise(
+              subscribeSessionEvents(sessionId, (msg) => {
+                mainWebview?.rpc.send.backend_event({ sessionId, data: msg });
+              })
+            );
+            if (cancelled) {
+              unsub();
+              eventUnsubscribes.delete(sessionId);
+            } else {
+              realUnsub = unsub;
+            }
+          } catch {
+            eventUnsubscribes.delete(sessionId);
+          }
           return { ok: true };
         }
         if (method === "unsubscribe-events") {
@@ -46,10 +67,7 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
           }
           return { ok: true };
         }
-        return handleApiRequest(
-          method as ApiMethod,
-          payload as Parameters<typeof handleApiRequest>[1]
-        );
+        return AppRuntime.runPromise(routeApiRequest(method as ApiMethod, payload));
       },
     },
     messages: {},

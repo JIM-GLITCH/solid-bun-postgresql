@@ -2,7 +2,7 @@
 import * as vscode from "vscode";
 import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
 import { assertSubscriptionLicensed } from "../../backend/subscription-license.js";
-import { setAiKeyResolver } from "../../backend/api-core.js";
+import { setVscodeAiKeyResolver } from "../../backend/runtime/vscode-runtime.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
@@ -174,7 +174,15 @@ export function activate(context: vscode.ExtensionContext) {
   const getFrontendUrl = () => getSubscriptionConfig().frontendUrl;
   const licenseValidator = new LicenseValidator(tokenStorage, getApiBase);
   const deps: SubscriptionDeps = { tokenStorage, licenseValidator, getFrontendUrl, getApiBase };
-  setAiKeyResolver(async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`));
+  setVscodeAiKeyResolver({
+    get: async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`),
+    set: async (keyRef, apiKey) => {
+      await context.secrets.store(`${AI_SECRET_PREFIX}${keyRef}`, apiKey);
+    },
+    delete: async (keyRef) => {
+      await context.secrets.delete(`${AI_SECRET_PREFIX}${keyRef}`);
+    },
+  });
 
   // 注册 URI Handler：{uriScheme}://lilr.db-player/auth?token=JWT（随宿主变化，如 vscode / cursor / kiro）
   context.subscriptions.push(
