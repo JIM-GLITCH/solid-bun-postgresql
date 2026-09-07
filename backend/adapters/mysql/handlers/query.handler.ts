@@ -3,10 +3,13 @@ type My = SessionStore | ConnectionId;
 
 
 import { normalizeStatements, statementsToText } from "../../shared/query-utils"
+import { calculateMysqlColumnEditable } from "../../../mysql-column-editable"
 import { QueryExecutionError, SessionNotFoundError, makeErrorContext } from "../../../core/errors"
 import { sanitizeSql } from "../../../core/sanitize"
 import { Effect } from "effect"
+import type { FieldPacket } from "mysql2"
 import { ConnectionId, SessionStore, currentMysqlSession, optionalMysqlSession } from "../../../services/SessionStore"
+import { ColumnEditableInfo } from "../../../../shared/src"
 
 export const handleMysqlQuery = (
   sql: string | string[],
@@ -47,7 +50,7 @@ export const handleMysqlQueryStream = (
   sql: string | string[],
   batchSize: number,
 ): Effect.Effect<
-  { rows: unknown[]; columns: string[]; hasMore: boolean },
+  { rows: unknown[]; columns: ColumnEditableInfo[]; hasMore: boolean },
   QueryExecutionError | SessionNotFoundError,
   My
 > =>
@@ -81,9 +84,22 @@ export const handleMysqlQueryStream = (
         }),
       });
 
+      const fieldPackets = fields as FieldPacket[] | undefined;
+      const columnsInfo: ColumnEditableInfo[] =
+        fieldPackets && fieldPackets.length > 0
+          ? yield* Effect.tryPromise({
+              try: () => calculateMysqlColumnEditable(
+                mysqlSession.backGroundPool,
+                fieldPackets,
+                mysqlSession.mysqlCurrentDatabase,
+              ),
+              catch: () => [] as ColumnEditableInfo[],
+            }).pipe(Effect.catch(() => Effect.succeed([] as ColumnEditableInfo[])))
+          : [];
+
       return {
         rows: Array.isArray(rows) ? rows.slice(0, batchSize) : [],
-        columns: (fields as any[])?.map((f: any) => f.name) ?? [],
+        columns: columnsInfo,
         hasMore: Array.isArray(rows) && rows.length > batchSize,
       };
     } finally {

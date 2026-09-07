@@ -3,10 +3,13 @@ type Ss = SessionStore | ConnectionId;
 
 
 import { normalizeStatements, statementsToText } from "../../shared/query-utils"
+import { runSqlServerQueryWithColumnMetadata } from "../../../sqlserver-mssql-query"
+import { buildSqlServerGridColumnEditable } from "../../../sqlserver-column-editable"
 import { QueryExecutionError, SessionNotFoundError, makeErrorContext } from "../../../core/errors"
 import { sanitizeSql } from "../../../core/sanitize"
 import { Effect } from "effect"
 import { ConnectionId, SessionStore, currentSqlServerSession, optionalSqlServerSession } from "../../../services/SessionStore"
+import { ColumnEditableInfo } from "../../../../shared/src"
 
 export const handleSqlServerQuery = (
   sql: string | string[],
@@ -44,7 +47,7 @@ export const handleSqlServerQueryStream = (
   sql: string | string[],
   batchSize: number,
 ): Effect.Effect<
-  { rows: unknown[]; columns: string[]; hasMore: boolean },
+  { rows: unknown[][]; columns: ColumnEditableInfo[]; hasMore: boolean },
   QueryExecutionError | SessionNotFoundError,
   Ss
 > =>
@@ -56,9 +59,14 @@ export const handleSqlServerQueryStream = (
       return { rows: [], columns: [], hasMore: false };
     }
 
-    const request = sqlServerSession.userUsedClient.request();
-    const result = yield* Effect.tryPromise({
-      try: () => request.query(statements.join("; ")),
+    const pool = sqlServerSession.backGroundPool;
+    const sqlText = statements.join("; ");
+
+    // arrayRowMode：返回行数组（与前端 `rows: any[][]` 及 PG/MySQL 一致），并携带 TDS 列元数据
+    const { rows, columnMeta } = yield* Effect.tryPromise({
+      try: () => runSqlServerQueryWithColumnMetadata(pool, sqlText, {
+        trackRequest: (req) => { sqlServerSession.sqlServerActiveRequest = req; },
+      }),
       catch: (e) => new QueryExecutionError({
         context: makeErrorContext("sqlserver.queryStream.query"),
         sql: sanitizeSql(statementsToText(sql)),
@@ -67,11 +75,14 @@ export const handleSqlServerQueryStream = (
       }),
     });
 
-    return {
-      rows: result.recordset?.slice(0, batchSize) ?? [],
-      columns: result.recordset?.columns ? Object.keys(result.recordset.columns) : [],
-      hasMore: (result.recordset?.length ?? 0) > batchSize,
-    };
+    const columns = yield* Effect.tryPromise({
+      try: () => buildSqlServerGridColumnEditable(pool, columnMeta, sqlText),
+      catch: () => [] as ColumnEditableInfo[],
+    }).pipe(Effect.catch(() => Effect.succeed([] as ColumnEditableInfo[])));
+
+    // 新 SQLServer 适配器为缓冲式（无 db/query-stream-more），一次性返回全部行
+    void batchSize;
+    return { rows, columns, hasMore: false };
   });
 
 export const handleSqlServerCancel = (): Effect.Effect<void, never, Ss> =>

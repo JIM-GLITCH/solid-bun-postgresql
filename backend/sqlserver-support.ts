@@ -138,7 +138,7 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
 
   const parent = {
     get config() {
-      return pool.config;
+      return (pool as any).config;
     },
     get connected() {
       return pool.connected;
@@ -148,11 +148,11 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
     },
     acquire(request: unknown, callback: (err: Error | null | undefined, connection?: unknown, config?: unknown) => void) {
       if (!acquired) {
-        pool.acquire(pool as sql.ConnectionPool, (err: Error | null | undefined, c?: unknown, cfg?: unknown) => {
+        (pool as any).acquire(pool, (err: Error | null | undefined, c?: unknown, cfg?: unknown) => {
           if (err) return callback(err);
           acquired = c;
           activeRequest = request;
-          callback(null, c, cfg ?? pool.config);
+          callback(null, c, cfg ?? (pool as any).config);
         });
         return parent;
       }
@@ -163,7 +163,7 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
         return parent;
       }
       activeRequest = request;
-      setImmediate(() => callback(null, acquired, pool.config));
+      setImmediate(() => callback(null, acquired, (pool as any).config));
       return parent;
     },
     release(connection: unknown) {
@@ -177,7 +177,7 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
     dispose() {
       if (acquired != null) {
         try {
-          pool.release(acquired as never);
+          (pool as any).release(acquired);
         } catch {
           /* ignore */
         }

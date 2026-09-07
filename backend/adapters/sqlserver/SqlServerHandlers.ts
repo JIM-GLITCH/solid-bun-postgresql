@@ -5,6 +5,8 @@ import { ConnectDbRequest } from "../../../shared/src"
 import { handleSqlServerConnect, handleSqlServerDisconnect, handleSqlServerCapabilities } from "./handlers/connection.handler";
 import { handleSqlServerQuery, handleSqlServerQueryStream, handleSqlServerCancel } from "./handlers/query.handler";
 import { handleSqlServerSchemas, handleSqlServerTables, handleSqlServerColumns } from "./handlers/schema.handler";
+import { handleSqlServerSessionMonitor, handleSqlServerSessionControl } from "./handlers/session.handler";
+import { handleSqlServerExplain, handleSqlServerExplainText, handleSqlServerPartitionInfo } from "./handlers/misc.handler";
 
 export interface SqlServerHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
@@ -48,6 +50,27 @@ export const makeSqlServerHandlers = (ctx: SqlServerHandlerContext = {}) => ({
           return yield* handleSqlServerColumns(
             (payload as any).schema,
             (payload as any).table,
+          );
+
+        case "db/explain":
+          return yield* handleSqlServerExplain((payload as any).query);
+
+        case "db/explain-text":
+          return yield* handleSqlServerExplainText((payload as any).query);
+
+        case "db/partition-info":
+          return yield* handleSqlServerPartitionInfo(
+            (payload as any).schema,
+            (payload as any).table,
+          );
+
+        case "db/session-monitor":
+          return yield* handleSqlServerSessionMonitor((payload as any).limit ?? 20);
+
+        case "db/session-control":
+          return yield* handleSqlServerSessionControl(
+            (payload as any).pid,
+            (payload as any).action,
           );
 
         default:

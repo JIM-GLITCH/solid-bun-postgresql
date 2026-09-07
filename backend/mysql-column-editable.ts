@@ -1,7 +1,7 @@
 /**
  * MySQL 查询结果列：根据 Field 元数据 + information_schema 判断是否可编辑（需主键/唯一键列均在结果中）。
  */
-import type { FieldPacket } from "mysql2";
+import type { FieldPacket, RowDataPacket } from "mysql2";
 import type { Pool } from "mysql2/promise";
 import type { ColumnEditableInfo } from "../shared/src";
 
@@ -19,7 +19,7 @@ function tableKey(db: string, orgTable: string): string {
   return `${db}${SEP}${orgTable}`;
 }
 
-interface ConstraintRow {
+interface ConstraintRow extends RowDataPacket {
   table_schema: string;
   table_name: string;
   constraint_type: string;
@@ -28,7 +28,7 @@ interface ConstraintRow {
   ordinal_position: number;
 }
 
-interface NullableRow {
+interface NullableRow extends RowDataPacket {
   table_schema: string;
   table_name: string;
   column_name: string;

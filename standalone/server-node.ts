@@ -13,6 +13,14 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
 
+// 开发/自托管：加载仓库根 .env（Node 20.6+），便于用 SUBSCRIPTION_OFF=1 等开关免订阅跑本地 dev。
+// 用相对本模块的显式路径，不依赖 cwd；生产 SEA / 无 .env 环境静默跳过（loadEnvFile 缺文件会抛错）。
+try {
+  process.loadEnvFile?.(join(dirname(fileURLToPath(import.meta.url)), "..", ".env"));
+} catch {
+  /* .env 不存在或 Node 版本过低时忽略 */
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = new Hono();
