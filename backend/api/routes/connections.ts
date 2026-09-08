@@ -77,7 +77,7 @@ export const handleConnectionsGetParams = (payload: ApiRequestPayload["connectio
  */
 export const handleConnectionsConnect = (
   payload: ApiRequestPayload["connections/connect"],
-): Effect.Effect<any, StorageError | Error, ConnectionStoreService | SessionStore> =>
+)=>
   Effect.gen(function* () {
     const store = yield* ConnectionStoreService
     const params = yield* store.getParams(payload.id)
@@ -86,9 +86,9 @@ export const handleConnectionsConnect = (
     }
     const { id: storedId, dbType, ...loginParams } = params
     const connectionId = payload.sessionId ? `${storedId}-${payload.sessionId}` : storedId
-    return yield* routeApiRequest("db/connect", {
+    return yield* (routeApiRequest("db/connect", {
       connectionId,
       dbType: dbType ?? "postgres",
       ...loginParams,
-    } as ConnectDbRequest)
+    } as ConnectDbRequest) )
   })

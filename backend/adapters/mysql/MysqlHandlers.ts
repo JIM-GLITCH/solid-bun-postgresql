@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SessionStore } from "../../services/SessionStore"
+import { ConnectionId, SessionStore } from "../../services/SessionStore"
 import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handleMysqlConnect, handleMysqlDisconnect, handleMysqlCapabilities } from "./handlers/connection.handler";
 import { handleMysqlQuery, handleMysqlQueryStream, handleMysqlCancel } from "./handlers/query.handler";
@@ -10,7 +10,7 @@ export interface MysqlHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class MysqlService implements DatabaseService {
+export class MysqlService implements DatabaseService<SessionStore | ConnectionId> {
   constructor(private ctx: MysqlHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {

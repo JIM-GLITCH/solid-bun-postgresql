@@ -6,6 +6,7 @@ import type {
   IApiTransport,
   ApiMethod,
   ApiRequestPayload,
+  ApiRpcResult,
   SSEMessage,
   ServerPushMessage,
   TransportOnSubscribe,
@@ -30,7 +31,7 @@ export class HttpTransport implements IApiTransport {
   async request<M extends ApiMethod>(
     method: M,
     payload: ApiRequestPayload[M]
-  ): Promise<unknown> {
+  ): Promise<ApiRpcResult<M>> {
     const path = `/api/${method}`;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",

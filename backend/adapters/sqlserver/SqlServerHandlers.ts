@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SessionStore } from "../../services/SessionStore"
+import { ConnectionId, SessionStore } from "../../services/SessionStore"
 import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handleSqlServerConnect, handleSqlServerDisconnect, handleSqlServerCapabilities } from "./handlers/connection.handler";
 import { handleSqlServerQuery, handleSqlServerQueryStream, handleSqlServerCancel } from "./handlers/query.handler";
@@ -12,7 +12,7 @@ export interface SqlServerHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class SqlServerService implements DatabaseService {
+export class SqlServerService implements DatabaseService<SessionStore | ConnectionId> {
   constructor(private ctx: SqlServerHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {

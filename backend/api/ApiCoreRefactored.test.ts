@@ -33,8 +33,8 @@ describe("routeApiRequest connections/connect", () => {
       Effect.provideService(ConnectionStoreService, fakeConnectionStore),
     )
 
-    await expect(Effect.runPromise(effect)).rejects.toThrow()
-    await expect(Effect.runPromise(effect)).rejects.not.toThrow(/Service not found: DatabaseService/)
+    await expect(Effect.runPromise(effect as Effect.Effect<any, any, never>)).rejects.toThrow()
+    await expect(Effect.runPromise(effect as Effect.Effect<any, any, never>)).rejects.not.toThrow(/Service not found: DatabaseService/)
   })
 
   it("routes db/schemas through DatabaseService", async () => {
@@ -53,9 +53,9 @@ describe("routeApiRequest connections/connect", () => {
     } as any
 
     const result = await Effect.runPromise(
-      routeApiRequest("db/schemas", { connectionId: "c1", dbType: "postgres" }).pipe(
+      (routeApiRequest("db/schemas", { connectionId: "c1", dbType: "postgres" }).pipe(
         Effect.provideService(SessionStore, fakeSessionStore),
-      )
+      ) as Effect.Effect<any, any, never>)
     )
 
     expect(result).toEqual({ schemas: ["public", "sales"] })

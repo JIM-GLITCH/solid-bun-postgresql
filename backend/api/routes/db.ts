@@ -141,38 +141,37 @@ export const handleDbRequest = (
         });
     }
   })
-export interface DatabaseService {
-  getTableComment(schema: any, table: any): Effect.Effect<any, any, any>;
-  connect(arg0: ConnectDbRequest): Effect.Effect<any, any, any>;
-  disconnect(): Effect.Effect<any, any, any>;
-  getCapabilities(dbType: any): Effect.Effect<any, any, any>;
-  getSchemas(): Effect.Effect<any, any, any>;
-  executeQuery(arg0: any): Effect.Effect<any, any, any>;
-  executeQueryStream(arg0: any, arg1: any): Effect.Effect<any, any, any>;
-  executeQueryStreamMore(arg0: any): Effect.Effect<any, any, any>;
-  cancelQuery(): Effect.Effect<any, any, any>;
-  getTables(schema: any): Effect.Effect<any, any, any>;
-  getColumns(schema: any, table: any): Effect.Effect<any, any, any>;
-  getIndexes(schema: any, table: any): Effect.Effect<any, any, any>;
-  getPrimaryKeys(schema: any, table: any): Effect.Effect<any, any, any>;
-  getCheckConstraints(schema: any, table: any): Effect.Effect<any, any, any>;
-  getUniqueConstraints(schema: any, table: any): Effect.Effect<any, any, any>;
-  getForeignKeys(schema: any, table: any): Effect.Effect<any, any, any>;
-  executeDdl(sql: any): Effect.Effect<any, any, any>;
-  getTableDdl(schema: any, table: any): Effect.Effect<any, any, any>;
-  getFunctionDdl(schema: any, functionName: any): Effect.Effect<any, any, any>;
-  getSchemaDump(schema: any): Effect.Effect<any, any, any>;
-  getDatabaseDump(): Effect.Effect<any, any, any>;
-  importRows(schema: any, table: any, columns: any, rows: any, conflictColumns: any, onConflict: any, onError: any): Effect.Effect<any, any, any>;
-  saveChanges(sql: any): Effect.Effect<any, any, any>;
-  sessionMonitor(): Effect.Effect<any, any, any>;
-  sessionControl(action: any, targetPid: any): Effect.Effect<any, any, any>;
-  getInstalledExtensions(): Effect.Effect<any, any, any>;
-  explain(query: any): Effect.Effect<any, any, any>;
-  explainText(query: any): Effect.Effect<any, any, any>;
-  getPartitionInfo(schema: any, table: any): Effect.Effect<any, any, any>;
-  getDataTypes(): Effect.Effect<any, any, any>;
-
+export interface DatabaseService<R = never> {
+  getTableComment(schema: string, table: string): Effect.Effect<any, any, R>;
+  connect(request: ConnectDbRequest): Effect.Effect<any, any, R>;
+  disconnect(): Effect.Effect<any, any, R>;
+  getCapabilities(dbType: any): Effect.Effect<any, any, R>;
+  getSchemas(): Effect.Effect<any, any, R>;
+  executeQuery(query: string | string[]): Effect.Effect<any, any, R>;
+  executeQueryStream(query: string | string[], batchSize: number): Effect.Effect<any, any, R>;
+  executeQueryStreamMore(batchSize: number): Effect.Effect<any, any, R>;
+  cancelQuery(): Effect.Effect<any, any, R>;
+  getTables(schema: string): Effect.Effect<any, any, R>;
+  getColumns(schema: string, table: string): Effect.Effect<any, any, R>;
+  getIndexes(schema: string, table: string): Effect.Effect<any, any, R>;
+  getPrimaryKeys(schema: string, table: string): Effect.Effect<any, any, R>;
+  getCheckConstraints(schema: string, table: string): Effect.Effect<any, any, R>;
+  getUniqueConstraints(schema: string, table: string): Effect.Effect<any, any, R>;
+  getForeignKeys(schema: string, table: string): Effect.Effect<any, any, R>;
+  executeDdl(sql: string): Effect.Effect<any, any, R>;
+  getTableDdl(schema: string, table: string): Effect.Effect<any, any, R>;
+  getFunctionDdl(schema: string, functionName: string): Effect.Effect<any, any, R>;
+  getSchemaDump(schema: string): Effect.Effect<any, any, R>;
+  getDatabaseDump(): Effect.Effect<any, any, R>;
+  importRows(schema: string, table: string, columns: string[], rows: any[][], conflictColumns?: string[], onConflict?: "nothing" | "update", onError?: "rollback" | "discard"): Effect.Effect<any, any, R>;
+  saveChanges(sql: string): Effect.Effect<any, any, R>;
+  sessionMonitor(): Effect.Effect<any, any, R>;
+  sessionControl(action: string, targetPid: number): Effect.Effect<any, any, R>;
+  getInstalledExtensions(): Effect.Effect<any, any, R>;
+  explain(query: string): Effect.Effect<any, any, R>;
+  explainText(query: string): Effect.Effect<any, any, R>;
+  getPartitionInfo(schema: string, table: string): Effect.Effect<any, any, R>;
+  getDataTypes(): Effect.Effect<any, any, R>;
 }
 
 export const DatabaseService = Context.Service<DatabaseService, DatabaseService>()("DatabaseService")

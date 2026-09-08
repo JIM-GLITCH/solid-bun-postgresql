@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { SessionStore } from "../../services/SessionStore"
+import { ConnectionId, SessionStore } from "../../services/SessionStore"
 import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handlePostgresConnect, handlePostgresDisconnect, handlePostgresCapabilities } from "./handlers/connection.handler";
 import { handlePostgresQuery, handlePostgresQueryStream, handlePostgresQueryStreamMore, handlePostgresCancel } from "./handlers/query.handler";
@@ -15,7 +15,7 @@ export interface PostgresHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class PostgresService implements DatabaseService {
+export class PostgresService implements DatabaseService<SessionStore | ConnectionId> {
   constructor(private ctx: PostgresHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {

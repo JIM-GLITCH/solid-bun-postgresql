@@ -10,8 +10,8 @@ import { Effect, Context } from "effect"
 import { randomUUID } from "crypto"
 import { MethodNotFoundError, makeErrorContext } from "../core/errors"
 import type { BackendError } from "../core/errors"
-import type { ApiMethod, ApiRequestPayload } from "../../shared/src"
-import { SessionStore } from "../services/SessionStore"
+import type { ApiMethod, ApiRequestPayload, ApiRpcResult } from "../../shared/src"
+import { SessionStore, ConnectionId } from "../services/SessionStore"
 import { ConnectionStoreService } from "../services/ConnectionStoreService"
 import { AiService } from "../services/AiService"
 import { QueryHistoryService } from "../services/QueryHistoryService"
@@ -59,23 +59,37 @@ export type ApiRequestContext =
   | QueryHistoryService
   | SubscriptionService
 
+export type RouteApiRequestEnvironment =
+  | ApiRequestContext
+  | DatabaseService<SessionStore | ConnectionId>
+
 const methodNotFound = (method: string) =>
   new MethodNotFoundError({
     context: makeErrorContext("routeApiRequest"),
     method,
   })
 
-export const routeApiRequest = (
+export function routeApiRequest<M extends ApiMethod>(
+  method: M,
+  payload: ApiRequestPayload[M],
+): Effect.Effect<ApiRpcResult<M>, unknown, RouteApiRequestEnvironment>;
+
+export function routeApiRequest(
   method: ApiMethod | string,
-  payload: ApiRequestPayload[ApiMethod] | unknown,
-): Effect.Effect<any, unknown, any> =>
-  Effect.gen(function* () {
+  payload: unknown,
+): Effect.Effect<unknown, unknown, RouteApiRequestEnvironment>;
+
+export function routeApiRequest(
+  method: ApiMethod | string,
+  payload: unknown,
+): Effect.Effect<unknown, unknown, RouteApiRequestEnvironment> {
+  return Effect.gen(function* () {
     const p = payload as any
 
     if (typeof method === "string" && method.startsWith("db/")) {
       // Determine database type from payload dbkind (前端现在每次请求都带上 dbkind)
       const dbKind = p.dbkind || p.dbType || "postgres"
-      let dbService: DatabaseService
+      let dbService: DatabaseService<SessionStore | ConnectionId>
 
       if (isMysqlFamily(dbKind as never)) {
         dbService = new MysqlService()
@@ -91,7 +105,9 @@ export const routeApiRequest = (
       }
 
       const connectionId = p.connectionId
-      const effect = handleDbRequest(method, p).pipe(Effect.provideService(DatabaseService, dbService))
+      const effect = handleDbRequest(method, p).pipe(
+        Effect.provideService(DatabaseService, dbService)
+      )
       return yield* connectionId ? effect.pipe(provideConnectionId(connectionId)) : effect
     }
 
@@ -148,3 +164,4 @@ export const routeApiRequest = (
         return yield* Effect.fail(methodNotFound(String(method)))
     }
   })
+}

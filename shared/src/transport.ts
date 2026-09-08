@@ -12,6 +12,7 @@ import type {
   ConnectDbRequest,
   DbKind,
   ConnectionSavePayload,
+  DatabaseCapabilities,
 } from "./types";
 
 /** 需已有会话的 db 请求公共字段 */
@@ -78,6 +79,67 @@ export const API_METHODS = [
 ] as const;
 
 export type ApiMethod = (typeof API_METHODS)[number];
+
+export type ApiRpcResultMap = {
+  "connections/list": { items?: unknown[]; error?: string };
+  "connections/save": { ok?: boolean; error?: string };
+  "connections/delete": { ok?: boolean; error?: string };
+  "connections/update-meta": { ok?: boolean; error?: string };
+  "connections/reorder": { ok?: boolean; error?: string };
+  "connections/get-params": { id: string; dbType?: DbKind; host?: string; port?: string; database?: string; username?: string; password?: string; error?: string };
+  "connections/connect": { success?: boolean; error?: string; dbType?: DbKind };
+  "query-history/add": { id?: string; error?: string };
+  "query-history/search": { items?: unknown[]; error?: string };
+  "query-history/delete": { ok?: boolean; error?: string };
+  "query-history/clear": { ok?: boolean; error?: string };
+  "subscription/assert": { ok?: boolean; error?: string };
+  "subscription/account": { loggedIn: boolean; user?: { id?: number; email?: string | null } };
+  "db/connect": { success?: boolean; error?: string; dbType?: DbKind };
+  "db/disconnect": { success?: boolean; error?: string };
+  "db/query": { rows: unknown[][]; columns?: unknown[]; error?: string };
+  "db/capabilities": { capabilities: DatabaseCapabilities; error?: string };
+  "db/query-stream": { rows: unknown[][]; columns?: unknown[]; hasMore: boolean; error?: string };
+  "db/query-stream-more": { rows: unknown[][]; hasMore: boolean; error?: string };
+  "db/save-changes": { success?: boolean; rowCount?: number; error?: string };
+  "db/cancel-query": { success?: boolean; cancelled?: boolean; message?: string; error?: string };
+  "db/explain": { plan: unknown[]; error?: string };
+  "db/schemas": { schemas: string[]; error?: string };
+  "db/tables": { tables: string[]; views: string[]; functions?: Array<{ oid?: number; schema?: string; name?: string; args?: string }>; error?: string };
+  "db/columns": { columns: unknown[]; error?: string };
+  "db/indexes": { indexes: unknown[]; error?: string };
+  "db/foreign-keys": { outgoing: unknown[]; incoming: unknown[]; error?: string };
+  "db/data-types": { types: string[]; error?: string };
+  "db/execute-ddl": { success?: boolean; error?: string };
+  "db/table-ddl": { ddl: string; error?: string };
+  "db/function-ddl": { ddl: string; error?: string };
+  "db/schema-dump": { dump: string; error?: string };
+  "db/database-dump": { dump: string; error?: string };
+  "db/primary-keys": { columns: string[]; constraintName?: string; error?: string };
+  "db/unique-constraints": { constraints: Array<{ name: string; type: string; columns: string[] }>; error?: string };
+  "db/import-rows": { success?: boolean; rowCount?: number; error?: string };
+  "db/table-comment": { comment: string | null; error?: string };
+  "db/check-constraints": { constraints: Array<{ name: string; expression: string }>; error?: string };
+  "db/partition-info": { role: "none" | "parent" | "partition"; error?: string };
+  "db/explain-text": { lines: string[]; error?: string };
+  "db/session-monitor": { connectionStats?: unknown; lockWaits?: unknown[]; slowQueries?: unknown[]; slowQuerySource?: string; collectedAt?: number; error?: string };
+  "db/session-control": { success?: boolean; pid?: number; action?: "cancel" | "terminate"; error?: string };
+  "db/installed-extensions": { extensions: Array<{ name: string; installedVersion: string; schema: string; relocatable: boolean; defaultVersion: string | null; description: string | null }>; error?: string };
+  "vscode/save-file": { success?: boolean; cancelled?: boolean; error?: string };
+  "vscode/read-file": { cancelled?: boolean; content?: string; filename?: string; contentBase64?: string; error?: string };
+  "vscode/clipboard-write": { success?: boolean; error?: string };
+  "vscode/clipboard-read": { text?: string; error?: string };
+  "vscode/ai-key-set": { success?: boolean; error?: string };
+  "vscode/ai-key-delete": { success?: boolean; error?: string };
+  "ai/config/get": { apiMode: "openai-compatible" | "anthropic"; baseUrl?: string; model: string; keyRef: string; temperature: number; topP?: number; stream?: boolean; maxTokens: number; hasKey: boolean; error?: string };
+  "ai/config/set": { success?: boolean; error?: string };
+  "ai/key/delete": { success?: boolean; error?: string };
+  "ai/test-connection": { success?: boolean; error?: string };
+  "ai/sql-edit": { sql: string; rationale: string; warnings: string[]; alternatives?: string[]; usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }; elapsedMs?: number; schemaInjected?: string[]; error?: string };
+  "ai/prompt-build": { prompt: string; schemaInjected?: string[]; error?: string };
+  "ai/prompt-build-diff": { prompt: string; schemaInjected?: string[]; error?: string };
+};
+
+export type ApiRpcResult<M extends ApiMethod> = ApiRpcResultMap[M];
 
 /** Web HTTP 可调用的 RPC（不含 vscode/*） */
 export type HttpRpcMethod = Exclude<ApiMethod, `vscode/${string}`>;
@@ -210,7 +272,7 @@ export type TransportOnSubscribe =
  * 业务若只依赖 transport：`request` + `on` 即可，勿在业务里直接使用 EventSource / VSCode postMessage 协议细节。
  */
 export interface IApiTransport {
-  request<M extends ApiMethod>(method: M, payload: ApiRequestPayload[M]): Promise<unknown>;
+  request<M extends ApiMethod>(method: M, payload: ApiRequestPayload[M]): Promise<ApiRpcResult<M>>;
 
   /** 订阅服务端推送（SSE / postMessage / IPC 封装在实现内） */
   on(sub: TransportOnSubscribe): () => void;
