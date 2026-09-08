@@ -2,11 +2,23 @@
  * Application Layer Composition
  *
  * 组合应用所需的全部服务 Layer。生产入口（api-handlers-http / vscode）
- * 通过 `Effect.provide(AppLayer)` 一次性注入。
+ * 通过 `ManagedRuntime.make(AppLayer)` 一次性构建并复用。
+ *
+ * 结构是平的：叶子服务彼此无依赖，全部并列在一个 `Layer.mergeAll` 里；
+ * 只有两条真实依赖边需要接线（`provideMerge`）：
+ *
+ *   AiServiceLive   ← AiKeyStoreService
+ *   SseEventBusLive ← SessionStore
+ *
+ * 接线后每个元素的 R 都是 never，因此不存在中间层级的具名 Layer。
+ * `mergeAll` 本身不会把兄弟 Layer 的输出喂给兄弟 Layer 的依赖，
+ * 所以这两条边必须显式接线，无法进一步压平。
  *
  * 注意：不再包含 DatabaseServiceLive —— DatabaseService 是废弃的中间 Facade，
  * db/* 请求由 routes/db.ts 直接分派到各 Adapter 的 handlers，
  * handlers 通过 SessionStore + ConnectionId 两个 Context Tag 访问会话。
+ * SessionStore 由 SSE 那条边顺带暴露；ConnectionId 属请求作用域，
+ * 由路由层 `provideConnectionId` 注入，不在应用 Layer 内。
  */
 
 import { Layer } from "effect"
@@ -21,80 +33,31 @@ import { SshTunnelServiceLive } from "../ssh/SshTunnelImpl"
 import { SseEventBusLive } from "../api/sse"
 import { type AiKeyStoreService as AiKeyStoreServiceShape } from "../services/AiKeyStoreService"
 
-// Storage services layer
-export const StorageLayer = Layer.merge(
-  ConnectionStoreServiceLive,
-  Layer.merge(QueryHistoryServiceLive, AiKeyStoreServiceLive)
-)
-
-// AI service layer（依赖 AiKeyStoreService，由 StorageLayer 提供）
-export const AiLayer = AiServiceLive
-
-// Subscription services layer
-export const SubscriptionLayer = Layer.merge(
-  SubscriptionServiceLive,
-  LicenseServiceLive
-)
-
 /**
- * 会话仓储 Layer：基于内存 Map 的进程级实现。
- * 所有 db/* handler 通过 SessionStore Context 读写会话。
- */
-export const SessionStoreLayer = sessionStoreFromMap()
-
-/** SSH 隧道 Layer */
-export const SshTunnelLayer = SshTunnelServiceLive
-
-/**
- * SSE 事件总线 Layer：依赖 SessionStore。
- * 用 provideMerge 把 SessionStoreLayer 的输出喂给 SseEventBusLive，
- * 结果同时提供 SseEventBus + SessionStore 且无剩余依赖。
- */
-export const SseLayer = SseEventBusLive.pipe(
-  Layer.provideMerge(SessionStoreLayer)
-)
-
-// Core services layer (includes storage, AI, and subscription)
-//
-// AiServiceLive 依赖 AiKeyStoreService（由 StorageLayer 提供），
-// 用 provideMerge 把 StorageLayer 喂给 AiServiceLive 并保留两者输出，
-// 消除残留依赖；再并入 SubscriptionLayer。
-export const CoreServicesLayer = AiServiceLive.pipe(
-  Layer.provideMerge(StorageLayer),
-  Layer.merge(SubscriptionLayer),
-)
-
-/**
- * 完整应用 Layer：Core 服务 + 会话仓储/SSE + SSH 隧道。
- * SseLayer 已通过 provideMerge 内含 SessionStore，故此处无需再单列。
- * 组合后 R = never，可直接交给 ManagedRuntime.make。
- */
-export const AppLayer = Layer.mergeAll(
-  CoreServicesLayer,
-  SseLayer,
-  SshTunnelLayer,
-)
-
-// Production-ready layer with all services
-export const ProductionLayers = AppLayer
-
-/**
- * 按给定的 AiKeyStore 实现组合一份完整 App Layer。
+ * 组装完整应用 Layer。
  *
- * 默认 `AppLayer` 使用文件加密存储（AiKeyStoreServiceLive）；
- * VSCode 扩展需改用 SecretStorage，通过本函数注入 secrets 版实现，
- * 其余服务（连接存储、AI、订阅、会话、SSE、SSH）保持一致。
+ * `aiKeyStoreLayer` 是唯一可替换点：HTTP/standalone 传文件加密实现
+ * （`AiKeyStoreServiceLive`），VSCode 扩展传 SecretStorage 实现，
+ * 其余服务（连接存储、查询历史、AI、订阅、会话、SSE、SSH）保持一致。
  */
-export const makeAppLayer = (
+const buildAppLayer = (
   aiKeyStoreLayer: Layer.Layer<AiKeyStoreServiceShape, never, never>
-) => {
-  const storage = Layer.merge(
+) =>
+  Layer.mergeAll(
+    // 叶子服务：无依赖，直接并列
     ConnectionStoreServiceLive,
-    Layer.merge(QueryHistoryServiceLive, aiKeyStoreLayer)
+    QueryHistoryServiceLive,
+    SubscriptionServiceLive,
+    LicenseServiceLive,
+    SshTunnelServiceLive,
+    // 依赖边 1：AiService 需要 AiKeyStore，provideMerge 同时保留两者输出
+    AiServiceLive.pipe(Layer.provideMerge(aiKeyStoreLayer)),
+    // 依赖边 2：SseEventBus 需要 SessionStore，SessionStore 顺带暴露给 db/* handlers
+    SseEventBusLive.pipe(Layer.provideMerge(sessionStoreFromMap()))
   )
-  const core = AiServiceLive.pipe(
-    Layer.provideMerge(storage),
-    Layer.merge(SubscriptionLayer),
-  )
-  return Layer.mergeAll(core, SseLayer, SshTunnelLayer)
-}
+
+/** 完整应用 Layer：AiKeyStore 使用文件加密存储，R = never */
+export const AppLayer = buildAppLayer(AiKeyStoreServiceLive)
+
+/** 按给定 AiKeyStore Layer 组合一份完整 App Layer（VSCode SecretStorage 用） */
+export const makeAppLayer = buildAppLayer

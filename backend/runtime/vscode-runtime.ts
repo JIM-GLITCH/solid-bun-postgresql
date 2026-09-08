@@ -70,14 +70,12 @@ class SecretsAiKeyStore implements AiKeyStoreServiceShape {
     }).pipe(Effect.asVoid)
 }
 
-/** secrets 版 AiKeyStore Layer */
-export const SecretsAiKeyStoreLive = Layer.succeed(
-  AiKeyStoreService,
-  new SecretsAiKeyStore()
+/**
+ * VSCode 运行时单例。
+ *
+ * `Layer.succeed` 直接把 service 实例变成只含一个服务、R = never 的 Layer，
+ * 无需中间具名绑定；`makeAppLayer` 内部把它接到 `AiServiceLive` 的依赖位上。
+ */
+export const VscodeAppRuntime = ManagedRuntime.make(
+  makeAppLayer(Layer.succeed(AiKeyStoreService, new SecretsAiKeyStore()))
 )
-
-/** VSCode 应用 Layer：用 SecretStorage 替换文件式 AiKeyStore */
-export const VscodeAppLayer = makeAppLayer(SecretsAiKeyStoreLive)
-
-/** VSCode 运行时单例 */
-export const VscodeAppRuntime = ManagedRuntime.make(VscodeAppLayer)
