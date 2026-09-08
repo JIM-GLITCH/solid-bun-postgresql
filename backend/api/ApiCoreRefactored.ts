@@ -6,7 +6,8 @@
  * 与旧 api-core 一致落入 MethodNotFound）之外的全部方法。
  */
 
-import { Effect } from "effect"
+import { Effect, Context } from "effect"
+import { randomUUID } from "crypto"
 import { MethodNotFoundError, makeErrorContext } from "../core/errors"
 import type { BackendError } from "../core/errors"
 import type { ApiMethod, ApiRequestPayload } from "../../shared/src"
@@ -15,7 +16,12 @@ import { ConnectionStoreService } from "../services/ConnectionStoreService"
 import { AiService } from "../services/AiService"
 import { QueryHistoryService } from "../services/QueryHistoryService"
 import { SubscriptionService } from "../services/SubscriptionService"
-import { handleDbRequest } from "./routes/db"
+import { handleDbRequest, DatabaseService } from "./routes/db"
+import { provideConnectionId } from "../services/SessionStore"
+import { PostgresService } from "../adapters/postgres"
+import { MysqlService } from "../adapters/mysql"
+import { SqlServerService } from "../adapters/sqlserver"
+import { isMysqlFamily } from "../../shared/src"
 import {
   handleConnectionsList,
   handleConnectionsSave,
@@ -62,12 +68,31 @@ const methodNotFound = (method: string) =>
 export const routeApiRequest = (
   method: ApiMethod | string,
   payload: ApiRequestPayload[ApiMethod] | unknown,
-): Effect.Effect<any, BackendError | Error, ApiRequestContext> =>
+): Effect.Effect<any, unknown, any> =>
   Effect.gen(function* () {
     const p = payload as any
 
     if (typeof method === "string" && method.startsWith("db/")) {
-      return yield* handleDbRequest(method, p)
+      // Determine database type from payload dbkind (前端现在每次请求都带上 dbkind)
+      const dbKind = p.dbkind || p.dbType || "postgres"
+      let dbService: DatabaseService
+
+      if (isMysqlFamily(dbKind as never)) {
+        dbService = new MysqlService()
+      } else if (dbKind === "sqlserver") {
+        dbService = new SqlServerService()
+      } else {
+        dbService = new PostgresService()
+      }
+
+      // Generate connectionId for connect if not provided
+      if (method === "db/connect" && !p.connectionId) {
+        p.connectionId = randomUUID()
+      }
+
+      const connectionId = p.connectionId
+      const effect = handleDbRequest(method, p).pipe(Effect.provideService(DatabaseService, dbService))
+      return yield* connectionId ? effect.pipe(provideConnectionId(connectionId)) : effect
     }
 
     switch (method) {

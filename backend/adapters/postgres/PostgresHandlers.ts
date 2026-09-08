@@ -1,7 +1,6 @@
-import { MethodNotFoundError } from "../../core/errors"
 import { Effect } from "effect"
-import { SessionStore, provideConnectionId } from "../../services/SessionStore"
-import { ConnectDbRequest } from "../../../shared/src"
+import { SessionStore } from "../../services/SessionStore"
+import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handlePostgresConnect, handlePostgresDisconnect, handlePostgresCapabilities } from "./handlers/connection.handler";
 import { handlePostgresQuery, handlePostgresQueryStream, handlePostgresQueryStreamMore, handlePostgresCancel } from "./handlers/query.handler";
 import { handlePostgresSchemas, handlePostgresTables, handlePostgresColumns } from "./handlers/schema.handler";
@@ -10,164 +9,132 @@ import { handlePostgresExecuteDdl, handlePostgresTableDdl, handlePostgresFunctio
 import { handlePostgresImportRows, handlePostgresSaveChanges } from "./handlers/import.handler";
 import { handlePostgresSessionMonitor, handlePostgresSessionControl, handlePostgresInstalledExtensions } from "./handlers/session.handler";
 import { handlePostgresExplain, handlePostgresExplainText, handlePostgresPartitionInfo, handlePostgresDataTypes, handlePostgresTableComment } from "./handlers/misc.handler";
+import type { DatabaseService } from "../../api/routes/db";
 
 export interface PostgresHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-/** 从请求载荷中取出 connectionId（部分方法如 db/capabilities 没有该字段） */
-const connectionIdOf = (payload: unknown): string => (payload as any)?.connectionId ?? "";
+export class PostgresService implements DatabaseService {
+  constructor(private ctx: PostgresHandlerContext = {}) {}
 
-export const makePostgresHandlers = (ctx: PostgresHandlerContext = {}) => ({
-  handleRequest: (method: string, payload: unknown): Effect.Effect<unknown, Error, SessionStore> =>
-    Effect.gen(function* () {
-      switch (method) {
-        case "db/connect":
-          return yield* handlePostgresConnect(payload as ConnectDbRequest);
+  connect(request: ConnectDbRequest) {
+    return handlePostgresConnect(request);
+  }
 
-        case "db/disconnect":
-          return yield* handlePostgresDisconnect();
+  disconnect() {
+    return handlePostgresDisconnect();
+  }
 
-        case "db/capabilities":
-          return yield* handlePostgresCapabilities((payload as any).dbType);
+  getCapabilities(dbType: DbKind) {
+    return handlePostgresCapabilities(dbType);
+  }
 
-        case "db/query":
-          return yield* handlePostgresQuery((payload as any).statements ?? (payload as any).query);
+  getSchemas() {
+    return handlePostgresSchemas();
+  }
 
-        case "db/query-stream":
-          return yield* handlePostgresQueryStream(
-            (payload as any).statements ?? (payload as any).query,
-            (payload as any).batchSize ?? 100,
-          );
+  executeQuery(query: any) {
+    return handlePostgresQuery(query);
+  }
 
-        case "db/query-stream-more":
-          return yield* handlePostgresQueryStreamMore((payload as any).batchSize ?? 100);
+  executeQueryStream(query: any, batchSize: number) {
+    return handlePostgresQueryStream(query, batchSize);
+  }
 
-        case "db/cancel-query":
-          return yield* handlePostgresCancel();
+  executeQueryStreamMore(batchSize: number) {
+    return handlePostgresQueryStreamMore(batchSize);
+  }
 
-        case "db/schemas":
-          return yield* handlePostgresSchemas();
+  cancelQuery() {
+    return handlePostgresCancel();
+  }
 
-        case "db/tables":
-          return yield* handlePostgresTables((payload as any).schema);
+  getTables(schema: any) {
+    return handlePostgresTables(schema);
+  }
 
-        case "db/columns":
-          return yield* handlePostgresColumns(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getColumns(schema: any, table: any) {
+    return handlePostgresColumns(schema, table);
+  }
 
-        case "db/indexes":
-          return yield* handlePostgresIndexes(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getIndexes(schema: any, table: any) {
+    return handlePostgresIndexes(schema, table);
+  }
 
-        case "db/primary-keys":
-          return yield* handlePostgresPrimaryKeys(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getPrimaryKeys(schema: any, table: any) {
+    return handlePostgresPrimaryKeys(schema, table);
+  }
 
-        case "db/unique-constraints":
-          return yield* handlePostgresUniqueConstraints(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getCheckConstraints(schema: any, table: any) {
+    return handlePostgresCheckConstraints(schema, table);
+  }
 
-        case "db/check-constraints":
-          return yield* handlePostgresCheckConstraints(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getUniqueConstraints(schema: any, table: any) {
+    return handlePostgresUniqueConstraints(schema, table);
+  }
 
-        case "db/foreign-keys":
-          return yield* handlePostgresForeignKeys(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getForeignKeys(schema: any, table: any) {
+    return handlePostgresForeignKeys(schema, table);
+  }
 
-        case "db/execute-ddl":
-          return yield* handlePostgresExecuteDdl((payload as any).sql);
+  executeDdl(sql: any) {
+    return handlePostgresExecuteDdl(sql);
+  }
 
-        case "db/table-ddl":
-          return yield* handlePostgresTableDdl(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getTableDdl(schema: any, table: any) {
+    return handlePostgresTableDdl(schema, table);
+  }
 
-        case "db/function-ddl":
-          return yield* handlePostgresFunctionDdl(
-            (payload as any).schema,
-            (payload as any).functionName,
-          );
+  getFunctionDdl(schema: any, functionName: any) {
+    return handlePostgresFunctionDdl(schema, functionName);
+  }
 
-        case "db/schema-dump":
-          return yield* handlePostgresSchemaDump((payload as any).schema);
+  getSchemaDump(schema: any) {
+    return handlePostgresSchemaDump(schema);
+  }
 
-        case "db/database-dump":
-          return yield* handlePostgresDatabaseDump();
+  getDatabaseDump() {
+    return handlePostgresDatabaseDump();
+  }
 
-        case "db/import-rows":
-          return yield* handlePostgresImportRows(
-            (payload as any).schema,
-            (payload as any).table,
-            (payload as any).columns,
-            (payload as any).rows,
-            (payload as any).conflictColumns,
-            (payload as any).onConflict,
-            (payload as any).onError,
-          );
+  importRows(schema: any, table: any, columns: any, rows: any, conflictColumns: any, onConflict: any, onError: any) {
+    return handlePostgresImportRows(schema, table, columns, rows, conflictColumns, onConflict, onError);
+  }
 
-        case "db/save-changes":
-          return yield* handlePostgresSaveChanges((payload as any).sql);
+  saveChanges(sql: any) {
+    return handlePostgresSaveChanges(sql);
+  }
 
-        case "db/session-monitor":
-          return yield* handlePostgresSessionMonitor();
+  sessionMonitor() {
+    return handlePostgresSessionMonitor();
+  }
 
-        case "db/session-control":
-          return yield* handlePostgresSessionControl(
-            (payload as any).action,
-            (payload as any).targetPid,
-          );
+  sessionControl(action: any, targetPid: any) {
+    return handlePostgresSessionControl(action, targetPid);
+  }
 
-        case "db/installed-extensions":
-          return yield* handlePostgresInstalledExtensions();
+  getInstalledExtensions() {
+    return handlePostgresInstalledExtensions();
+  }
 
-        case "db/explain":
-          return yield* handlePostgresExplain(
-            (payload as any).query,
-          );
+  explain(query: any) {
+    return handlePostgresExplain(query);
+  }
 
-        case "db/explain-text":
-          return yield* handlePostgresExplainText(
-            (payload as any).query,
-          );
+  explainText(query: any) {
+    return handlePostgresExplainText(query);
+  }
 
-        case "db/partition-info":
-          return yield* handlePostgresPartitionInfo(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getPartitionInfo(schema: any, table: any) {
+    return handlePostgresPartitionInfo(schema, table);
+  }
 
-        case "db/data-types":
-          return yield* handlePostgresDataTypes();
+  getDataTypes() {
+    return handlePostgresDataTypes();
+  }
 
-        case "db/table-comment":
-          return yield* handlePostgresTableComment(
-            (payload as any).schema,
-            (payload as any).table,
-            (payload as any).comment,
-          );
-
-        default:
-          return yield* Effect.fail(new MethodNotFoundError({
-            context: { timestamp: Date.now(), operation: "handleRequest" },
-            method,
-          }));
-      }
-    }).pipe(provideConnectionId(connectionIdOf(payload))),
-});
-
-export type PostgresHandlers = ReturnType<typeof makePostgresHandlers>;
+  getTableComment(schema: any, table: any) {
+    return handlePostgresTableComment(schema, table, undefined);
+  }
+}

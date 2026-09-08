@@ -1,85 +1,137 @@
-import { MethodNotFoundError } from "../../core/errors"
 import { Effect } from "effect"
-import { SessionStore, provideConnectionId } from "../../services/SessionStore"
-import { ConnectDbRequest } from "../../../shared/src"
+import { SessionStore } from "../../services/SessionStore"
+import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handleSqlServerConnect, handleSqlServerDisconnect, handleSqlServerCapabilities } from "./handlers/connection.handler";
 import { handleSqlServerQuery, handleSqlServerQueryStream, handleSqlServerCancel } from "./handlers/query.handler";
 import { handleSqlServerSchemas, handleSqlServerTables, handleSqlServerColumns } from "./handlers/schema.handler";
 import { handleSqlServerSessionMonitor, handleSqlServerSessionControl } from "./handlers/session.handler";
 import { handleSqlServerExplain, handleSqlServerExplainText, handleSqlServerPartitionInfo } from "./handlers/misc.handler";
+import type { DatabaseService } from "../../api/routes/db";
 
 export interface SqlServerHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-/** 从请求载荷中取出 connectionId（部分方法如 db/capabilities 没有该字段） */
-const connectionIdOf = (payload: unknown): string => (payload as any)?.connectionId ?? "";
+export class SqlServerService implements DatabaseService {
+  constructor(private ctx: SqlServerHandlerContext = {}) {}
 
-export const makeSqlServerHandlers = (ctx: SqlServerHandlerContext = {}) => ({
-  handleRequest: (method: string, payload: unknown): Effect.Effect<unknown, Error, SessionStore> =>
-    Effect.gen(function* () {
-      switch (method) {
-        case "db/connect":
-          return yield* handleSqlServerConnect(payload as ConnectDbRequest);
+  connect(request: ConnectDbRequest) {
+    return handleSqlServerConnect(request);
+  }
 
-        case "db/disconnect":
-          return yield* handleSqlServerDisconnect();
+  disconnect() {
+    return handleSqlServerDisconnect();
+  }
 
-        case "db/capabilities":
-          return yield* handleSqlServerCapabilities((payload as any).dbType);
+  getCapabilities(dbType: DbKind) {
+    return handleSqlServerCapabilities(dbType);
+  }
 
-        case "db/query":
-          return yield* handleSqlServerQuery((payload as any).statements ?? (payload as any).query);
+  getSchemas() {
+    return handleSqlServerSchemas();
+  }
 
-        case "db/query-stream":
-          return yield* handleSqlServerQueryStream(
-            (payload as any).statements ?? (payload as any).query,
-            (payload as any).batchSize ?? 100,
-          );
+  executeQuery(query: any) {
+    return handleSqlServerQuery(query);
+  }
 
-        case "db/cancel-query":
-          return yield* handleSqlServerCancel();
+  executeQueryStream(query: any, batchSize: number) {
+    return handleSqlServerQueryStream(query, batchSize);
+  }
 
-        case "db/schemas":
-          return yield* handleSqlServerSchemas();
+  executeQueryStreamMore(batchSize: number) {
+    return Effect.die("SQL Server does not support query stream more");
+  }
 
-        case "db/tables":
-          return yield* handleSqlServerTables((payload as any).schema);
+  cancelQuery() {
+    return handleSqlServerCancel();
+  }
 
-        case "db/columns":
-          return yield* handleSqlServerColumns(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getTables(schema: any) {
+    return handleSqlServerTables(schema);
+  }
 
-        case "db/explain":
-          return yield* handleSqlServerExplain((payload as any).query);
+  getColumns(schema: any, table: any) {
+    return handleSqlServerColumns(schema, table);
+  }
 
-        case "db/explain-text":
-          return yield* handleSqlServerExplainText((payload as any).query);
+  getIndexes(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getIndexes");
+  }
 
-        case "db/partition-info":
-          return yield* handleSqlServerPartitionInfo(
-            (payload as any).schema,
-            (payload as any).table,
-          );
+  getPrimaryKeys(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getPrimaryKeys");
+  }
 
-        case "db/session-monitor":
-          return yield* handleSqlServerSessionMonitor((payload as any).limit ?? 20);
+  getCheckConstraints(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getCheckConstraints");
+  }
 
-        case "db/session-control":
-          return yield* handleSqlServerSessionControl(
-            (payload as any).pid,
-            (payload as any).action,
-          );
+  getUniqueConstraints(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getUniqueConstraints");
+  }
 
-        default:
-          return yield* Effect.fail(new MethodNotFoundError({
-            context: { timestamp: Date.now(), operation: "handleRequest" },
-            method,
-          }));
-      }
-    }).pipe(provideConnectionId(connectionIdOf(payload))),
-});
+  getForeignKeys(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getForeignKeys");
+  }
 
-export type SqlServerHandlers = ReturnType<typeof makeSqlServerHandlers>;
+  executeDdl(sql: any) {
+    return Effect.die("SQL Server does not support executeDdl");
+  }
+
+  getTableDdl(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getTableDdl");
+  }
+
+  getFunctionDdl(schema: any, functionName: any) {
+    return Effect.die("SQL Server does not support getFunctionDdl");
+  }
+
+  getSchemaDump(schema: any) {
+    return Effect.die("SQL Server does not support getSchemaDump");
+  }
+
+  getDatabaseDump() {
+    return Effect.die("SQL Server does not support getDatabaseDump");
+  }
+
+  importRows(schema: any, table: any, columns: any, rows: any, conflictColumns: any, onConflict: any, onError: any) {
+    return Effect.die("SQL Server does not support importRows");
+  }
+
+  saveChanges(sql: any) {
+    return Effect.die("SQL Server does not support saveChanges");
+  }
+
+  sessionMonitor() {
+    return handleSqlServerSessionMonitor(20);
+  }
+
+  sessionControl(action: any, targetPid: any) {
+    return handleSqlServerSessionControl(targetPid, action);
+  }
+
+  getInstalledExtensions() {
+    return Effect.die("SQL Server does not support getInstalledExtensions");
+  }
+
+  explain(query: any) {
+    return handleSqlServerExplain(query);
+  }
+
+  explainText(query: any) {
+    return handleSqlServerExplainText(query);
+  }
+
+  getPartitionInfo(schema: any, table: any) {
+    return handleSqlServerPartitionInfo(schema, table);
+  }
+
+  getDataTypes() {
+    return Effect.die("SQL Server does not support getDataTypes");
+  }
+
+  getTableComment(schema: any, table: any) {
+    return Effect.die("SQL Server does not support getTableComment");
+  }
+}

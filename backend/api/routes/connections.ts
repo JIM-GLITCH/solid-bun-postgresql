@@ -8,7 +8,7 @@ import { ConnectionStoreService } from "../../services/ConnectionStoreService"
 import { SessionStore } from "../../services/SessionStore"
 import type { StorageError } from "../../core/errors"
 import type { ApiRequestPayload, ConnectionSavePayload, ConnectDbRequest, StoredConnectionParams } from "../../../shared/src"
-import { handleDbRequest } from "./db"
+import { routeApiRequest } from "../ApiCoreRefactored"
 
 export const handleConnectionsList = (): Effect.Effect<any, StorageError, ConnectionStoreService> =>
   Effect.gen(function* () {
@@ -86,7 +86,7 @@ export const handleConnectionsConnect = (
     }
     const { id: storedId, dbType, ...loginParams } = params
     const connectionId = payload.sessionId ? `${storedId}-${payload.sessionId}` : storedId
-    return yield* handleDbRequest("db/connect", {
+    return yield* routeApiRequest("db/connect", {
       connectionId,
       dbType: dbType ?? "postgres",
       ...loginParams,

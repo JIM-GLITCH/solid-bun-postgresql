@@ -1,6 +1,6 @@
 
 
-export { makePostgresHandlers, type PostgresHandlers, type PostgresHandlerContext } from "./PostgresHandlers";
+export { PostgresService, type PostgresHandlerContext } from "./PostgresHandlers";
 export { handlePostgresConnect, handlePostgresDisconnect, handlePostgresCapabilities } from "./handlers/connection.handler";
 export { handlePostgresQuery, handlePostgresQueryStream, handlePostgresQueryStreamMore, handlePostgresCancel } from "./handlers/query.handler";
 export { handlePostgresSchemas, handlePostgresTables, handlePostgresColumns } from "./handlers/schema.handler";
