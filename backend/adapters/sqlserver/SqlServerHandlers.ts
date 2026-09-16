@@ -5,14 +5,17 @@ import { handleSqlServerConnect, handleSqlServerDisconnect, handleSqlServerCapab
 import { handleSqlServerQuery, handleSqlServerQueryStream, handleSqlServerCancel } from "./handlers/query.handler";
 import { handleSqlServerSchemas, handleSqlServerTables, handleSqlServerColumns } from "./handlers/schema.handler";
 import { handleSqlServerSessionMonitor, handleSqlServerSessionControl } from "./handlers/session.handler";
-import { handleSqlServerExplain, handleSqlServerExplainText, handleSqlServerPartitionInfo } from "./handlers/misc.handler";
+import { handleSqlServerExplain, handleSqlServerExplainText, handleSqlServerPartitionInfo, handleSqlServerDataTypes, handleSqlServerTableComment } from "./handlers/misc.handler";
+import { handleSqlServerIndexes, handleSqlServerPrimaryKeys, handleSqlServerUniqueConstraints, handleSqlServerCheckConstraints, handleSqlServerForeignKeys } from "./handlers/metadata.handler";
+import { handleSqlServerExecuteDdl, handleSqlServerTableDdl, handleSqlServerFunctionDdl, handleSqlServerSchemaDump, handleSqlServerDatabaseDump } from "./handlers/ddl.handler";
+import { handleSqlServerImportRows, handleSqlServerSaveChanges } from "./handlers/import.handler";
 import type { DatabaseService } from "../../api/routes/db";
 
 export interface SqlServerHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class SqlServerService implements DatabaseService<SessionStore | ConnectionId> {
+export class SqlServerService implements DatabaseService {
   constructor(private ctx: SqlServerHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {
@@ -56,51 +59,51 @@ export class SqlServerService implements DatabaseService<SessionStore | Connecti
   }
 
   getIndexes(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getIndexes");
+    return handleSqlServerIndexes(schema, table);
   }
 
   getPrimaryKeys(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getPrimaryKeys");
+    return handleSqlServerPrimaryKeys(schema, table);
   }
 
   getCheckConstraints(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getCheckConstraints");
+    return handleSqlServerCheckConstraints(schema, table);
   }
 
   getUniqueConstraints(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getUniqueConstraints");
+    return handleSqlServerUniqueConstraints(schema, table);
   }
 
   getForeignKeys(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getForeignKeys");
+    return handleSqlServerForeignKeys(schema, table);
   }
 
   executeDdl(sql: any) {
-    return Effect.die("SQL Server does not support executeDdl");
+    return handleSqlServerExecuteDdl(sql);
   }
 
   getTableDdl(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getTableDdl");
+    return handleSqlServerTableDdl(schema, table);
   }
 
   getFunctionDdl(schema: any, functionName: any) {
-    return Effect.die("SQL Server does not support getFunctionDdl");
+    return handleSqlServerFunctionDdl(schema, functionName);
   }
 
   getSchemaDump(schema: any) {
-    return Effect.die("SQL Server does not support getSchemaDump");
+    return handleSqlServerSchemaDump(schema);
   }
 
   getDatabaseDump() {
-    return Effect.die("SQL Server does not support getDatabaseDump");
+    return handleSqlServerDatabaseDump();
   }
 
   importRows(schema: any, table: any, columns: any, rows: any, conflictColumns: any, onConflict: any, onError: any) {
-    return Effect.die("SQL Server does not support importRows");
+    return handleSqlServerImportRows(schema, table, columns, rows, conflictColumns, onConflict, onError);
   }
 
   saveChanges(sql: any) {
-    return Effect.die("SQL Server does not support saveChanges");
+    return handleSqlServerSaveChanges(sql);
   }
 
   sessionMonitor() {
@@ -128,10 +131,10 @@ export class SqlServerService implements DatabaseService<SessionStore | Connecti
   }
 
   getDataTypes() {
-    return Effect.die("SQL Server does not support getDataTypes");
+    return handleSqlServerDataTypes();
   }
 
   getTableComment(schema: any, table: any) {
-    return Effect.die("SQL Server does not support getTableComment");
+    return handleSqlServerTableComment(schema, table);
   }
 }

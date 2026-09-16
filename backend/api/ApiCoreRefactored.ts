@@ -89,7 +89,7 @@ export function routeApiRequest(
     if (typeof method === "string" && method.startsWith("db/")) {
       // Determine database type from payload dbkind (前端现在每次请求都带上 dbkind)
       const dbKind = p.dbkind || p.dbType || "postgres"
-      let dbService: DatabaseService<SessionStore | ConnectionId>
+      let dbService: DatabaseService
 
       if (isMysqlFamily(dbKind as never)) {
         dbService = new MysqlService()

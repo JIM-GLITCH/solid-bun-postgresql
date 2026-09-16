@@ -88,7 +88,7 @@ export const handlePostgresPartitionInfo = (
   });
 
 export const handlePostgresDataTypes = (): Effect.Effect<
-  { dataTypes: Array<{ name: string; description: string }> },
+  { types: string[] },
   QueryExecutionError | SessionNotFoundError,
   Pg
 > =>
@@ -97,8 +97,7 @@ export const handlePostgresDataTypes = (): Effect.Effect<
 
     const result = yield* Effect.tryPromise({
       try: () => pgSession.backGroundPool.query(
-        `SELECT DISTINCT pg_catalog.format_type(t.oid, NULL) AS name,
-                COALESCE(pg_catalog.obj_description(t.oid, 'pg_type'), '') AS description
+        `SELECT DISTINCT pg_catalog.format_type(t.oid, NULL) AS name
          FROM pg_catalog.pg_type t
          LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
          WHERE (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid))
@@ -116,10 +115,7 @@ export const handlePostgresDataTypes = (): Effect.Effect<
     });
 
     return {
-      dataTypes: result.rows.map((r: any) => ({
-        name: r.name,
-        description: r.description,
-      })),
+      types: result.rows.map((r: any) => r.name),
     };
   });
 

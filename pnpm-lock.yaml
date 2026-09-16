@@ -116,6 +116,9 @@ importers:
       vscode-jsonrpc:
         specifier: ^8.2.1
         version: 8.2.1
+      vscode-messenger:
+        specifier: ^0.7.0
+        version: 0.7.0
       wechatpay-node-v3:
         specifier: ^2.2.1
         version: 2.2.1
@@ -4393,6 +4396,12 @@ packages:
   vscode-jsonrpc@8.2.1:
     resolution: {integrity: sha512-kdjOSJ2lLIn7r1rtrMbbNCHjyMPfRnowdKjBQ+mGq6NAW5QY2bEZC/khaC5OR8svbbjvLEaIXkOq45e2X9BIbQ==}
     engines: {node: '>=14.0.0'}
+
+  vscode-messenger-common@0.7.0:
+    resolution: {integrity: sha512-rSemYqqasuwIWjMagZsHCJdFTb2Ln+R6fGlziSYsZ+7d5pU/CEfqLB5Fs/1qVqBA2vQNBvzwfqMjn2k9dFpm1w==}
+
+  vscode-messenger@0.7.0:
+    resolution: {integrity: sha512-ZcsGEwpLXBuqdPw2nTON+6rB87PTG09F99EIdnJBUsp+8YSiRBXPh91HSMOzTwzTo4DiDJHV+PZ6fqw8pN+vEA==}
 
   w3c-keyname@2.2.8:
     resolution: {integrity: sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==}
@@ -8726,6 +8735,12 @@ snapshots:
       - msw
 
   vscode-jsonrpc@8.2.1: {}
+
+  vscode-messenger-common@0.7.0: {}
+
+  vscode-messenger@0.7.0:
+    dependencies:
+      vscode-messenger-common: 0.7.0
 
   w3c-keyname@2.2.8: {}
 

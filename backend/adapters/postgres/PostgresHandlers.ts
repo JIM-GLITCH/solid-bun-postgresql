@@ -15,7 +15,7 @@ export interface PostgresHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class PostgresService implements DatabaseService<SessionStore | ConnectionId> {
+export class PostgresService implements DatabaseService {
   constructor(private ctx: PostgresHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {

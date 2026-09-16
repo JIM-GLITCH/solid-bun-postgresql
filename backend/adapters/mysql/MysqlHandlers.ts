@@ -4,13 +4,18 @@ import { ConnectDbRequest, DbKind } from "../../../shared/src"
 import { handleMysqlConnect, handleMysqlDisconnect, handleMysqlCapabilities } from "./handlers/connection.handler";
 import { handleMysqlQuery, handleMysqlQueryStream, handleMysqlCancel } from "./handlers/query.handler";
 import { handleMysqlSchemas, handleMysqlTables, handleMysqlColumns } from "./handlers/schema.handler";
+import { handleMysqlIndexes, handleMysqlPrimaryKeys, handleMysqlUniqueConstraints, handleMysqlCheckConstraints, handleMysqlForeignKeys } from "./handlers/metadata.handler";
+import { handleMysqlExecuteDdl, handleMysqlTableDdl, handleMysqlFunctionDdl, handleMysqlSchemaDump, handleMysqlDatabaseDump } from "./handlers/ddl.handler";
+import { handleMysqlImportRows, handleMysqlSaveChanges } from "./handlers/import.handler";
+import { handleMysqlSessionMonitor, handleMysqlSessionControl, handleMysqlInstalledExtensions } from "./handlers/session.handler";
+import { handleMysqlExplain, handleMysqlExplainText, handleMysqlPartitionInfo, handleMysqlDataTypes, handleMysqlTableComment } from "./handlers/misc.handler";
 import type { DatabaseService } from "../../api/routes/db";
 
 export interface MysqlHandlerContext {
   sendSSEMessage?: (connectionId: string, message: any) => void;
 }
 
-export class MysqlService implements DatabaseService<SessionStore | ConnectionId> {
+export class MysqlService implements DatabaseService {
   constructor(private ctx: MysqlHandlerContext = {}) {}
 
   connect(request: ConnectDbRequest) {
@@ -54,82 +59,82 @@ export class MysqlService implements DatabaseService<SessionStore | ConnectionId
   }
 
   getIndexes(schema: any, table: any) {
-    return Effect.die("MySQL does not support getIndexes");
+    return handleMysqlIndexes(schema, table);
   }
 
   getPrimaryKeys(schema: any, table: any) {
-    return Effect.die("MySQL does not support getPrimaryKeys");
+    return handleMysqlPrimaryKeys(schema, table);
   }
 
   getCheckConstraints(schema: any, table: any) {
-    return Effect.die("MySQL does not support getCheckConstraints");
+    return handleMysqlCheckConstraints(schema, table);
   }
 
   getUniqueConstraints(schema: any, table: any) {
-    return Effect.die("MySQL does not support getUniqueConstraints");
+    return handleMysqlUniqueConstraints(schema, table);
   }
 
   getForeignKeys(schema: any, table: any) {
-    return Effect.die("MySQL does not support getForeignKeys");
+    return handleMysqlForeignKeys(schema, table);
   }
 
   executeDdl(sql: any) {
-    return Effect.die("MySQL does not support executeDdl");
+    return handleMysqlExecuteDdl(sql);
   }
 
   getTableDdl(schema: any, table: any) {
-    return Effect.die("MySQL does not support getTableDdl");
+    return handleMysqlTableDdl(schema, table);
   }
 
   getFunctionDdl(schema: any, functionName: any) {
-    return Effect.die("MySQL does not support getFunctionDdl");
+    return handleMysqlFunctionDdl(schema, functionName);
   }
 
   getSchemaDump(schema: any) {
-    return Effect.die("MySQL does not support getSchemaDump");
+    return handleMysqlSchemaDump(schema);
   }
 
   getDatabaseDump() {
-    return Effect.die("MySQL does not support getDatabaseDump");
+    return handleMysqlDatabaseDump();
   }
 
   importRows(schema: any, table: any, columns: any, rows: any, conflictColumns: any, onConflict: any, onError: any) {
-    return Effect.die("MySQL does not support importRows");
+    return handleMysqlImportRows(schema, table, columns, rows, conflictColumns, onConflict, onError);
   }
 
   saveChanges(sql: any) {
-    return Effect.die("MySQL does not support saveChanges");
+    return handleMysqlSaveChanges(sql);
   }
 
   sessionMonitor() {
-    return Effect.die("MySQL does not support sessionMonitor");
+    return handleMysqlSessionMonitor();
   }
 
   sessionControl(action: any, targetPid: any) {
-    return Effect.die("MySQL does not support sessionControl");
+    return handleMysqlSessionControl(action, targetPid);
   }
 
   getInstalledExtensions() {
-    return Effect.die("MySQL does not support getInstalledExtensions");
+    return handleMysqlInstalledExtensions();
   }
 
   explain(query: any) {
-    return Effect.die("MySQL does not support explain");
+    return handleMysqlExplain(query);
   }
 
   explainText(query: any) {
-    return Effect.die("MySQL does not support explainText");
+    return handleMysqlExplainText(query);
   }
 
   getPartitionInfo(schema: any, table: any) {
-    return Effect.die("MySQL does not support getPartitionInfo");
+    return handleMysqlPartitionInfo(schema, table);
   }
 
   getDataTypes() {
-    return Effect.die("MySQL does not support getDataTypes");
+    return handleMysqlDataTypes();
   }
 
   getTableComment(schema: any, table: any) {
-    return Effect.die("MySQL does not support getTableComment");
+    return handleMysqlTableComment(schema, table);
   }
 }
