@@ -82,6 +82,8 @@ export function createVscodeMessengerLink(
         }, timeout);
 
         // 通过 vscode-messenger 发送 tRPC 请求
+        // 由于 vscode-messenger 不支持正则匹配，method 保持为 'trpc'
+        // 具体路径放在 payload 的 path 字段中
         messenger
           .sendRequest({ method: 'trpc' } as any, HOST_EXTENSION, { path: tprocPath, input: op.input })
           .then((envelope: any) => {

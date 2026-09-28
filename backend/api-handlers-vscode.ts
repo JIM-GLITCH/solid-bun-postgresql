@@ -35,14 +35,16 @@ export function registerTrpcHandler(
   console.log('[backend] Registering tRPC handler with messenger');
 
   // 只注册一个统一的 tRPC handler
+  // method 格式为 'trpc:{path}'，从 method 字段提取路径
+  // 由于 vscode-messenger 不支持正则匹配，需要手动处理所有可能的 tpc 方法
   messenger.onRequest({ method: 'trpc' } as any, async (params: { path: string; input: any }) => {
+    const { path, input } = params;
+
     console.log('[backend] ========================================');
     console.log('[backend] Received tRPC request');
-    console.log('[backend] Path:', params?.path);
-    console.log('[backend] Input:', JSON.stringify(params?.input, null, 2));
+    console.log('[backend] Path:', path);
+    console.log('[backend] Input:', JSON.stringify(input, null, 2));
     console.log('[backend] ========================================');
-
-    const { path, input } = params;
     
     try {
       // 可选的订阅校验

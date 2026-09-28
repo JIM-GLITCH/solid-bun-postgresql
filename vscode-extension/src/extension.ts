@@ -261,8 +261,8 @@ export function activate(context: vscode.ExtensionContext): MessengerDiagnostic 
 
   console.log('[extension] tRPC handler registered successfully');
 
-  // 返回 diagnostic API 用于调试
-  return messenger.diagnosticApi();
+  // 返回 diagnostic API 用于调试，启用参数数据显示
+  return messenger.diagnosticApi({ withParameterData: true, withResponseData: true });
 }
 
 export function deactivate() {}
