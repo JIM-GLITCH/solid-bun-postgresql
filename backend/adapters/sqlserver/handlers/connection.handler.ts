@@ -39,6 +39,7 @@ export const handleSqlServerConnect = (
           port: Number(params.port ?? 1433),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 
@@ -50,6 +51,7 @@ export const handleSqlServerConnect = (
           port: Number(params.port ?? 1433),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 

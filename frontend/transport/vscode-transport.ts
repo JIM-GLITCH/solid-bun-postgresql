@@ -2,6 +2,8 @@
  * VSCode Webview 传输实现：使用 postMessage 与 Extension Host 通信
  * 用于 VSCode 插件构建时替换 HttpTransport
  *
+ * 注意：主要 API 调用已迁移到 tRPC，此 transport 系统暂时保留用于订阅功能
+ *
  * 使用方式：
  *   import { setTransport } from "./transport";
  *   import { VsCodeTransport } from "./transport/vscode-transport";
@@ -13,6 +15,7 @@ import type {
   IApiTransport,
   ApiMethod,
   ApiRequestPayload,
+  ApiRpcResult,
   SSEMessage,
   ServerPushMessage,
   TransportOnSubscribe,
@@ -20,29 +23,9 @@ import type {
 import { SubscriptionRequiredError } from "../subscription/subscription-error";
 import { raiseSubscriptionRequired } from "../subscription/subscription-prompt";
 
-export type VsCodeWebviewApi = {
-  postMessage(message: unknown): void;
-  getState(): unknown;
-  setState(state: unknown): void;
-};
+import { getVsCodeWebviewApi } from "./vscode-api";
 
-let vscodeApiSingleton: VsCodeWebviewApi | null | undefined;
-
-/**
- * VS Code Webview 中 `acquireVsCodeApi()` 整个页面只能调用一次。
- * Transport、侧栏登录等必须共用同一实例，否则会抛错且 postMessage 无效。
- */
-export function getVsCodeWebviewApi(): VsCodeWebviewApi | null {
-  if (vscodeApiSingleton !== undefined) return vscodeApiSingleton;
-  const w = typeof window !== "undefined" ? window : undefined;
-  const fn = (w as Window & { acquireVsCodeApi?: () => VsCodeWebviewApi })?.acquireVsCodeApi;
-  if (typeof fn !== "function") {
-    vscodeApiSingleton = null;
-    return null;
-  }
-  vscodeApiSingleton = fn();
-  return vscodeApiSingleton;
-}
+export { getVsCodeWebviewApi };
 
 export class VsCodeTransport implements IApiTransport {
   private vscode = getVsCodeWebviewApi();
@@ -96,14 +79,14 @@ export class VsCodeTransport implements IApiTransport {
   async request<M extends ApiMethod>(
     method: M,
     payload: ApiRequestPayload[M]
-  ): Promise<unknown> {
+  ): Promise<ApiRpcResult<M>> {
     if (!this.vscode) {
       throw new Error("VsCodeTransport: acquireVsCodeApi 不可用，请在 VSCode Webview 中使用");
     }
 
     const id = ++this.messageId;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    return new Promise((resolve: (value: ApiRpcResult<M> | PromiseLike<ApiRpcResult<M>>) => void, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
       this.vscode!.postMessage({ id, method, payload });
       // 超时保护
       setTimeout(() => {

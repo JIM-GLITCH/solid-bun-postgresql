@@ -1,14 +1,16 @@
 /**
- * VSCode Webview 入口：使用 VsCodeTransport 与 Extension Host 通信，再渲染与 standalone 相同的前端
+ * VSCode Webview 入口：完全使用 tRPC，在 link 层直接使用 postMessage
  */
 import { render } from "solid-js/web";
-import { setTransport } from "./transport";
-import { VsCodeTransport } from "./transport/vscode-transport";
+import { createTrpcClient } from "./trpc/client";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 
-setTransport(new VsCodeTransport());
+// 初始化 tRPC client（VSCode 环境，使用直接 postMessage link）
+createTrpcClient({
+  environment: 'vscode',
+});
 
 // start listening for theme messages from extension
 initWebviewThemeListener();

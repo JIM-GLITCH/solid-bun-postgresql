@@ -38,6 +38,7 @@ export const handlePostgresConnect = (
           port: Number(params.port ?? 5432),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 
@@ -49,6 +50,7 @@ export const handlePostgresConnect = (
           port: Number(params.port ?? 5432),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 

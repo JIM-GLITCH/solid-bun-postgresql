@@ -5,6 +5,79 @@ import { sanitizeSql } from "../../../core/sanitize"
 import { Effect } from "effect"
 import { ConnectionId, SessionStore, currentSqlServerSession } from "../../../services/SessionStore"
 
+export const handleSqlServerExplain = (
+  query: string,
+): Effect.Effect<any, QueryExecutionError | SessionNotFoundError, Ss> =>
+  Effect.gen(function* () {
+    const sqlServerSession = yield* currentSqlServerSession;
+
+    const result = yield* Effect.tryPromise({
+      try: () => sqlServerSession.backGroundPool.request().query(
+        `SET SHOWPLAN_TEXT ON; ${query}`
+      ),
+      catch: (e) => new QueryExecutionError({
+        context: makeErrorContext("sqlserver.explain"),
+        sql: query,
+        databaseErrorCode: (e as any)?.code,
+        databaseErrorMessage: (e as Error)?.message,
+      }),
+    });
+
+    return result;
+  });
+
+export const handleSqlServerExplainText = (
+  query: string,
+): Effect.Effect<any, QueryExecutionError | SessionNotFoundError, Ss> =>
+  Effect.gen(function* () {
+    const sqlServerSession = yield* currentSqlServerSession;
+
+    const result = yield* Effect.tryPromise({
+      try: () => sqlServerSession.backGroundPool.request().query(
+        `SET SHOWPLAN_TEXT ON; ${query}`
+      ),
+      catch: (e) => new QueryExecutionError({
+        context: makeErrorContext("sqlserver.explainText"),
+        sql: query,
+        databaseErrorCode: (e as any)?.code,
+        databaseErrorMessage: (e as Error)?.message,
+      }),
+    });
+
+    return result;
+  });
+
+export const handleSqlServerPartitionInfo = (
+  schema: string,
+  table: string,
+): Effect.Effect<any, QueryExecutionError | SessionNotFoundError, Ss> =>
+  Effect.gen(function* () {
+    const sqlServerSession = yield* currentSqlServerSession;
+
+    const result = yield* Effect.tryPromise({
+      try: () => sqlServerSession.backGroundPool.request().query(
+        `SELECT 
+           p.partition_number,
+           p.rows,
+           a.type_desc,
+           a.data_space_id
+         FROM sys.partitions p
+         JOIN sys.allocation_units a ON p.partition_id = a.container_id
+         JOIN sys.tables t ON p.object_id = t.object_id
+         JOIN sys.schemas s ON t.schema_id = s.schema_id
+         WHERE s.name = '${schema}' AND t.name = '${table}'`
+      ),
+      catch: (e) => new QueryExecutionError({
+        context: makeErrorContext("sqlserver.partitionInfo"),
+        sql: "",
+        databaseErrorCode: (e as any)?.code,
+        databaseErrorMessage: (e as Error)?.message,
+      }),
+    });
+
+    return result;
+  });
+
 export const handleSqlServerDataTypes = (): Effect.Effect<
   { types: string[] },
   QueryExecutionError | SessionNotFoundError,
@@ -44,10 +117,7 @@ export const handleSqlServerTableComment = (
          FROM sys.tables t
          JOIN sys.schemas s ON t.schema_id = s.schema_id
          LEFT JOIN sys.extended_properties ep ON ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description'
-         WHERE s.name = @schema AND t.name = @table`,
-        {
-          input: { schema, table }
-        }
+         WHERE s.name = '${schema}' AND t.name = '${table}'`
       ),
       catch: (e) => new QueryExecutionError({
         context: makeErrorContext("sqlserver.tableComment"),

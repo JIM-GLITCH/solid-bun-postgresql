@@ -4,7 +4,7 @@
  * - 非 webview（HTTP/HTTPS）：直接用 execCommand，通用且简单
  */
 
-import { getTransport } from "./transport";
+import { getTrpcClient } from "./trpc/client";
 
 const isWebview = () => typeof (window as any).acquireVsCodeApi === "function";
 
@@ -20,7 +20,8 @@ function execCommandCopy(text: string): void {
 
 export async function writeClipboardText(text: string): Promise<void> {
   if (isWebview()) {
-    await getTransport().request("vscode/clipboard-write", { text });
+    const trpc = getTrpcClient();
+    await trpc.vscode.clipboardWrite.mutate({ text });
     return;
   }
   execCommandCopy(text);
@@ -29,7 +30,8 @@ export async function writeClipboardText(text: string): Promise<void> {
 /** Webview 下供 Monaco 桥接读取系统剪贴板（经扩展 `vscode.env.clipboard`） */
 export async function readClipboardText(): Promise<string> {
   if (isWebview()) {
-    const res = (await getTransport().request("vscode/clipboard-read", {})) as { text?: string };
+    const trpc = getTrpcClient();
+    const res = await trpc.vscode.clipboardRead.mutate({}) as any;
     return res?.text ?? "";
   }
   try {

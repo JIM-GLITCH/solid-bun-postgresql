@@ -12,6 +12,7 @@ import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
+import { trpcMiddleware } from "../backend/trpc/http-adapter";
 
 // 开发/自托管：加载仓库根 .env（Node 20.6+），便于用 SUBSCRIPTION_OFF=1 等开关免订阅跑本地 dev。
 // 用相对本模块的显式路径，不依赖 cwd；生产 SEA / 无 .env 环境静默跳过（loadEnvFile 缺文件会抛错）。
@@ -36,6 +37,9 @@ for (const [path, handlers] of Object.entries(apiRoutes)) {
     app.post(path, (c) => handlers.POST!(c.req.raw));
   }
 }
+// tRPC 路由（需注册在 /api/* 通配之前，避免被 handleApiPost 拦截）
+app.all('/api/trpc', trpcMiddleware());
+
 app.post("/api/*", (c) => handleApiPost(c.req.raw));
 
 function frontendBaseUri() {

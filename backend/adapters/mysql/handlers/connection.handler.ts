@@ -39,6 +39,7 @@ export const handleMysqlConnect = (
           port: Number(params.port ?? 3306),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 
@@ -50,6 +51,7 @@ export const handleMysqlConnect = (
           port: Number(params.port ?? 3306),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 
@@ -61,6 +63,7 @@ export const handleMysqlConnect = (
           port: Number(params.port ?? 3306),
           database: params.database ?? "",
           errorCode: (e as any)?.code,
+          rawMessage: (e as any)?.message,
         }),
       });
 

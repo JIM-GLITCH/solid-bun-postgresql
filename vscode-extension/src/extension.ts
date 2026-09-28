@@ -1,12 +1,16 @@
-// 前端 Webview 使用 frontend 打包的 webview.js，后端使用 backend/api-handlers-vscode，通过 postMessage 通信
+// 前端 Webview 使用 frontend 打包的 webview.js，后端使用 vscode-messenger + tRPC
 import * as vscode from "vscode";
-import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
+import { Messenger, type MessengerDiagnostic } from "vscode-messenger";
+import { registerTrpcHandler } from "../../backend/api-handlers-vscode.js";
 import { assertSubscriptionLicensed } from "../../backend/subscription-license.js";
 import { setVscodeAiKeyResolver } from "../../backend/runtime/vscode-runtime.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
 import { buildSubscriptionPortalEntryUrl, getDesktopOAuthContext } from "./desktop-host";
+
+// 在文件 toplevel 创建 Messenger 实例并复用
+const messenger = new Messenger();
 let currentPanel: vscode.WebviewPanel | null = null;
 
 const AI_SECRET_PREFIX = "dbplayer_ai_key_";
@@ -168,7 +172,7 @@ async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> 
   }
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): MessengerDiagnostic {
   const tokenStorage = new TokenStorage(context.secrets);
   const getApiBase = () => getSubscriptionConfig().apiBase;
   const getFrontendUrl = () => getSubscriptionConfig().frontendUrl;
@@ -238,6 +242,27 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
   context.subscriptions.push(themeListener);
+  
+  // 在 activate 中注册 tRPC handler（全局 messenger 实例）
+  const assertLicensed = async () => {
+    const token = (await deps.tokenStorage.getToken()) ?? null;
+    await assertSubscriptionLicensed(token, getSubscriptionConfig().apiBase.replace(/\/$/, ""));
+  };
+
+  console.log('[extension] ========================================');
+  console.log('[extension] Activating DB Player extension');
+  console.log('[extension] Registering tRPC handler with global messenger');
+  console.log('[extension] ========================================');
+
+  registerTrpcHandler(messenger, {
+    assertLicensed,
+    shouldAssertLicensed: (method) => method === 'subscription/assert',
+  });
+
+  console.log('[extension] tRPC handler registered successfully');
+
+  // 返回 diagnostic API 用于调试
+  return messenger.diagnosticApi();
 }
 
 export function deactivate() {}
@@ -330,18 +355,26 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
 
   const webview = panel.webview;
   const output = vscode.window.createOutputChannel("DB Player");
-  const assertLicensed = async () => {
-    const token = (await deps.tokenStorage.getToken()) ?? null;
-    await assertSubscriptionLicensed(token, getSubscriptionConfig().apiBase.replace(/\/$/, ""));
-  };
-  const baseHandler = createVscodeMessageHandler(webview, {
-    assertLicensed,
-    // 仅对显式订阅入口做校验；其他功能默认可用
-    shouldAssertLicensed: ({ kind, method }) => kind === "rpc" && method === "subscription/assert",
-  });
+
+  // ⭐ 关键：将 webview panel 注册到全局 messenger 实例
+  // 这样前端的 vscode-messenger-webview 才能与后端的 vscode-messenger 通信
+  console.log('[extension] ========================================');
+  console.log('[extension] Registering webview panel with messenger');
+  console.log('[extension] Panel ID:', panel.viewType);
+  console.log('[extension] ========================================');
+
+  messenger.registerWebviewPanel(panel);
+
+  console.log('[extension] Webview panel registered successfully');
+
+  // 订阅事件存储
+  const activeSubscriptions = new Set<string>();
+  
+  // 处理特殊的 VSCode 原生功能（这些不通过 tRPC）
   webview.onDidReceiveMessage(async (message: unknown) => {
     const safe = redactPayload(message);
     output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
+    
     if (
       message &&
       typeof message === "object" &&
@@ -365,7 +398,10 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       webview.postMessage({ type: "dbplayer/account", loggedIn: false });
       return;
     }
+    
     const msg = message as { id?: number; method?: string; payload?: unknown };
+    
+    // VSCode 原生功能处理
     if (typeof msg.id === "number" && msg.method === "vscode/save-file" && msg.payload != null) {
       try {
         await handleVscodeSaveFile(webview, msg.id, msg.payload as { content: string; filename: string; isBase64?: boolean });
@@ -423,28 +459,29 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
       }
       return;
     }
-    if (typeof msg.id === "number" && msg.method === "subscription/assert") {
-      try {
-        await assertLicensed();
-        webview.postMessage({ id: msg.id, data: { success: true } });
-      } catch (e: any) {
-        webview.postMessage({
-          id: msg.id,
-          error: e?.message ?? String(e),
-          subscriptionRequired: true,
-        });
-      }
+    
+    // SSE 订阅相关
+    if (message && typeof message === "object" && (message as { type?: string }).type === "subscribe-events") {
+      const { connectionId } = message as { connectionId: string };
+      output.appendLine(`[webview→ext] SSE subscribe: ${connectionId}`);
+      activeSubscriptions.add(`events:${connectionId}`);
+      // 这里可以添加 SSE 订阅逻辑
       return;
     }
-    if (typeof msg.id === "number" && msg.method === "subscription/account") {
-      try {
-        webview.postMessage({ id: msg.id, data: await getAccountStateFromTokenStorage(deps.tokenStorage) });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
+    if (message && typeof message === "object" && (message as { type?: string }).type === "unsubscribe-events") {
+      const { connectionId } = message as { connectionId: string };
+      output.appendLine(`[webview→ext] SSE unsubscribe: ${connectionId}`);
+      activeSubscriptions.delete(`events:${connectionId}`);
+      // 这里可以添加 SSE 取消订阅逻辑
       return;
     }
-    baseHandler(message as any);
+    
+    // tRPC 消息由 vscode-messenger 处理，这里忽略
+    if (message && typeof message === "object" && (message as { type?: string }).type === 'trpc') {
+      return; // tRPC 消息由 vscode-messenger 处理
+    }
+    
+    output.appendLine(`[webview→ext] Unknown message: ${JSON.stringify(safe)}`);
   });
 
   // HTML 来自 src/index.html，构建时复制到 out/index.html
@@ -457,7 +494,7 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
 
   const csp = [
     "default-src 'none'",
-    // 使用 webview.cspSource 即可，不要把具体 script URI 塞进 script-src（会被判定为无效 source）
+    // 使用 webview.cspSource 即可，不要把具体 script URI 填进 script-src（会被判定为无效 source）
     "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource,
     "style-src 'unsafe-inline' " + webview.cspSource,
     "font-src " + webview.cspSource + " data:",

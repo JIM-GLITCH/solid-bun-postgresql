@@ -1,128 +1,97 @@
 /**
- * 后端 API 处理器 - VSCode 实现：postMessage
- * 用于 VSCode 扩展的 Extension Host 端
- *
- * 使用方式：
- *   import { createVscodeMessageHandler } from "../backend/api-handlers-vscode";
- *   const handleMessage = createVscodeMessageHandler(webview);
- *   webview.webview.onDidReceiveMessage(handleMessage);
+ * 后端 API 处理器 - VSCode 实现：vscode-messenger 作为纯传输层
+ * 
+ * vscode-messenger 只负责传输，业务逻辑完全由 tRPC router 定义
  */
 
-import type { ApiMethod } from "../shared/src";
-import { routeApiRequest } from "./api/ApiCoreRefactored";
-import { subscribeSessionEvents } from "./api/sse";
-import { VscodeAppRuntime as AppRuntime } from "./runtime/vscode-runtime";
-import { SubscriptionRequiredError as CoreSubscriptionRequiredError } from "./core/errors";
-import { SubscriptionRequiredError } from "./subscription-license";
+import * as vscode from "vscode";
+import { Messenger } from "vscode-messenger";
+import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
+import { appRouter, setTrpcRuntime } from './trpc/server';
+import { VscodeAppRuntime } from './runtime/vscode-runtime';
 
-export interface VscodeWebview {
-  postMessage(message: unknown): Thenable<boolean>;
-}
-
-export type VscodeMessageHandlerOptions = {
-  /** 在 RPC 与 subscribe-events 前执行（Extension Host 从 Secret 取 token 并调订阅服务） */
+export interface VscodeMessengerOptions {
+  /** 在 RPC 前执行（Extension Host 从 Secret 取 token 并调订阅服务） */
   assertLicensed?: () => Promise<void>;
   /** 返回 true 时才执行 assertLicensed；默认全部校验（向后兼容） */
-  shouldAssertLicensed?: (ctx: {
-    kind: "rpc" | "subscribe-events";
-    method?: string;
-  }) => boolean;
-};
-
-function postRpcError(
-  webview: VscodeWebview,
-  id: number | undefined,
-  e: unknown
-): void {
-  if (e instanceof SubscriptionRequiredError || e instanceof CoreSubscriptionRequiredError) {
-    const msg = (e as Error).message;
-    if (typeof id === "number") {
-      void webview.postMessage({ id, error: msg, subscriptionRequired: true });
-    } else {
-      // subscribe-events 无 id：用伪 SSE 推给已注册的 onmessage
-      void webview.postMessage({
-        type: "sse",
-        connectionId: (e as { connectionId?: string }).connectionId,
-        data: { type: "ERROR", message: msg, timestamp: Date.now() },
-      });
-    }
-    return;
-  }
-  if (typeof id === "number") {
-    void webview.postMessage({ id, error: (e as Error)?.message ?? String(e) });
-  }
+  shouldAssertLicensed?: (method: string) => boolean;
 }
 
-/** 创建 VSCode Webview 的消息处理器 */
-export function createVscodeMessageHandler(webview: VscodeWebview, opts?: VscodeMessageHandlerOptions) {
-  const eventUnsubscribes = new Map<string, () => void>();
-  const assertLicensed = opts?.assertLicensed;
-  const shouldAssertLicensed = opts?.shouldAssertLicensed ?? (() => true);
+/**
+ * 注册统一的 tRPC handler 到 vscode-messenger
+ *
+ * 这个函数只注册一个 handler，所有 tRPC 请求都通过这个 handler 处理
+ * vscode-messenger 只作为传输层，不涉及具体业务逻辑
+ */
+export function registerTrpcHandler(
+  messenger: Messenger,
+  options: VscodeMessengerOptions = {}
+) {
+  const { assertLicensed, shouldAssertLicensed = () => true } = options;
 
-  return async (message: {
-    id?: number;
-    method?: string;
-    payload?: unknown;
-    type?: string;
-    sessionId?: string;
-    /** 旧版 webview；与 `sessionId` 同义 */
-    connectionId?: string;
-    /** 与 `db/*` 载荷中的 `connectionId` 相同（会话键） */
-    connectionSessionId?: string;
-  }) => {
-    const { id, method, payload, type, sessionId, connectionId, connectionSessionId } = message;
-    const sid = sessionId ?? connectionSessionId ?? connectionId;
+  // VSCode 环境使用 SecretStorage 运行时（AI key 存于扩展 SecretStorage）
+  setTrpcRuntime(VscodeAppRuntime);
 
-    // 订阅/取消订阅事件推送
-    if (type === "subscribe-events" && sid) {
-      try {
-        if (assertLicensed && shouldAssertLicensed({ kind: "subscribe-events" })) {
-          await assertLicensed();
-        }
-        // 订阅为异步（Effect）：先登记占位退订，若在订阅完成前收到
-        // unsubscribe-events，则标记 cancelled，待 unsub 返回后立即退订。
-        let cancelled = false;
-        let realUnsub: (() => void) | undefined;
-        eventUnsubscribes.set(sid, () => {
-          cancelled = true;
-          realUnsub?.();
-        });
-        const unsub = await AppRuntime.runPromise(
-          subscribeSessionEvents(sid, (msg) => {
-            void webview.postMessage({ type: "sse", connectionId: sid, data: msg });
-          })
-        );
-        if (cancelled) {
-          unsub();
-          eventUnsubscribes.delete(sid);
-        } else {
-          realUnsub = unsub;
-        }
-      } catch (e) {
-        postRpcError(webview, id, e);
-      }
-      return;
-    }
+  console.log('[backend] Registering tRPC handler with messenger');
 
-    if (type === "unsubscribe-events" && sid) {
-      eventUnsubscribes.get(sid)?.();
-      eventUnsubscribes.delete(sid);
-      return;
-    }
+  // 只注册一个统一的 tRPC handler
+  messenger.onRequest({ method: 'trpc' } as any, async (params: { path: string; input: any }) => {
+    console.log('[backend] ========================================');
+    console.log('[backend] Received tRPC request');
+    console.log('[backend] Path:', params?.path);
+    console.log('[backend] Input:', JSON.stringify(params?.input, null, 2));
+    console.log('[backend] ========================================');
 
-    // RPC 请求（统一转发到 Effect 路由）
-    if (typeof id !== "number" || !method || payload == null) return;
-
+    const { path, input } = params;
+    
     try {
-      if (assertLicensed && shouldAssertLicensed({ kind: "rpc", method })) {
+      // 可选的订阅校验
+      if (assertLicensed && shouldAssertLicensed(path)) {
         await assertLicensed();
       }
-      const result = await AppRuntime.runPromise(
-        routeApiRequest(method as ApiMethod, payload as any)
-      );
-      webview.postMessage({ id, data: result });
-    } catch (e: unknown) {
-      postRpcError(webview, id, e);
+
+      // 创建模拟的 Request 对象：fetchRequestHandler 从 URL path 解析 tRPC 过程路径，
+      // 从 body 解析 batch 输入（{0: input}），而不是从 body 里的 path 字段
+      const request = new Request(`http://localhost/api/trpc/${path}?batch=1`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 0: input }),
+      });
+
+      console.log('[backend] Processing tRPC request with fetchRequestHandler');
+
+      // 使用 tRPC 的 fetch handler 处理请求
+      // allowMethodOverride：query 过程默认只接受 GET，这里统一用 POST 发送，需要放开限制
+      const response = await fetchRequestHandler({
+        endpoint: '/api/trpc',
+        req: request,
+        router: appRouter,
+        createContext: () => ({}),
+        allowMethodOverride: true,
+      });
+
+      console.log('[backend] fetchRequestHandler completed, response status:', response.status);
+
+      const result = await response.json();
+      console.log('[backend] ========================================');
+      console.log('[backend] tRPC response result:');
+      console.log('[backend] Result:', JSON.stringify(result, null, 2));
+      console.log('[backend] Returning first item:', JSON.stringify(result[0], null, 2));
+      console.log('[backend] ========================================');
+
+      // tRPC batch 格式返回，取第一个结果（完整信封，含 error 分支）
+      // 成功 => { result: { data } }；失败 => { error: { message, code, data } }
+      return result[0];
+    } catch (error) {
+      console.error('[backend] ========================================');
+      console.error('[backend] tRPC handler error:', error);
+      console.error('[backend] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      console.error('[backend] ========================================');
+      throw error;
     }
-  };
+  });
+
+  console.log('[backend] tRPC handler registration complete');
 }

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker port *)",
+      "Bash(node -e ' *)",
+      "Read(//c/Users/junyao/codespace/front-table/solid-project/**)",
+      "Bash(grep -o \"Database connection failed[^\\\\`]*\" vscode-extension/out/extension.js)",
+      "Bash(python3 -)",
+      "Bash(perl -0pi -e 's/errorCode: \\\\\\(e as any\\\\\\)\\\\?\\\\.code,\\\\n\\(\\\\s*\\)\\\\}\\\\\\),/errorCode: \\(e as any\\)?.code,\\\\n$1  rawMessage: \\(e as any\\)?.message,\\\\n$1}\\),/g' backend/adapters/mysql/handlers/connection.handler.ts backend/adapters/sqlserver/handlers/connection.handler.ts)",
+      "WebSearch",
+      "Bash(xargs grep -l \"observer.next\")",
+      "Bash(xargs grep -l \"type.*'data'\\\\|type: \\\\\"data\\\\\"\")",
+      "Bash(bun build.ts)"
+    ]
+  }
+}

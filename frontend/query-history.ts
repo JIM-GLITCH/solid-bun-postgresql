@@ -3,7 +3,7 @@
  * 保存最近 500 条查询，支持按内容/时间搜索、一键复用
  */
 
-import { getTransport } from "./transport";
+import { getTrpcClient } from "./trpc/client";
 
 export interface QueryHistoryEntry {
   id: string;
@@ -17,7 +17,8 @@ export async function addQuery(sql: string, connectionId?: string): Promise<void
   const trimmed = sql.trim();
   if (!trimmed) return;
 
-  await getTransport().request("query-history/add", { sql: trimmed, connectionId });
+  const trpc = getTrpcClient();
+  await trpc.queryHistory.add.mutate({ sql: trimmed, connectionId });
 }
 
 /** 搜索历史：按 SQL 内容关键词、可选时间范围过滤 */
@@ -26,7 +27,8 @@ export async function searchHistory(options?: {
   since?: number;
   until?: number;
 }): Promise<QueryHistoryEntry[]> {
-  const result = await getTransport().request("query-history/search", {
+  const trpc = getTrpcClient();
+  const result = await trpc.queryHistory.search.query({
     keyword: options?.keyword,
     since: options?.since,
     until: options?.until,
@@ -36,10 +38,12 @@ export async function searchHistory(options?: {
 
 /** 删除单条 */
 export async function deleteEntry(id: string): Promise<void> {
-  await getTransport().request("query-history/delete", { id });
+  const trpc = getTrpcClient();
+  await trpc.queryHistory.delete.mutate({ id });
 }
 
 /** 清空全部 */
 export async function clearHistory(): Promise<void> {
-  await getTransport().request("query-history/clear", {});
+  const trpc = getTrpcClient();
+  await trpc.queryHistory.clear.mutate({});
 }

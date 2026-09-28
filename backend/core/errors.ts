@@ -40,10 +40,14 @@ export class DatabaseConnectionError extends Data.TaggedError(
   readonly database: string;
   readonly errorCode?: string;
   readonly retrySuggestion?: string;
+  /** 原始错误 message，仅当 errorCode/retrySuggestion 都缺失时兜底展示（如 pg 客户端侧无 code 的校验错误） */
+  readonly rawMessage?: string;
 }> {
   get message() {
+    const code = this.errorCode ? ` [${this.errorCode}]` : "";
     const suggestion = this.retrySuggestion ? ` — ${this.retrySuggestion}` : "";
-    return `Database connection failed: ${this.database}@${this.host}:${this.port}${suggestion}`;
+    const detail = !this.errorCode && !this.retrySuggestion && this.rawMessage ? ` — ${this.rawMessage}` : "";
+    return `Database connection failed: ${this.database}@${this.host}:${this.port}${code}${suggestion}${detail}`;
   }
 }
 

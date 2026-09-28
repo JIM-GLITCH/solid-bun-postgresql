@@ -2,15 +2,17 @@ import { render } from 'solid-js/web';
 import App from './app';
 import { DialogProvider } from './dialog-context';
 import { loadDefaultTheme } from './theme-sync';
-import { setTransport } from './transport';
-import { HttpTransport } from './transport/http-transport';
+import { createTrpcClient } from './trpc/client';
 import { getBrowserJwt } from './subscription/browser-token';
 
-setTransport(
-  new HttpTransport({
+// 初始化 tRPC client 为 Web 环境
+createTrpcClient({
+  environment: 'web',
+  httpOptions: {
+    baseUrl: '',
     getBearerToken: getBrowserJwt,
-  })
-);
+  },
+});
 
 function mount() {
   const root = document.getElementById('root');

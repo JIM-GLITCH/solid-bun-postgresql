@@ -125,6 +125,9 @@ export default function ConnectionForm(props: ConnectionFormProps) {
   const [testMessage, setTestMessage] = createSignal<{ ok: boolean; text: string } | null>(null);
   const [connectionName, setConnectionName] = createSignal(props.editStored?.name ?? props.editStored?.label ?? '');
   const [connectionGroup, setConnectionGroup] = createSignal(props.editStored?.group ?? '');
+  /** 新建模式下首次保存生成的 id，之后重复点击「保存」应更新同一条记录而不是新建 */
+  const [newConnectionId, setNewConnectionId] = createSignal<string | null>(null);
+  const [saveMessage, setSaveMessage] = createSignal<{ ok: boolean; text: string } | null>(null);
 
   const onChange = (key: keyof PostgresLoginParams, value: string) => {
     setError(null);
@@ -188,16 +191,19 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     setSaving(true);
     setError(null);
     setTestMessage(null);
+    setSaveMessage(null);
     try {
-      const connectionId = props.editStored?.id ?? props.connectionId ?? generateConnectionId();
+      const connectionId = props.editStored?.id ?? props.connectionId ?? newConnectionId() ?? generateConnectionId();
+      setNewConnectionId(connectionId);
       const payload = buildPayload();
       await saveConnection(connectionId, { ...payload, dbType: dbType() }, {
         name: connectionName().trim() || undefined,
         group: connectionGroup().trim() || undefined,
       });
+      setSaveMessage({ ok: true, text: '已保存' });
       props.onSaved?.();
     } catch (e: any) {
-      setError(e?.message ?? '保存失败');
+      setSaveMessage({ ok: false, text: e?.message ?? '保存失败' });
     } finally {
       setSaving(false);
     }
@@ -208,15 +214,17 @@ export default function ConnectionForm(props: ConnectionFormProps) {
     setSaving(true);
     setError(null);
     setTestMessage(null);
+    setSaveMessage(null);
     try {
       const payload = buildPayload();
       await saveConnection(props.editStored.id, { ...payload, dbType: dbType() }, {
         name: connectionName().trim() || undefined,
         group: connectionGroup().trim() || undefined,
       });
+      setSaveMessage({ ok: true, text: '已保存' });
       props.onSaved?.();
     } catch (e: any) {
-      setError(e?.message ?? '保存失败');
+      setSaveMessage({ ok: false, text: e?.message ?? '保存失败' });
     } finally {
       setSaving(false);
     }
@@ -548,6 +556,21 @@ export default function ConnectionForm(props: ConnectionFormProps) {
           {saving() ? '保存中...' : '保存'}
         </button>
       </div>
+      <Show when={saveMessage()}>
+        {(msg) => (
+          <div
+            style={{
+              color: msg().ok ? vscode.success : vscode.error,
+              'margin-top': '10px',
+              'font-size': '13px',
+              'line-height': '1.45',
+              'word-break': 'break-word',
+            }}
+          >
+            {msg().text}
+          </div>
+        )}
+      </Show>
       <Show when={error()}>
         <div style={{ color: vscode.error, 'margin-top': '10px', 'font-size': '13px', 'line-height': '1.45', 'word-break': 'break-word' }}>
           {error()}
