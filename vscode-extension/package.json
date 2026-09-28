@@ -25,6 +25,9 @@
   "categories": ["Other"],
   "activationEvents": ["*"],
   "main": "./out/extension.js",
+  "dependencies": {
+    "vscode-messenger": "^0.7.0"
+  },
   "icon": "icon.png",
   "contributes": {
     "commands": [
