@@ -3,7 +3,8 @@
  */
 
 import { createSignal, Show } from "solid-js";
-import { executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import { qualifiedTableForDdl } from "./sql-ddl-quote";
 import { vscode } from "./theme";
@@ -26,7 +27,7 @@ export default function DeleteTableModal(props: DeleteTableModalProps) {
     try {
       const kind = getRegisteredDbType(props.connectionId);
       const q = qualifiedTableForDdl(kind, props.schema, props.table);
-      await executeDdl(props.connectionId, `DROP TABLE ${q};`);
+      await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `DROP TABLE ${q};` });
       props.onSuccess(props.connectionId, props.schema);
       props.onClose();
     } catch (e) {

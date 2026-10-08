@@ -6,29 +6,32 @@
  */
 
 import { Hono } from "hono";
-import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
+import { DB_DISCONNECT_PATH, handleDbDisconnectBeacon } from "../backend/api-handlers-http";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
+import { appRouter, createContext } from "../backend/trpc";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = new Hono();
 registerDbPlayerSubscriptionRoutes(app);
-const apiRoutes = createApiRoutes();
 
-// API 路由：GET 逐项注册；POST 统一 `/api/*` → handleApiPost（与 `HttpTransport` 路径规则一致）
-for (const [path, handlers] of Object.entries(apiRoutes)) {
-  if (handlers.GET) {
-    app.get(path, (c) => handlers.GET!(c.req.raw));
-  }
-  if (handlers.POST) {
-    app.post(path, (c) => handlers.POST!(c.req.raw));
-  }
-}
-app.post("/api/*", (c) => handleApiPost(c.req.raw));
+// tRPC handler（业务 RPC 的唯一入口）
+app.all("/api/trpc/*", (c) => {
+  return fetchRequestHandler({
+    endpoint: "/api/trpc",
+    req: c.req.raw,
+    router: appRouter,
+    createContext: ({ req }) => createContext({ req }),
+  });
+});
+
+// 页面卸载时的 keepalive 断开（tRPC 批量协议无法表达）
+app.post(DB_DISCONNECT_PATH, (c) => handleDbDisconnectBeacon(c.req.raw));
 
 function frontendBaseUri() {
   const bundled = __filename.endsWith(".js");
@@ -82,6 +85,7 @@ async function setupStatic() {
   // SEA 或打包后必为生产模式；仅 ts 源码直接跑时为开发
   const isDev = !isSea && __filename.endsWith(".ts");
   const PORT = Number(process.env.PORT) || (isDev ? 3101 : 3000);
+
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);
   if (isDev) console.log(`  → Vite proxies /api to this port`);

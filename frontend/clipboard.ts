@@ -1,12 +1,11 @@
 /**
  * 剪贴板
- * - VSCode webview：走扩展桥接
- * - 非 webview（HTTP/HTTPS）：直接用 execCommand，通用且简单
+ * - VSCode webview：经 `trpc.host.clipboard*`（扩展宿主覆盖为 `vscode.env.clipboard`）
+ * - 非 webview（HTTP/HTTPS）：直接用 execCommand / navigator.clipboard
  */
 
-import { getTransport } from "./transport";
-
-const isWebview = () => typeof (window as any).acquireVsCodeApi === "function";
+import { trpc } from "./trpc-client";
+import { isVsCodeWebview } from "./platform";
 
 function execCommandCopy(text: string): void {
   const ta = document.createElement("textarea");
@@ -19,17 +18,17 @@ function execCommandCopy(text: string): void {
 }
 
 export async function writeClipboardText(text: string): Promise<void> {
-  if (isWebview()) {
-    await getTransport().request("vscode/clipboard-write", { text });
+  if (isVsCodeWebview()) {
+    await trpc.host.clipboardWrite.mutate({ text });
     return;
   }
   execCommandCopy(text);
 }
 
-/** Webview 下供 Monaco 桥接读取系统剪贴板（经扩展 `vscode.env.clipboard`） */
+/** Webview 下供编辑器桥接读取系统剪贴板（经扩展 `vscode.env.clipboard`） */
 export async function readClipboardText(): Promise<string> {
-  if (isWebview()) {
-    const res = (await getTransport().request("vscode/clipboard-read", {})) as { text?: string };
+  if (isVsCodeWebview()) {
+    const res = await trpc.host.clipboardRead.query();
     return res?.text ?? "";
   }
   try {

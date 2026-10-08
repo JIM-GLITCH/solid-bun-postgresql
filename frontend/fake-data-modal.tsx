@@ -3,7 +3,8 @@
  */
 
 import { createSignal, createEffect, Show, For } from "solid-js";
-import { getColumns, getPrimaryKeys, getUniqueConstraints, importRows } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { generateFakeData, isGeneratedStoredColumn, type TableColumn } from "./fake-data-generator";
 import { vscode } from "./theme";
 
@@ -31,9 +32,9 @@ export default function FakeDataModal(props: FakeDataModalProps) {
     setLoading(true);
     setError(null);
     Promise.all([
-      getColumns(connectionId, schema, table),
-      getPrimaryKeys(connectionId, schema, table),
-      getUniqueConstraints(connectionId, schema, table),
+      trpc.db.columns.query({ ...dbConn(connectionId), schema: schema, table: table }),
+      trpc.db.primaryKeys.query({ ...dbConn(connectionId), schema: schema, table: table }),
+      trpc.db.uniqueConstraints.query({ ...dbConn(connectionId), schema: schema, table: table }),
     ])
       .then(([colRes, pkRes, uqRes]) => {
         if (colRes.error) throw new Error(colRes.error);
@@ -60,9 +61,9 @@ export default function FakeDataModal(props: FakeDataModalProps) {
     try {
       const rows = generateFakeData(cols, rowCount(), { uniqueColumns: uniqueColumns() });
       const columnNames = cols.map((c) => c.column_name);
-      const res = await importRows(props.connectionId, props.schema, props.table, columnNames, rows, {
+      const res = await trpc.db.importRows.mutate({ ...dbConn(props.connectionId), schema: props.schema, table: props.table, columns: columnNames, rows: rows, ...({
         onError: "rollback",
-      });
+      }) });
       if (res.error) throw new Error(res.error);
       props.onSuccess?.(`已生成并导入 ${res.rowCount ?? rows.length} 行假数据`);
       props.onClose();

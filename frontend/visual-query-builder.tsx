@@ -2,7 +2,8 @@ import { createSignal, For, Show, onMount, onCleanup, createEffect, createMemo }
 import { createStore, produce } from "solid-js/store";
 import { writeClipboardText } from "./clipboard";
 import { parseSqlToVisualDescriptor } from "./sql-to-visual";
-import { getSchemas, getTables, getColumns, getForeignKeys } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import type { DbKind } from "../shared/src";
 
@@ -177,12 +178,12 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     if (!cid) return;
     setLoadingTables(true);
     try {
-      const schemasData = await getSchemas(cid);
+      const schemasData = await trpc.db.schemas.query(dbConn(cid));
 
       if (schemasData.schemas) {
         const schemaList: { schema: string; tables: string[] }[] = [];
         for (const schema of schemasData.schemas) {
-          const tablesData = await getTables(cid, schema);
+          const tablesData = await trpc.db.tables.query({ ...dbConn(cid), schema: schema });
           schemaList.push({
             schema,
             tables: [...(tablesData.tables || []), ...(tablesData.views || [])],
@@ -208,7 +209,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     if (!cid) return [];
 
     try {
-      const data = await getColumns(cid, schema, table);
+      const data = await trpc.db.columns.query({ ...dbConn(cid), schema: schema, table: table });
 
       const columns: TableColumn[] = (data.columns || []).map((col: any) => ({
         name: col.column_name,
@@ -236,7 +237,7 @@ export default function VisualQueryBuilder(props: VisualQueryBuilderProps) {
     if (!cid) return { outgoing: [], incoming: [] };
 
     try {
-      const data = await getForeignKeys(cid, schema, table);
+      const data = await trpc.db.foreignKeys.query({ ...dbConn(cid), schema: schema, table: table });
 
       const fkInfo = {
         outgoing: data.outgoing || [],

@@ -3,7 +3,8 @@
  */
 
 import { createSignal, Show } from "solid-js";
-import { executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent } from "./sql-ddl-quote";
@@ -37,16 +38,13 @@ export default function RenameTableModal(props: RenameTableModalProps) {
         const db = mysqlBacktickIdent(props.schema);
         const oldT = mysqlBacktickIdent(props.table);
         const newT = mysqlBacktickIdent(name);
-        await executeDdl(props.connectionId, `RENAME TABLE ${db}.${oldT} TO ${db}.${newT};`);
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `RENAME TABLE ${db}.${oldT} TO ${db}.${newT};` });
       } else if (isSqlServer(kind)) {
         const oldEsc = `${props.schema}.${props.table}`.replace(/'/g, "''");
         const newEsc = name.replace(/'/g, "''");
-        await executeDdl(props.connectionId, `EXEC sp_rename N'${oldEsc}', N'${newEsc}', N'OBJECT';`);
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `EXEC sp_rename N'${oldEsc}', N'${newEsc}', N'OBJECT';` });
       } else {
-        await executeDdl(
-          props.connectionId,
-          `ALTER TABLE ${pgQuoteIdent(props.schema)}.${pgQuoteIdent(props.table)} RENAME TO ${pgQuoteIdent(name)};`
-        );
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `ALTER TABLE ${pgQuoteIdent(props.schema)}.${pgQuoteIdent(props.table)} RENAME TO ${pgQuoteIdent(name)};` });
       }
       props.onSuccess(props.connectionId, props.schema);
       props.onClose();

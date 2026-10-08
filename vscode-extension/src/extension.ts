@@ -1,13 +1,23 @@
-// 前端 Webview 使用 frontend 打包的 webview.js，后端使用 backend/api-handlers-vscode，通过 postMessage 通信
+// 前端 Webview 与 Extension Host 通过 vscode-messenger（TypeFox）通信，
+// 通道上只跑 tRPC：
+// - Webview 侧：tRPC link（`trpc-vscode-link`），业务与宿主能力（`host.*`）都是 tRPC 调用
+// - 扩展侧：createWebviewRpcBridge 按 procedure path 分派——业务走 appRouter，
+//   宿主专属的 path（`host.*` / `subscription.openLogin` …）由 procedureOverrides 就地实现
 import * as vscode from "vscode";
-import { createVscodeMessageHandler } from "../../backend/api-handlers-vscode.js";
+import { Messenger } from "vscode-messenger";
+import type { WebviewIdMessageParticipant } from "vscode-messenger-common";
+import { observable } from "@trpc/server/observable";
+import { createWebviewRpcBridge, type WebviewRpcBridge } from "../../backend/vscode-messenger-bridge.js";
 import { assertSubscriptionLicensed } from "../../backend/subscription-license.js";
 import { setAiKeyResolver } from "../../backend/api-core.js";
 import { TokenStorage } from "./token-storage";
 import { DbPlayerUriHandler } from "./uri-handler";
 import { LicenseValidator } from "./license-validator";
 import { buildSubscriptionPortalEntryUrl, getDesktopOAuthContext } from "./desktop-host";
+
 let currentPanel: vscode.WebviewPanel | null = null;
+let currentReceiver: WebviewIdMessageParticipant | null = null;
+let messenger: Messenger | null = null;
 
 const AI_SECRET_PREFIX = "dbplayer_ai_key_";
 
@@ -31,6 +41,8 @@ type SubscriptionDeps = {
   getFrontendUrl: () => string;
   getApiBase: () => string;
 };
+
+type AccountState = { loggedIn: boolean; user?: { id?: number; email?: string | null } };
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
@@ -77,9 +89,7 @@ async function fetchAccountSummary(token: string): Promise<string> {
   }
 }
 
-async function getAccountStateFromTokenStorage(
-  tokenStorage: TokenStorage
-): Promise<{ loggedIn: boolean; user?: { id?: number; email?: string | null } }> {
+async function getAccountStateFromTokenStorage(tokenStorage: TokenStorage): Promise<AccountState> {
   const token = await tokenStorage.getToken();
   if (!token) {
     return { loggedIn: false };
@@ -95,12 +105,23 @@ async function getAccountStateFromTokenStorage(
   }
 }
 
-/** 根据 SecretStorage 中的 JWT 向 Webview 推送当前登录态（与侧栏「账号」展示一致） */
-async function postAccountStateToWebview(
-  webview: vscode.Webview,
-  tokenStorage: TokenStorage
-): Promise<void> {
-  webview.postMessage({ type: "dbplayer/account", ...(await getAccountStateFromTokenStorage(tokenStorage)) });
+/** 账号态订阅者：每个 Webview 的 `subscription.onAccountState` 订阅注册一个。 */
+const accountStateListeners = new Set<(state: AccountState) => void>();
+
+/** 把最新账号态同步给所有订阅者（登录 / 退出 / 切换账号后调用）。 */
+function notifyAccountState(state: AccountState): void {
+  for (const listener of [...accountStateListeners]) {
+    try {
+      listener(state);
+    } catch {
+      accountStateListeners.delete(listener);
+    }
+  }
+}
+
+/** 主动向 Webview 推送当前登录态（与侧栏「账号」展示一致） */
+async function pushAccountState(tokenStorage: TokenStorage): Promise<void> {
+  notifyAccountState(await getAccountStateFromTokenStorage(tokenStorage));
 }
 
 async function openSubscriptionLogin(deps: SubscriptionDeps): Promise<void> {
@@ -111,6 +132,23 @@ async function openSubscriptionLogin(deps: SubscriptionDeps): Promise<void> {
       `未能用系统浏览器打开订阅页。请复制链接到浏览器：${loginUrl}`
     );
   }
+}
+
+/** 退出登录：清扩展侧凭据 + 通知订阅服务 */
+async function logoutSubscription(deps: SubscriptionDeps): Promise<{ success: boolean }> {
+  const token = await deps.tokenStorage.getToken();
+  if (token) {
+    try {
+      const apiBase = getSubscriptionConfig().apiBase.replace(/\/$/, "");
+      await fetch(`${apiBase}/api/logout`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    } catch {
+      /* ignore */
+    }
+  }
+  await deps.tokenStorage.clearToken();
+  deps.licenseValidator.invalidateCache();
+  notifyAccountState({ loggedIn: false });
+  return { success: true };
 }
 
 async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> {
@@ -147,23 +185,13 @@ async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> 
     }
     await deps.tokenStorage.clearToken();
     deps.licenseValidator.invalidateCache();
-    if (currentPanel) void postAccountStateToWebview(currentPanel.webview, deps.tokenStorage);
+    void pushAccountState(deps.tokenStorage);
     await openSubscriptionLogin(deps);
     vscode.window.showInformationMessage("已清除本地登录，正在打开登录页。");
     return;
   }
   if (pick.value === "logout") {
-    if (token) {
-      try {
-        const apiBase = getSubscriptionConfig().apiBase.replace(/\/$/, "");
-        await fetch(`${apiBase}/api/logout`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
-      } catch {
-        /* ignore */
-      }
-    }
-    await deps.tokenStorage.clearToken();
-    deps.licenseValidator.invalidateCache();
-    if (currentPanel) void postAccountStateToWebview(currentPanel.webview, deps.tokenStorage);
+    await logoutSubscription(deps);
     vscode.window.showInformationMessage("DB Player: 已退出登录（本地凭据已清除）");
   }
 }
@@ -176,12 +204,14 @@ export function activate(context: vscode.ExtensionContext) {
   const deps: SubscriptionDeps = { tokenStorage, licenseValidator, getFrontendUrl, getApiBase };
   setAiKeyResolver(async (keyRef) => context.secrets.get(`${AI_SECRET_PREFIX}${keyRef}`));
 
+  messenger = new Messenger();
+
   // 注册 URI Handler：{uriScheme}://lilr.db-player/auth?token=JWT（随宿主变化，如 vscode / cursor / kiro）
   context.subscriptions.push(
     vscode.window.registerUriHandler(
       new DbPlayerUriHandler(tokenStorage, () => {
         licenseValidator.invalidateCache();
-        if (currentPanel) void postAccountStateToWebview(currentPanel.webview, tokenStorage);
+        void pushAccountState(tokenStorage);
       })
     )
   );
@@ -234,33 +264,25 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
-/** VSCode 插件内：保存文件（弹窗选路径后写入） */
-async function handleVscodeSaveFile(
-  webview: vscode.Webview,
-  id: number,
-  payload: { content: string; filename: string; isBase64?: boolean }
-): Promise<void> {
+// ── 宿主专属 procedure 实现（覆盖服务端 appRouter 的同名 path）──────────────
+
+type SaveFilePayload = { content: string; filename: string; isBase64?: boolean };
+type ReadFilePayload = { accept?: string[] };
+
+async function saveFileToWorkspace(payload: SaveFilePayload): Promise<{ cancelled?: boolean; success?: boolean; path?: string }> {
   const uri = await vscode.window.showSaveDialog({
     defaultUri: vscode.Uri.file(payload.filename),
     saveLabel: "保存",
   });
-  if (!uri) {
-    webview.postMessage({ id, data: { cancelled: true } });
-    return;
-  }
+  if (!uri) return { cancelled: true };
   const content = payload.isBase64
     ? Buffer.from(payload.content, "base64")
     : new TextEncoder().encode(payload.content);
   await vscode.workspace.fs.writeFile(uri, new Uint8Array(content));
-  webview.postMessage({ id, data: { success: true, path: uri.fsPath } });
+  return { success: true, path: uri.fsPath };
 }
 
-/** VSCode 插件内：打开文件（弹窗选文件后读取内容返回） */
-async function handleVscodeReadFile(
-  webview: vscode.Webview,
-  id: number,
-  payload: { accept?: string[] }
-): Promise<void> {
+async function readFileFromWorkspace(payload: ReadFilePayload): Promise<Record<string, unknown>> {
   const filters: Record<string, string[]> = {};
   if (payload.accept?.length) {
     filters["导入文件"] = payload.accept.map((e) => e.replace(/^\./, ""));
@@ -269,33 +291,73 @@ async function handleVscodeReadFile(
     canSelectMany: false,
     filters: Object.keys(filters).length ? filters : undefined,
   });
-  if (!uris?.length) {
-    webview.postMessage({ id, data: { cancelled: true } });
-    return;
-  }
+  if (!uris?.length) return { cancelled: true };
   const uri = uris[0];
   const bytes = await vscode.workspace.fs.readFile(uri);
   const name = uri.path.split(/[/\\]/).pop() ?? "file";
-  const isBinary = /\.(xlsx|xls)$/i.test(name);
-  if (isBinary) {
-    const base64 = Buffer.from(bytes).toString("base64");
-    webview.postMessage({ id, data: { contentBase64: base64, filename: name } });
-  } else {
-    const content = new TextDecoder("utf-8").decode(bytes);
-    webview.postMessage({ id, data: { content, filename: name } });
+  if (/\.(xlsx|xls)$/i.test(name)) {
+    return { contentBase64: Buffer.from(bytes).toString("base64"), filename: name };
   }
+  return { content: new TextDecoder("utf-8").decode(bytes), filename: name };
 }
 
-/** 脱敏后用于日志，避免把密码或密文打到输出 */
-function redactPayload(msg: unknown): unknown {
-  if (msg && typeof msg === "object" && "payload" in msg && typeof (msg as any).payload === "object") {
-    const p = (msg as any).payload as Record<string, unknown>;
-    const copy = { ...p };
-    if ("password" in copy && copy.password) copy.password = "<redacted>";
-    if ("passwordEncrypted" in copy && copy.passwordEncrypted) copy.passwordEncrypted = "<redacted>";
-    return { ...msg, payload: copy };
-  }
-  return msg;
+/**
+ * 宿主专属 procedure 覆盖：path 与服务端 `appRouter` 同名，但改由扩展实现。
+ * - `host.*`：文件、剪贴板、AI Key（服务端返回「不支持」）
+ * - `subscription.openLogin` / `logout`：宿主动作
+ * - `subscription.onAccountState`：由扩展事件驱动的事件流
+ */
+function createProcedureOverrides(context: vscode.ExtensionContext, deps: SubscriptionDeps) {
+  return {
+    "subscription.openLogin": async (): Promise<{ success: boolean }> => {
+      await openSubscriptionLogin(deps);
+      return { success: true };
+    },
+
+    "subscription.logout": () => logoutSubscription(deps),
+
+    // 账号态推送：订阅建立即推一次当前状态，之后由 pushAccountState/notifyAccountState 驱动
+    "subscription.onAccountState": () =>
+      observable<AccountState>((emit) => {
+        let active = true;
+        const listener = (state: AccountState) => {
+          if (active) emit.next(state);
+        };
+        accountStateListeners.add(listener);
+        void getAccountStateFromTokenStorage(deps.tokenStorage).then((state) => {
+          if (active) emit.next(state);
+        });
+        return () => {
+          active = false;
+          accountStateListeners.delete(listener);
+        };
+      }),
+
+    "host.saveFile": (input: unknown) => saveFileToWorkspace(input as SaveFilePayload),
+
+    "host.readFile": (input: unknown) => readFileFromWorkspace(input as ReadFilePayload),
+
+    "host.clipboardWrite": async (input: unknown) => {
+      await vscode.env.clipboard.writeText((input as { text?: string } | undefined)?.text ?? "");
+      return { success: true };
+    },
+
+    "host.clipboardRead": async () => ({ text: (await vscode.env.clipboard.readText()) ?? "" }),
+
+    "host.aiKeySet": async (input: unknown) => {
+      const { keyRef, apiKey } = (input ?? {}) as { keyRef?: string; apiKey?: string };
+      if (!keyRef?.trim() || !apiKey?.trim()) throw new Error("缺少 keyRef 或 apiKey");
+      await context.secrets.store(`${AI_SECRET_PREFIX}${keyRef.trim()}`, apiKey.trim());
+      return { success: true };
+    },
+
+    "host.aiKeyDelete": async (input: unknown) => {
+      const { keyRef } = (input ?? {}) as { keyRef?: string };
+      if (!keyRef?.trim()) throw new Error("缺少 keyRef");
+      await context.secrets.delete(`${AI_SECRET_PREFIX}${keyRef.trim()}`);
+      return { success: true };
+    },
+  };
 }
 
 async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: SubscriptionDeps) {
@@ -314,129 +376,40 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
     }
   );
 
-  // set current panel reference and clear when disposed
-  currentPanel = panel;
-  panel.onDidDispose(() => {
-    if (currentPanel === panel) currentPanel = null;
-  });
-
   const webview = panel.webview;
-  const output = vscode.window.createOutputChannel("DB Player");
   const assertLicensed = async () => {
     const token = (await deps.tokenStorage.getToken()) ?? null;
     await assertSubscriptionLicensed(token, getSubscriptionConfig().apiBase.replace(/\/$/, ""));
   };
-  const baseHandler = createVscodeMessageHandler(webview, {
-    assertLicensed,
-    // 仅对显式订阅入口做校验；其他功能默认可用
-    shouldAssertLicensed: ({ kind, method }) => kind === "rpc" && method === "subscription/assert",
-  });
-  webview.onDidReceiveMessage(async (message: unknown) => {
-    const safe = redactPayload(message);
-    output.appendLine(`[webview→ext] ${JSON.stringify(safe)}`);
-    if (
-      message &&
-      typeof message === "object" &&
-      (message as { type?: string }).type === "dbplayer/open-subscription-login"
-    ) {
-      await openSubscriptionLogin(deps);
-      return;
-    }
-    if (message && typeof message === "object" && (message as { type?: string }).type === "dbplayer/logout-subscription") {
-      const tok = await deps.tokenStorage.getToken();
-      if (tok) {
-        try {
-          const api = getSubscriptionConfig().apiBase.replace(/\/$/, "");
-          await fetch(`${api}/api/logout`, { method: "POST", headers: { Authorization: `Bearer ${tok}` } });
-        } catch {
-          /* ignore */
+
+  // Webview 侧只调 tRPC：业务 path 走 appRouter，宿主专属 path 由 overrides 覆盖
+  const receiver = messenger!.registerWebviewPanel(panel);
+  const bridge: WebviewRpcBridge = createWebviewRpcBridge({
+    messenger: messenger!,
+    receiver,
+    getContext: () => ({}),
+    procedureOverrides: {
+      // 订阅校验用扩展侧凭据（服务端 Cookie/Bearer 逻辑不适用）
+      "subscription.assert": async (input) => {
+        const feature = (input as { feature?: string } | undefined)?.feature;
+        if (feature !== "visual-query-builder" && feature !== "table-designer") {
+          throw new Error("无效的功能标识");
         }
-      }
-      await deps.tokenStorage.clearToken();
-      deps.licenseValidator.invalidateCache();
-      webview.postMessage({ type: "dbplayer/account", loggedIn: false });
-      return;
-    }
-    const msg = message as { id?: number; method?: string; payload?: unknown };
-    if (typeof msg.id === "number" && msg.method === "vscode/save-file" && msg.payload != null) {
-      try {
-        await handleVscodeSaveFile(webview, msg.id, msg.payload as { content: string; filename: string; isBase64?: boolean });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "vscode/read-file" && msg.payload != null) {
-      try {
-        await handleVscodeReadFile(webview, msg.id, msg.payload as { accept?: string[] });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "vscode/clipboard-write" && msg.payload != null) {
-      try {
-        const text = (msg.payload as { text?: string }).text ?? "";
-        await vscode.env.clipboard.writeText(text);
-        webview.postMessage({ id: msg.id, data: { success: true } });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "vscode/clipboard-read") {
-      try {
-        const text = await vscode.env.clipboard.readText();
-        webview.postMessage({ id: msg.id, data: { text: text ?? "" } });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "vscode/ai-key-set" && msg.payload != null) {
-      try {
-        const { keyRef, apiKey } = msg.payload as { keyRef?: string; apiKey?: string };
-        if (!keyRef?.trim() || !apiKey?.trim()) throw new Error("缺少 keyRef 或 apiKey");
-        await context.secrets.store(`${AI_SECRET_PREFIX}${keyRef.trim()}`, apiKey.trim());
-        webview.postMessage({ id: msg.id, data: { success: true } });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "vscode/ai-key-delete" && msg.payload != null) {
-      try {
-        const { keyRef } = msg.payload as { keyRef?: string };
-        if (!keyRef?.trim()) throw new Error("缺少 keyRef");
-        await context.secrets.delete(`${AI_SECRET_PREFIX}${keyRef.trim()}`);
-        webview.postMessage({ id: msg.id, data: { success: true } });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "subscription/assert") {
-      try {
         await assertLicensed();
-        webview.postMessage({ id: msg.id, data: { success: true } });
-      } catch (e: any) {
-        webview.postMessage({
-          id: msg.id,
-          error: e?.message ?? String(e),
-          subscriptionRequired: true,
-        });
-      }
-      return;
-    }
-    if (typeof msg.id === "number" && msg.method === "subscription/account") {
-      try {
-        webview.postMessage({ id: msg.id, data: await getAccountStateFromTokenStorage(deps.tokenStorage) });
-      } catch (e: any) {
-        webview.postMessage({ id: msg.id, error: e?.message ?? String(e) });
-      }
-      return;
-    }
-    baseHandler(message as any);
+        return { success: true };
+      },
+      "subscription.account": () => getAccountStateFromTokenStorage(deps.tokenStorage),
+      ...createProcedureOverrides(context, deps),
+    },
+  });
+
+  // set current panel reference and clear when disposed
+  currentPanel = panel;
+  currentReceiver = receiver;
+  panel.onDidDispose(() => {
+    bridge.dispose();
+    if (currentPanel === panel) currentPanel = null;
+    if (currentReceiver === receiver) currentReceiver = null;
   });
 
   // HTML 来自 src/index.html，构建时复制到 out/index.html

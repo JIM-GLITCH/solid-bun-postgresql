@@ -3,7 +3,8 @@
  */
 
 import { createSignal, Show } from "solid-js";
-import { executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { sqlBracketIdent } from "./sql-ddl-quote";
@@ -94,7 +95,7 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
           ? // 单条批处理、无 EXEC、无尾部分号，减少 2759；属主显式 dbo
             `CREATE SCHEMA ${sqlBracketIdent(n)} AUTHORIZATION dbo`
           : `CREATE SCHEMA ${pgQuoteIdent(n)};`;
-      await executeDdl(props.connectionId, sql);
+      await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: sql });
       props.onSuccess(props.connectionId);
       props.onClose();
     } catch (e) {

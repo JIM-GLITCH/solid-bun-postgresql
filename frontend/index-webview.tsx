@@ -1,14 +1,19 @@
 /**
- * VSCode Webview 入口：使用 VsCodeTransport 与 Extension Host 通信，再渲染与 standalone 相同的前端
+ * VSCode Webview 入口。
+ *
+ * 与 Extension Host 的通信只有一条通道：vscode-messenger（TypeFox），
+ * 上面只跑 tRPC——业务 procedure 与宿主能力（`host.*`）都是 tRPC 调用，
+ * 由扩展宿主在桥里按 path 分派（见 `backend/vscode-messenger-bridge`）。
+ * 此处只需把 tRPC client 的传输 link 换成 messenger link。
  */
 import { render } from "solid-js/web";
-import { setTransport } from "./transport";
-import { VsCodeTransport } from "./transport/vscode-transport";
+import { createVscodeMessengerLink } from "./trpc-vscode-link";
+import { setTrpcTransportLink } from "./trpc-client";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
 import { initWebviewThemeListener } from "./theme-sync";
 
-setTransport(new VsCodeTransport());
+setTrpcTransportLink(createVscodeMessengerLink());
 
 // start listening for theme messages from extension
 initWebviewThemeListener();

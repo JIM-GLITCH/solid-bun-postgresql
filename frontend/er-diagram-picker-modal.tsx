@@ -3,7 +3,8 @@
  */
 
 import { createSignal, createEffect, Show, For, onCleanup } from "solid-js";
-import { getSchemas, getTables } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { vscode } from "./theme";
 import type { ErDiagramSelection } from "./er-diagram-modal";
 
@@ -39,7 +40,7 @@ export default function ErDiagramPickerModal(props: ErDiagramPickerModalProps) {
     setLoading(true);
     setError(null);
     try {
-      const schemasRes = await getSchemas(connectionId);
+      const schemasRes = await trpc.db.schemas.query(dbConn(connectionId));
       if (isCancelled()) return;
       if (schemasRes.error) throw new Error(schemasRes.error);
 
@@ -47,7 +48,7 @@ export default function ErDiagramPickerModal(props: ErDiagramPickerModalProps) {
       const withTables: SchemaWithTables[] = await Promise.all(
         schemaList.map(async (s) => {
           if (isCancelled()) return { schema: s, tables: [] as string[], expanded: false };
-          const tablesRes = await getTables(connectionId, s);
+          const tablesRes = await trpc.db.tables.query({ ...dbConn(connectionId), schema: s });
           const tables = (tablesRes.tables || []).concat(tablesRes.views || []);
           return { schema: s, tables, expanded: false };
         })

@@ -1,6 +1,6 @@
 /**
  * 后端 API 核心：纯业务逻辑，与传输方式无关
- * 供 api-handlers-http 和 api-handlers-vscode 共同调用
+ * 供 HTTP 处理器（`api-handlers-http`）与 tRPC router 共同调用
  */
 
 import {

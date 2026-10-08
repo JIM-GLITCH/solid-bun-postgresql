@@ -10,7 +10,7 @@
 import { formatCellDisplay } from "../shared/src";
 import type { ColumnEditableInfo } from "../shared/src";
 import * as XLSX from "xlsx";
-import { saveFileViaVscode } from "./api";
+import { trpc } from "./trpc-client";
 
 function escapeCsvCell(val: string): string {
   if (/[",\r\n]/.test(val)) {
@@ -21,12 +21,13 @@ function escapeCsvCell(val: string): string {
 
 async function saveOrDownload(content: string | Blob, filename: string, options?: { isBase64?: boolean }): Promise<void> {
   try {
-    const saved = await saveFileViaVscode(
-      typeof content === "string" ? content : await blobToBase64(content),
+    // 宿主能力走 tRPC（扩展覆盖为「另存为」；非扩展环境抛「不支持」→ 回退浏览器下载）
+    const res = await trpc.host.saveFile.mutate({
+      content: typeof content === "string" ? content : await blobToBase64(content),
       filename,
-      options ?? (typeof content !== "string" ? { isBase64: true } : undefined)
-    );
-    if (saved) return;
+      isBase64: options?.isBase64 ?? (typeof content !== "string" ? true : undefined),
+    });
+    if (res?.success) return;
   } catch {
     // 非 VSCode 或用户取消等，回退到浏览器下载
   }

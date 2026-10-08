@@ -1,4 +1,5 @@
-import { getVsCodeWebviewApi } from "../transport/vscode-transport";
+import { trpc } from "../trpc-client";
+import { isElectrobun, isVsCodeWebview } from "../platform";
 
 const DEFAULT_PORTAL = "https://dbplayer.top";
 const DEFAULT_API = "https://api.dbplayer.top";
@@ -29,10 +30,7 @@ export function getSubscriptionApiUrl(): string {
 
 export function canAutoRedirectToWebLogin(): boolean {
   if (typeof window === "undefined") return false;
-  const w = window as Window & { acquireVsCodeApi?: unknown; __electrobunApiRequest?: unknown };
-  if (typeof w.acquireVsCodeApi === "function") return false;
-  if (typeof w.__electrobunApiRequest === "function") return false;
-  return true;
+  return !isVsCodeWebview() && !isElectrobun();
 }
 
 export function markLoginRedirecting(): void {
@@ -65,9 +63,9 @@ export function getStandaloneSubscriptionOAuthCallbackUrl(): string {
  * Standalone/Web 整页跳转带 return；其它环境新窗口打开门户。
  */
 export function openSubscriptionPortalForCurrentEnvironment(): void {
-  const vsc = getVsCodeWebviewApi();
-  if (vsc) {
-    vsc.postMessage({ type: "dbplayer/open-subscription-login" });
+  if (isVsCodeWebview()) {
+    // 宿主动作：扩展在系统浏览器打开订阅站（服务端默认「不支持」，由扩展覆盖实现）
+    void trpc.subscription.openLogin.mutate();
     return;
   }
   if (canAutoRedirectToWebLogin()) {

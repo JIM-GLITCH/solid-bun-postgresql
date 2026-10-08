@@ -3,7 +3,8 @@
  */
 
 import { createSignal, createEffect, For, Show } from "solid-js";
-import { getSchemas, getTables, getColumns, getPrimaryKeys, importRows, readFileViaVscode } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { parseImportFile, parseFromVscodeResult, type ParsedImport } from "./import-parse";
 import { vscode } from "./theme";
 
@@ -41,7 +42,7 @@ export default function ImportModal(props: ImportModalProps) {
     const cid = props.connectionId;
     if (!cid) return;
     setLoading(true);
-    getSchemas(cid)
+    trpc.db.schemas.query(dbConn(cid))
       .then((r) => {
         if (r.error) throw new Error(r.error);
         setSchemas(r.schemas || []);
@@ -60,7 +61,7 @@ export default function ImportModal(props: ImportModalProps) {
       return;
     }
     setLoading(true);
-    getTables(cid, s)
+    trpc.db.tables.query({ ...dbConn(cid), schema: s })
       .then((r) => {
         if (r.error) throw new Error(r.error);
         const list = (r.tables || []).concat(r.views || []);
@@ -80,7 +81,7 @@ export default function ImportModal(props: ImportModalProps) {
       setMappingRows([]);
       return;
     }
-    Promise.all([getColumns(cid, s, t), getPrimaryKeys(cid, s, t)])
+    Promise.all([trpc.db.columns.query({ ...dbConn(cid), schema: s, table: t }), trpc.db.primaryKeys.query({ ...dbConn(cid), schema: s, table: t })])
       .then(([colRes, pkRes]) => {
         if (colRes.error) throw new Error(colRes.error);
         const cols = (colRes.columns || []) as TableColumn[];
@@ -143,9 +144,17 @@ export default function ImportModal(props: ImportModalProps) {
   async function handleChooseFile() {
     setError(null);
     try {
-      const data = await readFileViaVscode({ accept: [".csv", ".json", ".xlsx", ".xls"] });
-      if (!data) return;
-      const result = parseFromVscodeResult(data);
+      // 宿主能力走 tRPC（扩展覆盖为文件选择器；非扩展环境抛「不支持」→ 回退原生 input）
+      const data = await trpc.host.readFile.mutate({ accept: [".csv", ".json", ".xlsx", ".xls"] });
+      if (!data || data.cancelled || !data.filename) return;
+      const picked =
+        data.contentBase64 != null
+          ? { contentBase64: data.contentBase64, filename: data.filename }
+          : data.content != null
+            ? { content: data.content, filename: data.filename }
+            : null;
+      if (!picked) return;
+      const result = parseFromVscodeResult(picked);
       if (result.error) {
         setError(result.error);
         setParsed(null);
@@ -215,11 +224,11 @@ export default function ImportModal(props: ImportModalProps) {
     setError(null);
     try {
       const conflictCols = conflictColumns();
-      const res = await importRows(cid, s, t, columns, rowsData, {
+      const res = await trpc.db.importRows.mutate({ ...dbConn(cid), schema: s, table: t, columns: columns, rows: rowsData, ...({
         conflictColumns: conflictCols.length ? conflictCols : undefined,
         onConflict: conflictCols.length ? onConflict() : undefined,
         onError: onError(),
-      });
+      }) });
       if (res.error) throw new Error(res.error);
       props.onSuccess?.(`已导入 ${res.rowCount ?? rowsData.length} 行`);
       props.onClose();

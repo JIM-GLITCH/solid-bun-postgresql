@@ -1,5 +1,7 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
-import { getSessionMonitor, sessionControl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
+import type { SessionMonitorResult } from "../backend/trpc/router/db";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { useDialog } from "./dialog-context";
@@ -10,7 +12,7 @@ interface PgStatModalProps {
   onClose: () => void;
 }
 
-type PgStatData = Awaited<ReturnType<typeof getSessionMonitor>>;
+type PgStatData = SessionMonitorResult;
 
 function slowSourceLabel(source: PgStatData["slowQuerySource"] | undefined): string {
   switch (source) {
@@ -60,7 +62,7 @@ export default function PgStatModal(props: PgStatModalProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await getSessionMonitor(props.connectionId, 20);
+      const res = await trpc.db.sessionMonitor.query({ ...dbConn(props.connectionId), limit: 20 });
       setData(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -83,7 +85,7 @@ export default function PgStatModal(props: PgStatModalProps) {
     if (!(await showConfirm(tip, title))) return;
     setOpLoadingPid(pid);
     try {
-      const res = await sessionControl(props.connectionId, pid, action);
+      const res = await trpc.db.sessionControl.mutate({ ...dbConn(props.connectionId), pid: pid, action: action });
       if (!res.success) {
         throw new Error(`${action} 返回 false（可能该会话已结束或权限不足）`);
       }

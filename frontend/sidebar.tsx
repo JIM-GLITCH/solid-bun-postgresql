@@ -2,16 +2,9 @@ import type { Accessor } from "solid-js";
 import { createSignal, For, Show, createEffect, onCleanup } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
-import {
-  getSchemas,
-  getTables,
-  getColumns,
-  getIndexes,
-  getTableDdl,
-  getFunctionDdl,
-  getSubscriptionAccount,
-  subscribeAccountState,
-} from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
+import { isVsCodeWebview } from "./platform";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
@@ -34,7 +27,6 @@ import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
 import { openSubscriptionPortalForCurrentEnvironment } from "./subscription/portal";
-import { getVsCodeWebviewApi } from "./transport/vscode-transport";
 
 /** 侧栏生成「查全表 / TOP / LIMIT」等与方言一致的 SELECT */
 function selectStarFromTableSql(connectionId: string, schema: string, table: string, topN?: number): string {
@@ -236,7 +228,7 @@ export default function Sidebar(props: SidebarProps) {
     ++accountRefreshTicket;
     const ticket = accountRefreshTicket;
     try {
-      const data = await getSubscriptionAccount();
+      const data = await trpc.subscription.account.query();
       if (ticket !== accountRefreshTicket) return;
       applyAccountFromHost({ loggedIn: !!data.loggedIn, user: data.user });
     } catch {
@@ -251,9 +243,9 @@ export default function Sidebar(props: SidebarProps) {
   }
 
   async function handleLogout(): Promise<void> {
-    const vsc = getVsCodeWebviewApi();
-    if (vsc) {
-      vsc.postMessage({ type: "dbplayer/logout-subscription" });
+    if (isVsCodeWebview()) {
+      // 宿主动作：清扩展侧凭据（服务端默认「不支持」，由扩展覆盖实现）
+      await trpc.subscription.logout.mutate();
       return;
     }
     try {
@@ -267,10 +259,14 @@ export default function Sidebar(props: SidebarProps) {
     await refreshAccountState();
   }
 
-  // 登录态变更统一从 transport.on({ event: "account" }) 接收（VSCode 为 postMessage）
+  // 登录态变更：宿主（VSCode 扩展）登录/退出后经 tRPC subscription 推送到 webview；
+  // Web/Standalone 无推送源，登录态由 subscription/account 查询获得。
   createEffect(() => {
-    const unsubscribe = subscribeAccountState((account) => applyAccountFromHost(account));
-    onCleanup(() => unsubscribe());
+    if (!isVsCodeWebview()) return;
+    const subscription = trpc.subscription.onAccountState.subscribe(undefined, {
+      onData: (account) => applyAccountFromHost(account),
+    });
+    onCleanup(() => subscription.unsubscribe());
   });
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
@@ -437,7 +433,7 @@ export default function Sidebar(props: SidebarProps) {
   // 加载 schemas，挂到指定连接节点下。reuseChildren=true 时保留已展开的 tables/views（普通展开）；false 用于全局/连接刷新，避免旧列表不更新
   async function loadSchemas(connectionId: string, connectionNodeId: string, reuseChildren = true) {
     try {
-      const data = await getSchemas(connectionId);
+      const data = await trpc.db.schemas.query(dbConn(connectionId));
       if (data.schemas) {
         const connNode = findNode(state.nodes, connectionNodeId);
         const existingSchemas = connNode?.children ?? [];
@@ -483,7 +479,7 @@ export default function Sidebar(props: SidebarProps) {
   // 加载表和视图
   async function loadTables(connectionId: string, schema: string) {
     try {
-      const data = await getTables(connectionId, schema);
+      const data = await trpc.db.tables.query({ ...dbConn(connectionId), schema: schema });
 
       const tablesId = `tables:${connectionId}:${schema}`;
       const viewsId = `views:${connectionId}:${schema}`;
@@ -566,7 +562,7 @@ export default function Sidebar(props: SidebarProps) {
   // 加载列信息
   async function loadColumns(connectionId: string, schema: string, table: string) {
     try {
-      const data = await getColumns(connectionId, schema, table);
+      const data = await trpc.db.columns.query({ ...dbConn(connectionId), schema: schema, table: table });
 
       const columnsId = `columns:${connectionId}:${schema}.${table}`;
       const columnChildren: TreeNode[] = (data.columns || []).map((col: any) => ({
@@ -588,7 +584,7 @@ export default function Sidebar(props: SidebarProps) {
   // 加载索引信息
   async function loadIndexes(connectionId: string, schema: string, table: string) {
     try {
-      const data = await getIndexes(connectionId, schema, table);
+      const data = await trpc.db.indexes.query({ ...dbConn(connectionId), schema: schema, table: table });
 
       const indexesId = `indexes:${connectionId}:${schema}.${table}`;
       const indexChildren: TreeNode[] = (data.indexes || []).map((idx: any) => {
@@ -709,7 +705,7 @@ export default function Sidebar(props: SidebarProps) {
       const schema = node.schema;
       const funcName = node.meta?.funcName ?? node.name.replace(/\(.*\)$/, "");
       const oid = node.meta?.oid;
-      getFunctionDdl(cid, schema, funcName, oid)
+      trpc.db.functionDdl.query({ ...dbConn(cid), schema: schema, function: funcName, oid: oid })
         .then(({ ddl }) => ddl && props.onViewFunctionDdl?.(cid, props.connections.find((c) => c.id === cid)?.info ?? node.name, schema, funcName, ddl))
         .catch((e) => console.error("获取函数源码失败:", e));
     }
@@ -901,7 +897,7 @@ export default function Sidebar(props: SidebarProps) {
           const schema = node.schema;
           const table = node.table;
           const conn = props.connections.find((c) => c.id === cid);
-          getTableDdl(cid, schema, table)
+          trpc.db.tableDdl.query({ ...dbConn(cid), schema: schema, table: table })
             .then(({ ddl }) => ddl && props.onViewDdl?.(cid, conn?.info ?? node.name, schema, table, ddl))
             .catch((e) => console.error("获取 DDL 失败:", e));
         }
@@ -917,7 +913,7 @@ export default function Sidebar(props: SidebarProps) {
           const funcName = node.meta?.funcName ?? node.name.replace(/\(.*\)$/, "");
           const oid = node.meta?.oid;
           const conn = props.connections.find((c) => c.id === cid);
-          getFunctionDdl(cid, schema, funcName, oid)
+          trpc.db.functionDdl.query({ ...dbConn(cid), schema: schema, function: funcName, oid: oid })
             .then(({ ddl }) => ddl && props.onViewFunctionDdl?.(cid, conn?.info ?? node.name, schema, funcName, ddl))
             .catch((e) => console.error("获取函数源码失败:", e));
         }

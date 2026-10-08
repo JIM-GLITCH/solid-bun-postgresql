@@ -6,7 +6,8 @@
 import { createSignal, createEffect, onMount, For, Show } from "solid-js";
 import { TableDesignerTypeInput } from "./table-designer-type-input";
 import { createStore, produce } from "solid-js/store";
-import { getDataTypes, executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import {
   type TableColumn,
   type UniqueConstraint,
@@ -58,7 +59,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
 
   onMount(() => {
     if (props.connectionId) {
-      getDataTypes(props.connectionId)
+      trpc.db.dataTypes.query(dbConn(props.connectionId))
         .then(({ types }) => {
           const list = normalizeDbDataTypesList(types);
           setDataTypes(list);
@@ -134,7 +135,7 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
     setError(null);
     try {
       for (const stmt of stmts) {
-        await executeDdl(props.connectionId, stmt + ";");
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: stmt + ";" });
       }
       setShowPreview(false);
       setTableName("");

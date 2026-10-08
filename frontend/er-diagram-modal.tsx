@@ -4,7 +4,8 @@
  */
 
 import { createSignal, createEffect, Show, For, createMemo, onCleanup } from "solid-js";
-import { getTables, getColumns, getForeignKeys, getPrimaryKeys } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { vscode } from "./theme";
 
 export interface ErDiagramSelection {
@@ -160,7 +161,7 @@ export default function ErDiagramModal(props: ErDiagramModalProps) {
 
       for (const { schema, tables: tablesFilter } of schemaItems) {
         if (isCancelled()) return;
-        const tablesRes = await getTables(connectionId, schema);
+        const tablesRes = await trpc.db.tables.query({ ...dbConn(connectionId), schema: schema });
         if (tablesRes.error) throw new Error(tablesRes.error);
 
         let tableNames = tablesRes.tables || [];
@@ -172,9 +173,9 @@ export default function ErDiagramModal(props: ErDiagramModalProps) {
           if (isCancelled()) return;
           try {
             const [colsRes, pkRes, fkRes] = await Promise.all([
-              getColumns(connectionId, schema, tableName),
-              getPrimaryKeys(connectionId, schema, tableName),
-              getForeignKeys(connectionId, schema, tableName),
+              trpc.db.columns.query({ ...dbConn(connectionId), schema: schema, table: tableName }),
+              trpc.db.primaryKeys.query({ ...dbConn(connectionId), schema: schema, table: tableName }),
+              trpc.db.foreignKeys.query({ ...dbConn(connectionId), schema: schema, table: tableName }),
             ]);
 
             const pkColumns = new Set((pkRes.columns || []) as string[]);

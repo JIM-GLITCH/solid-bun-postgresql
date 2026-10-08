@@ -41,16 +41,6 @@ export function parseSubscriptionAccessToken(req: Request): string | null {
   return parseBearerToken(req) ?? getStoredSubscriptionToken();
 }
 
-/** EventSource 无法带 Header 时用 query（仅用于 GET /api/events） */
-export function parseAccessTokenQuery(req: Request): string | null {
-  const url = new URL(req.url);
-  const q =
-    url.searchParams.get("access_token")?.trim() ||
-    url.searchParams.get("bearer")?.trim() ||
-    "";
-  return q || null;
-}
-
 async function verifyRemote(apiBase: string, token: string): Promise<boolean> {
   const base = apiBase.replace(/\/$/, "");
   try {

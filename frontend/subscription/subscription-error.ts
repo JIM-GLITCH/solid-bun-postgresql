@@ -1,4 +1,4 @@
-/** 与后端 `SubscriptionRequiredError` 语义一致，供 HttpTransport / UI 识别 */
+/** 与后端 `SubscriptionRequiredError` 语义一致，供 tRPC 错误映射与 UI 识别 */
 
 export class SubscriptionRequiredError extends Error {
   override readonly name = "SubscriptionRequiredError";

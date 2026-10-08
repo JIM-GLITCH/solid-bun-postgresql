@@ -114,19 +114,8 @@ function IndexColumnPicker(pickerProps: {
   );
 }
 
-import {
-  getColumns,
-  getIndexes,
-  getForeignKeys,
-  getPrimaryKeys,
-  getUniqueConstraints,
-  getCheckConstraints,
-  getTableComment,
-  getSchemas,
-  getTables,
-  getDataTypes,
-  executeDdl,
-} from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getCachedDataTypes, registerServerDataTypes } from "./db-capabilities-cache";
 import {
   type TableColumn,
@@ -278,7 +267,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   // Load schemas once on mount
   createEffect(() => {
     if (!props.connectionId) return;
-    getSchemas(props.connectionId).then((r) => setFkSchemas(r.schemas ?? []));
+    trpc.db.schemas.query(dbConn(props.connectionId)).then((r) => setFkSchemas(r.schemas ?? []));
   });
 
   createEffect(() => {
@@ -288,7 +277,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   // Load tables when a FK's refSchema is set
   const ensureFkTables = (schema: string) => {
     if (!schema || fkTables[schema]) return;
-    getTables(props.connectionId, schema).then((r) =>
+    trpc.db.tables.query({ ...dbConn(props.connectionId), schema: schema }).then((r) =>
       setFkTables(schema, [...(r.tables ?? []), ...(r.views ?? [])])
     );
   };
@@ -297,7 +286,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
   const ensureFkColumns = (schema: string, table: string) => {
     const key = `${schema}.${table}`;
     if (!schema || !table || fkColumns[key]) return;
-    getColumns(props.connectionId, schema, table).then((r) =>
+    trpc.db.columns.query({ ...dbConn(props.connectionId), schema: schema, table: table }).then((r) =>
       setFkColumns(key, (r.columns ?? []).map((c: any) => c.column_name))
     );
   };
@@ -324,14 +313,14 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
 
   const [editData, { refetch: refetchEditData }] = createResource(editSource, async ({ cid, schema, table }) => {
     const [colsRes, idxRes, fkRes, uqRes, chkRes, commentRes, pkRes, typesRes] = await Promise.all([
-      getColumns(cid, schema, table),
-      getIndexes(cid, schema, table),
-      getForeignKeys(cid, schema, table),
-      getUniqueConstraints(cid, schema, table),
-      getCheckConstraints(cid, schema, table),
-      getTableComment(cid, schema, table),
-      getPrimaryKeys(cid, schema, table),
-      getDataTypes(cid),
+      trpc.db.columns.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.indexes.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.foreignKeys.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.uniqueConstraints.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.checkConstraints.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.tableComment.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.primaryKeys.query({ ...dbConn(cid), schema: schema, table: table }),
+      trpc.db.dataTypes.query(dbConn(cid)),
     ]);
     const dataTypesList = normalizeDbDataTypesList(typesRes.types);
     if (dataTypesList.length > 0) registerServerDataTypes(cid, dataTypesList);
@@ -472,12 +461,12 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       // Preload FK ref tables and columns for existing foreign keys
       for (const fk of loadedForeignKeys) {
         if (fk.refSchema) {
-          getTables(props.connectionId, fk.refSchema).then((r) =>
+          trpc.db.tables.query({ ...dbConn(props.connectionId), schema: fk.refSchema }).then((r) =>
             setFkTables(fk.refSchema, [...(r.tables ?? []), ...(r.views ?? [])])
           );
           if (fk.refTable) {
             const key = `${fk.refSchema}.${fk.refTable}`;
-            getColumns(props.connectionId, fk.refSchema, fk.refTable).then((r) =>
+            trpc.db.columns.query({ ...dbConn(props.connectionId), schema: fk.refSchema, table: fk.refTable }).then((r) =>
               setFkColumns(key, (r.columns ?? []).map((c: any) => c.column_name))
             );
           }
@@ -515,7 +504,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
         list = cached;
       } else {
         try {
-          const { types } = await getDataTypes(cid);
+          const { types } = await trpc.db.dataTypes.query(dbConn(cid));
           list = normalizeDbDataTypesList(types);
           registerServerDataTypes(cid, list);
         } catch {
@@ -647,7 +636,7 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
                 setSaving(true);
                 try {
                   for (const stmt of stmts) {
-                    await executeDdl(props.connectionId, stmt + ";");
+                    await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: stmt + ";" });
                   }
                   // 4. On success: update originalState snapshot
                   const newSnapshot: OriginalState = {

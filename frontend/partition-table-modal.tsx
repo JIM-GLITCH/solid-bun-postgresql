@@ -2,7 +2,9 @@
  * 分区表：查看分区结构 + EXPLAIN 文本预览（分区裁剪，不执行 DML）
  */
 import { createSignal, For, Show, onMount } from "solid-js";
-import { explainQueryText, getPartitionInfo } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
+import type { PartitionInfo } from "../backend/trpc/router/db";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
@@ -25,7 +27,7 @@ export interface PartitionTableModalProps {
   onClose: () => void;
 }
 
-type PartitionInfoResult = Awaited<ReturnType<typeof getPartitionInfo>>;
+type PartitionInfoResult = PartitionInfo;
 
 export default function PartitionTableModal(props: PartitionTableModalProps) {
   const [loading, setLoading] = createSignal(true);
@@ -38,7 +40,7 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
   const [explainErr, setExplainErr] = createSignal<string | null>(null);
 
   onMount(() => {
-    getPartitionInfo(props.connectionId, props.schema, props.table)
+    trpc.db.partitionInfo.query({ ...dbConn(props.connectionId), schema: props.schema, table: props.table })
       .then((r) => setInfo(r))
       .catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -57,7 +59,7 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
     setExplainErr(null);
     setExplainLines(null);
     try {
-      const r = await explainQueryText(props.connectionId, sql());
+      const r = await trpc.db.explainText.query({ ...dbConn(props.connectionId), query: sql() });
       setExplainLines(r.lines ?? []);
     } catch (e) {
       setExplainErr(e instanceof Error ? e.message : String(e));

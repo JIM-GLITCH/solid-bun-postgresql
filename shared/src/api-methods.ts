@@ -1,18 +1,19 @@
 /**
- * 前后端消息通信抽象层
- * 支持不同运行环境：Web (fetch+SSE) / VSCode (postMessage)
+ * 业务 API 契约（方法名 + 请求载荷）。
  *
- * 数据库相关 RPC 统一为 db/*，载荷中须带 dbType（postgres / mysql 等）。
+ * 这些方法是**业务后端**（`backend/api-core`）能处理的全集，运行时入口有两类：
+ * - Web / Standalone：tRPC `appRouter` → `handleApiRequest`
+ * - Electrobun 主进程：直接 `handleApiRequest`
+ *
+ * 传输层（HTTP / SSE / postMessage）已由 tRPC 与 vscode-messenger 各自封装，
+ * 本文件只描述「方法 ↔ 载荷」映射，不含任何传输实现。
+ *
+ * 注意：宿主专属能力（`host/*` 的文件、剪贴板、AI Key，或 `dbplayer/*` 的登录态）
+ * **不在此列**——它们同为 tRPC procedure（`host.*` / `subscription.*`），
+ * 但由宿主实现而非本业务后端，见 `backend/trpc/router/host.ts`。
  */
 
-import type {
-  AccountStateMessage,
-  ServerPushMessage,
-  SSEMessage,
-  ConnectDbRequest,
-  DbKind,
-  ConnectionSavePayload,
-} from "./types";
+import type { ConnectDbRequest, DbKind, ConnectionSavePayload } from "./types";
 
 /** 需已有会话的 db 请求公共字段 */
 export type DbRpcBase = { connectionId: string; dbType: DbKind };
@@ -69,25 +70,9 @@ export const API_METHODS = [
   "ai/sql-edit",
   "ai/prompt-build",
   "ai/prompt-build-diff",
-  "vscode/save-file",
-  "vscode/read-file",
-  "vscode/clipboard-write",
-  "vscode/clipboard-read",
-  "vscode/ai-key-set",
-  "vscode/ai-key-delete",
 ] as const;
 
 export type ApiMethod = (typeof API_METHODS)[number];
-
-/** Web HTTP 可调用的 RPC（不含 vscode/*） */
-export type HttpRpcMethod = Exclude<ApiMethod, `vscode/${string}`>;
-
-function isHttpRpcMethod(m: ApiMethod): m is HttpRpcMethod {
-  return !m.startsWith("vscode/");
-}
-
-/** `POST /api/${method}` 合法方法名集合 */
-export const HTTP_API_METHOD_SET: ReadonlySet<HttpRpcMethod> = new Set(API_METHODS.filter(isHttpRpcMethod));
 
 /** 请求载荷 */
 export type ApiRequestPayload = {
@@ -141,12 +126,6 @@ export type ApiRequestPayload = {
     onConflict?: "nothing" | "update";
     onError?: "rollback" | "discard";
   };
-  "vscode/save-file": { content: string; filename: string; isBase64?: boolean };
-  "vscode/read-file": { accept?: string[] };
-  "vscode/clipboard-write": { text: string };
-  "vscode/clipboard-read": Record<string, never>;
-  "vscode/ai-key-set": { keyRef: string; apiKey: string };
-  "vscode/ai-key-delete": { keyRef: string };
   "ai/config/get": Record<string, never>;
   "ai/config/set": {
     apiMode: "openai-compatible" | "anthropic";
@@ -198,20 +177,3 @@ export type ApiRequestPayload = {
   "db/session-control": DbRpcBase & { pid: number; action: "cancel" | "terminate" };
   "db/installed-extensions": DbRpcBase;
 };
-
-/** `transport.on(...)` 订阅形态：仅 `request` + `on` 两入口 */
-export type TransportOnSubscribe =
-  | { event: "push"; handler: (msg: ServerPushMessage) => void }
-  | { event: "connection"; connectionId: string; handler: (msg: SSEMessage) => void }
-  | { event: "account"; handler: (msg: AccountStateMessage) => void };
-
-/**
- * 传输层接口：与宿主后端的唯一通信面（RPC + 推送）。
- * 业务若只依赖 transport：`request` + `on` 即可，勿在业务里直接使用 EventSource / VSCode postMessage 协议细节。
- */
-export interface IApiTransport {
-  request<M extends ApiMethod>(method: M, payload: ApiRequestPayload[M]): Promise<unknown>;
-
-  /** 订阅服务端推送（SSE / postMessage / IPC 封装在实现内） */
-  on(sub: TransportOnSubscribe): () => void;
-}

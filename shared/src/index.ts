@@ -2,7 +2,7 @@
 
 export * from "./types";
 export * from "./database-capabilities";
-export * from "./transport";
+export * from "./api-methods";
 export * from "./format-cell";
 export * from "./sql-split";
 export * from "./sql-format";

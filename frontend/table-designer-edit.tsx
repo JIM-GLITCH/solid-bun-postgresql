@@ -6,7 +6,8 @@
 import { createEffect, createResource, createSignal, For, Show } from "solid-js";
 import { TableDesignerTypeInput } from "./table-designer-type-input";
 import { createStore, produce, reconcile } from "solid-js/store";
-import { getDataTypes, getColumns, executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import {
   type TableColumn,
   needsLength,
@@ -68,7 +69,7 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
     props.connectionId && props.table ? { cid: props.connectionId, schema: props.schema, table: props.table } : null;
 
   const [editData] = createResource(source, async ({ cid, schema, table }) => {
-    const [typesRes, colsRes] = await Promise.all([getDataTypes(cid), getColumns(cid, schema, table)]);
+    const [typesRes, colsRes] = await Promise.all([trpc.db.dataTypes.query(dbConn(cid)), trpc.db.columns.query({ ...dbConn(cid), schema: schema, table: table })]);
     return {
       types: normalizeDbDataTypesList(typesRes.types),
       columns: mapColumnsFromApi(colsRes.columns ?? []),
@@ -141,7 +142,7 @@ export default function TableDesignerEdit(props: TableDesignerEditProps) {
       const statements = sql.split(";").filter((s) => s.trim());
       for (const stmt of statements) {
         const s = stmt.trim();
-        if (s) await executeDdl(props.connectionId, s + (s.endsWith(";") ? "" : ";"));
+        if (s) await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: s + (s.endsWith(";") ? "" : ";") });
       }
       setShowPreview(false);
       setOriginalColumns(JSON.parse(JSON.stringify(columns)) as TableColumn[]);

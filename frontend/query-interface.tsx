@@ -6,24 +6,8 @@ import EditableCell from "./editable-cell";
 import SqlEditor from "./sql-editor-codemirror";
 import { isSqlServer, type ColumnEditableInfo, type SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentForGridColumn, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
-import {
-  queryStream,
-  queryStreamMore,
-  cancelQuery,
-  saveChanges,
-  subscribeEvents,
-  explainQuery,
-  getAiConfig,
-  setAiConfig,
-  testAiConnection,
-  aiSqlEdit,
-  aiBuildPrompt,
-  aiBuildDiffPrompt,
-  setAiKeyViaVscode,
-  deleteAiKeyViaVscode,
-  deleteAiKey,
-  assertFeatureSubscription,
-} from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn, subscribeEvents, assertFeatureSubscription } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
@@ -250,7 +234,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     };
     window.addEventListener("resize", onResize);
     removeTableResizeListener = () => window.removeEventListener("resize", onResize);
-    getAiConfig()
+    trpc.ai.configGet.query()
       .then((cfg) => {
         setAiApiMode(cfg.apiMode);
         setAiBaseUrl(cfg.baseUrl || "https://dashscope.aliyuncs.com/compatible-mode/v1");
@@ -426,7 +410,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     });
   });
 
-  // 消息推送订阅（通过 Transport 抽象，Web 下为 EventSource）
+  // 消息推送订阅（tRPC subscription：Web 走 SSE，VSCode 走宿主 link）
   createEffect(() => {
     const cid = props.activeConnectionId?.();
     if (!cid) {
@@ -506,7 +490,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setModifiedCells([]);
     const startTime = performance.now();  // 记录开始时间
     try {
-      const data = await queryStream(cid, statements, 100, mysqlDefaultSchemaForConn(cid));
+      const data = await trpc.db.queryStream.mutate({ ...dbConn(cid), statements: statements, batchSize: 100, defaultSchema: mysqlDefaultSchemaForConn(cid) });
 
       if (data.error) {
         throw new Error(data.error);
@@ -551,7 +535,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
     setLoadingMore(true);
     try {
-      const data = await queryStreamMore(cid, 100, mysqlDefaultSchemaForConn(cid));
+      const data = await trpc.db.queryStreamMore.mutate({ ...dbConn(cid), batchSize: 100, defaultSchema: mysqlDefaultSchemaForConn(cid) });
 
       if (data.error) {
         throw new Error(data.error);
@@ -654,7 +638,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setExplainLoading(true);
     setExplainPlan(null);
     try {
-      const res = await explainQuery(cid, firstStmt, mysqlDefaultSchemaForConn(cid));
+      const res = await trpc.db.explain.mutate({ ...dbConn(cid), query: firstStmt, defaultSchema: mysqlDefaultSchemaForConn(cid) });
       if (res.error) throw new Error(res.error);
       setExplainPlan(
         normalizeExplainPlan(res.plan) as Array<{
@@ -676,7 +660,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const cid = props.activeConnectionId?.();
     if (!cid) return;
     try {
-      const { success, message, error: err } = await cancelQuery(cid);
+      const { success, message, error: err } = await trpc.db.cancelQuery.mutate(dbConn(cid));
       if (success) {
         console.log("查询取消:", message);
       } else {
@@ -731,12 +715,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         maxTokens: Number(aiMaxTokens()),
       };
       if (isVscodeWebview && aiApiKey().trim()) {
-        await setAiKeyViaVscode(keyRef, aiApiKey().trim());
-        await setAiConfig(payload);
+        // 宿主能力走 tRPC：扩展把 key 写入 SecretStorage
+        await trpc.host.aiKeySet.mutate({ keyRef, apiKey: aiApiKey().trim() });
+        await trpc.ai.configSet.mutate(payload);
       } else {
-        await setAiConfig({ ...payload, apiKey: aiApiKey().trim() || undefined });
+        await trpc.ai.configSet.mutate({ ...payload, apiKey: aiApiKey().trim() || undefined });
       }
-      await testAiConnection({
+      await trpc.ai.testConnection.mutate({
         keyRef,
         apiMode: payload.apiMode,
         baseUrl: payload.baseUrl,
@@ -764,9 +749,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const keyRef = aiKeyRef().trim() || "default";
     try {
       if (isVscodeWebview) {
-        await deleteAiKeyViaVscode(keyRef);
+        await trpc.host.aiKeyDelete.mutate({ keyRef });
       } else {
-        await deleteAiKey({ keyRef });
+        await trpc.ai.keyDelete.mutate({ keyRef });
       }
       setAiApiKey("");
       setAiHasStoredKey(false);
@@ -800,7 +785,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (!cid || !sourceSql.trim()) return "";
     setError(null);
     try {
-      const res = await aiSqlEdit({
+      const res = await trpc.ai.sqlEdit.mutate({
         connectionId: cid,
         sql: sourceSql,
         instructions: instruction?.trim() || "补全",
@@ -824,7 +809,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const userReq = instructions?.trim() || aiEditInstruction().trim() || "补全";
     if (!cid || !sqlSource.trim()) return;
     try {
-      const res = await aiBuildPrompt({
+      const res = await trpc.ai.promptBuild.mutate({
         connectionId: cid,
         sql: sqlSource,
         instructions: userReq,
@@ -845,7 +830,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const sqlSource = sourceSql ?? sql();
     if (!cid || !sqlSource.trim()) return;
     try {
-      const res = await aiBuildDiffPrompt({
+      const res = await trpc.ai.promptBuildDiff.mutate({
         connectionId: cid,
         sql: sqlSource,
       });
@@ -1113,7 +1098,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
 
     try {
       for (const update of pendingUpdates()) {
-        const res = await saveChanges(cid, update.sql);
+        const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: update.sql });
         if (!res.success && res.error) {
           throw new Error(res.error || `执行失败: ${update.sql}`);
         }
@@ -1126,7 +1111,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       // 按行索引倒序执行 DELETE，避免删除后索引变化
       const sortedDeletes = [...pendingDeletes()].sort((a, b) => b.rowIndex - a.rowIndex);
       for (const del of sortedDeletes) {
-        const res = await saveChanges(cid, del.sql);
+        const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: del.sql });
         if (!res.success && res.error) {
           throw new Error(res.error || `执行失败: ${del.sql}`);
         }
@@ -1143,7 +1128,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       for (const ins of pendingInserts()) {
         const sql = generateInsertSql(ins.rowIndex);
         if (!sql) continue;
-        const res = await saveChanges(cid, sql);
+        const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: sql });
         if (!res.success && res.error) {
           throw new Error(res.error || `执行失败: ${sql}`);
         }
@@ -1913,7 +1898,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const startTime = performance.now();
     try {
       const statements = getStatementsFromText(querySql);
-      const data = await queryStream(connectionId, statements, 1000, mysqlDefaultSchemaForConn(connectionId));
+      const data = await trpc.db.queryStream.mutate({ ...dbConn(connectionId), statements: statements, batchSize: 1000, defaultSchema: mysqlDefaultSchemaForConn(connectionId) });
       if (data.error) {
         throw new Error(data.error);
       }

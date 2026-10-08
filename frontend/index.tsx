@@ -2,15 +2,6 @@ import { render } from 'solid-js/web';
 import App from './app';
 import { DialogProvider } from './dialog-context';
 import { loadDefaultTheme } from './theme-sync';
-import { setTransport } from './transport';
-import { HttpTransport } from './transport/http-transport';
-import { getBrowserJwt } from './subscription/browser-token';
-
-setTransport(
-  new HttpTransport({
-    getBearerToken: getBrowserJwt,
-  })
-);
 
 function mount() {
   const root = document.getElementById('root');

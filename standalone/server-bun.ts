@@ -1,26 +1,37 @@
 /**
- * Standalone 入口：Bun 服务启动，静态资源 + API 路由
- * 后端逻辑在 backend/api-handlers-http（路由）与 api-core（业务）
+ * Standalone 入口（Bun 运行时）：Bun.serve 提供静态资源 + tRPC。
+ *
+ * 与 `server-node.ts`（Hono + Node，生产 SEA 用）保持同一份 API 面：
+ * - `/api/trpc/*`：tRPC（业务 RPC 唯一入口）
+ * - `/api/db/disconnect`：页面卸载 keepalive 断开
  */
 
 import { serve } from "bun";
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import index from "../index.html";
-import { createApiRoutes, handleApiPost } from "../backend/api-handlers-http";
-
-const apiRoutes = createApiRoutes();
+import { DB_DISCONNECT_PATH, handleDbDisconnectBeacon } from "../backend/api-handlers-http";
+import { appRouter, createContext } from "../backend/trpc";
 
 const server = serve({
   idleTimeout: 120,
   routes: {
     "/": index,
-    ...apiRoutes,
   },
   async fetch(req) {
     const url = new URL(req.url);
     const pathname = url.pathname;
 
-    if (req.method === "POST" && pathname.startsWith("/api/")) {
-      return handleApiPost(req);
+    if (pathname.startsWith("/api/trpc")) {
+      return fetchRequestHandler({
+        endpoint: "/api/trpc",
+        req,
+        router: appRouter,
+        createContext: ({ req }) => createContext({ req }),
+      });
+    }
+
+    if (req.method === "POST" && pathname === DB_DISCONNECT_PATH) {
+      return handleDbDisconnectBeacon(req);
     }
 
     if (pathname.startsWith("/chunk-") && pathname.endsWith(".js")) {

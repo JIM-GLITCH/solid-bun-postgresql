@@ -3,7 +3,8 @@
  */
 
 import { createSignal, Show } from "solid-js";
-import { executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { sqlBracketIdent } from "./sql-ddl-quote";
@@ -59,7 +60,7 @@ export default function DeleteSchemaModal(props: DeleteSchemaModalProps) {
         : isSqlServer(kind())
           ? `DROP SCHEMA ${sqlBracketIdent(props.schema)};`
           : `DROP SCHEMA ${pgQuoteIdent(props.schema)} CASCADE;`;
-      await executeDdl(props.connectionId, sql);
+      await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: sql });
       props.onSuccess(props.connectionId);
       props.onClose();
     } catch (e) {

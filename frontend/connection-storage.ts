@@ -4,7 +4,7 @@
 
 import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../shared/src";
 import { registerConnectionDbType } from "./db-session-meta";
-import { getTransport } from "./transport";
+import { trpc } from "./trpc-client";
 import { formatUnknownError } from "./format-unknown-error";
 import { SubscriptionRequiredError } from "./subscription/subscription-error";
 import { prefetchDbCapabilities } from "./api";
@@ -33,7 +33,7 @@ export function hasStoredConnection(list: ConnectionList, id: string): boolean {
 /** 加载已保存连接列表 */
 export async function loadStoredConnections(): Promise<ConnectionList> {
   try {
-    const arr = await getTransport().request("connections/list", {});
+    const arr = await trpc.connections.list.query();
     return Array.isArray(arr) ? (arr as ConnectionList) : [];
   } catch (e) {
     if (e instanceof SubscriptionRequiredError) throw e;
@@ -48,14 +48,14 @@ export async function saveConnection(
   meta?: { name?: string; group?: string }
 ): Promise<void> {
   const dbType = (params as StoredConnectionParams).dbType ?? "postgres";
-  const data = await getTransport().request("connections/save", { id, ...params, dbType, ...meta }) as { success?: boolean; error?: string };
-  if (!data?.success) throw new Error(data?.error || "保存失败");
+  const data = (await trpc.connections.save.mutate({ id, ...params, dbType, ...meta })) as { success?: boolean; error?: string };
+  if (!data?.success) throw new Error("保存失败");
 }
 
 /** 获取已保存连接的完整参数（用于编辑，含密码） */
 export async function getStoredConnectionParams(id: string): Promise<StoredConnectionParams | null> {
   try {
-    const params = await getTransport().request("connections/get-params", { id });
+    const params = await trpc.connections.getParams.query({ id });
     return params != null ? (params as StoredConnectionParams) : null;
   } catch {
     return null;
@@ -64,20 +64,20 @@ export async function getStoredConnectionParams(id: string): Promise<StoredConne
 
 /** 更新已保存连接的显示名称 */
 export async function updateStoredConnectionMeta(id: string, meta: { name?: string }): Promise<void> {
-  const data = await getTransport().request("connections/update-meta", { id, ...meta }) as { success?: boolean; error?: string };
-  if (!data?.success) throw new Error(data?.error || "更新失败");
+  const data = (await trpc.connections.updateMeta.mutate({ id, ...meta })) as { success?: boolean; error?: string };
+  if (!data?.success) throw new Error("更新失败");
 }
 
 /** 原子性替换整个连接列表（用于拖拽排序） */
 export async function reorderConnectionList(list: ConnectionList): Promise<void> {
-  const data = await getTransport().request("connections/reorder", { list }) as { success?: boolean; error?: string };
-  if (!data?.success) throw new Error(data?.error || "排序失败");
+  const data = (await trpc.connections.reorder.mutate({ list })) as { success?: boolean; error?: string };
+  if (!data?.success) throw new Error("排序失败");
 }
 
 /** 从服务端删除已保存连接 */
 export async function removeStoredConnection(id: string): Promise<void> {
-  const data = await getTransport().request("connections/delete", { id }) as { success?: boolean; error?: string };
-  if (!data?.success) throw new Error(data?.error || "删除失败");
+  const data = (await trpc.connections.delete.mutate({ id })) as { success?: boolean; error?: string };
+  if (!data?.success) throw new Error("删除失败");
 }
 
 /** 使用已保存连接进行连接（服务端解密并建立连接，密码不经过前端） */
@@ -86,12 +86,7 @@ export async function connectFromSaved(
   sessionId?: string
 ): Promise<{ success: boolean; connectionId?: string; error?: string; subscriptionRequired?: boolean }> {
   try {
-    const data = (await getTransport().request("connections/connect", { id, sessionId })) as {
-      success?: boolean;
-      connectionId?: string;
-      dbType?: DbKind;
-      error?: string;
-    };
+    const data = await trpc.connections.connect.mutate({ id, sessionId });
     if (data.success && data.connectionId) {
       registerConnectionDbType(data.connectionId, data.dbType ?? "postgres");
       void prefetchDbCapabilities(data.connectionId);

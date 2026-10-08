@@ -94,7 +94,7 @@ export default function App() {
       setSavedConnections(list);
     } catch (e) {
       if (e instanceof SubscriptionRequiredError) {
-        /* HttpTransport / VsCodeTransport 已弹出统一订阅窗 */
+        /* tRPC 错误映射已弹出统一订阅窗 */
         setSavedConnections([]);
         return;
       }

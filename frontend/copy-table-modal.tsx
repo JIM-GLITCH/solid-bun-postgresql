@@ -3,7 +3,8 @@
  */
 
 import { createSignal, Show } from "solid-js";
-import { executeDdl } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
@@ -38,29 +39,26 @@ export default function CopyTableModal(props: CopyTableModalProps) {
         const db = mysqlBacktickIdent(props.schema);
         const oldT = mysqlBacktickIdent(props.table);
         const newT = mysqlBacktickIdent(name);
-        await executeDdl(props.connectionId, `CREATE TABLE ${db}.${newT} LIKE ${db}.${oldT};`);
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `CREATE TABLE ${db}.${newT} LIKE ${db}.${oldT};` });
         if (copyData()) {
-          await executeDdl(props.connectionId, `INSERT INTO ${db}.${newT} SELECT * FROM ${db}.${oldT};`);
+          await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `INSERT INTO ${db}.${newT} SELECT * FROM ${db}.${oldT};` });
         }
       } else if (isSqlServer(kind)) {
         const s = sqlBracketIdent(props.schema);
         const oldT = sqlBracketIdent(props.table);
         const newT = sqlBracketIdent(name);
         if (copyData()) {
-          await executeDdl(props.connectionId, `SELECT * INTO ${s}.${newT} FROM ${s}.${oldT};`);
+          await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `SELECT * INTO ${s}.${newT} FROM ${s}.${oldT};` });
         } else {
-          await executeDdl(
-            props.connectionId,
-            `SELECT TOP (0) * INTO ${s}.${newT} FROM ${s}.${oldT};`
-          );
+          await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `SELECT TOP (0) * INTO ${s}.${newT} FROM ${s}.${oldT};` });
         }
       } else {
         const s = pgQuoteIdent(props.schema);
         const oldT = pgQuoteIdent(props.table);
         const newT = pgQuoteIdent(name);
-        await executeDdl(props.connectionId, `CREATE TABLE ${s}.${newT} (LIKE ${s}.${oldT} INCLUDING ALL);`);
+        await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `CREATE TABLE ${s}.${newT} (LIKE ${s}.${oldT} INCLUDING ALL);` });
         if (copyData()) {
-          await executeDdl(props.connectionId, `INSERT INTO ${s}.${newT} SELECT * FROM ${s}.${oldT};`);
+          await trpc.db.executeDdl.mutate({ ...dbConn(props.connectionId), sql: `INSERT INTO ${s}.${newT} SELECT * FROM ${s}.${oldT};` });
         }
       }
       props.onSuccess(props.connectionId, props.schema);

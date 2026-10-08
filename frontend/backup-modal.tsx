@@ -3,7 +3,8 @@
  */
 
 import { createSignal, createEffect, Show } from "solid-js";
-import { getSchemaDump, getDatabaseDump, saveFileViaVscode } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
 import { vscode } from "./theme";
 
 export interface BackupModalProps {
@@ -37,7 +38,7 @@ export default function BackupModal(props: BackupModalProps) {
     setError(null);
     setDump("");
     const withData = includeData();
-    const fn = schema ? () => getSchemaDump(connectionId, schema, withData) : () => getDatabaseDump(connectionId, withData);
+    const fn = schema ? () => trpc.db.schemaDump.query({ ...dbConn(connectionId), schema: schema, includeData: withData }) : () => trpc.db.databaseDump.query({ ...dbConn(connectionId), includeData: withData });
     fn()
       .then((res) => {
         if (res.error) throw new Error(res.error);
@@ -54,8 +55,9 @@ export default function BackupModal(props: BackupModalProps) {
     setSaving(true);
     setError(null);
     try {
-      const saved = await saveFileViaVscode(content, filename);
-      if (saved) {
+      // 宿主能力走 tRPC（扩展覆盖为「另存为」；非扩展环境抛「不支持」→ 回退浏览器下载）
+      const res = await trpc.host.saveFile.mutate({ content, filename });
+      if (res?.success) {
         props.onSuccess?.(`已保存: ${filename}`);
         props.onClose();
       }

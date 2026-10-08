@@ -2,7 +2,9 @@
  * PostgreSQL：当前库已安装扩展（名称、版本、简要说明）
  */
 import { For, Show, createSignal, onMount } from "solid-js";
-import { getInstalledExtensions } from "./api";
+import { trpc } from "./trpc-client";
+import { dbConn } from "./api";
+import type { InstalledExtensionsResult } from "../backend/trpc/router/db";
 import { MODAL_Z_FULLSCREEN, vscode } from "./theme";
 
 export interface ExtensionsModalProps {
@@ -13,15 +15,13 @@ export interface ExtensionsModalProps {
 export default function ExtensionsModal(props: ExtensionsModalProps) {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
-  const [rows, setRows] = createSignal<
-    Awaited<ReturnType<typeof getInstalledExtensions>>["extensions"]
-  >([]);
+  const [rows, setRows] = createSignal<InstalledExtensionsResult["extensions"]>([]);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const r = await getInstalledExtensions(props.connectionId);
+      const r = await trpc.db.installedExtensions.query(dbConn(props.connectionId));
       setRows(r.extensions ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
