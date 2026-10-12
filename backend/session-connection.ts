@@ -1,5 +1,11 @@
 /**
- * 数据库会话类型（与传输层无关），供 api-core 与各 db handlers 共用。
+ * 数据库会话的内部表示（**仅供 `backend/db/` 连接层使用**）。
+ *
+ * Phase 3 收窄约定：
+ * - 业务 handler **不得** import 本模块，也不得读写其中的连接句柄；
+ *   业务只能通过 `DbConnector`（`db/contract.ts`）访问连接能力。
+ * - 方言类型仅在 `db/connector-*.ts`、`db/sessions*.ts` 与各 handler 的 ctx 标注中使用。
+ * - `connector` 已从会话对象移除：连接器由 `db/sessions-effect.ts` 的连接器投影统一持有。
  */
 
 import type { Client, Pool } from "pg";
@@ -26,7 +32,6 @@ export interface PostgresSessionConnection {
     columns?: any[];
     isDone: boolean;
   };
-  keepAliveTimer?: ReturnType<typeof setInterval>;
 }
 
 export interface MysqlSessionConnection {
@@ -36,7 +41,6 @@ export interface MysqlSessionConnection {
   dbForReconnect: GetMysqlDbConfigResult;
   eventPushers: Set<(msg: SSEMessage) => void>;
   closeTunnel?: () => Promise<void>;
-  keepAliveTimer?: ReturnType<typeof setInterval>;
   /** db/query-stream 未读完的 MySQL 行流（mysql2 协议层流式，非整结果集缓冲） */
   mysqlRowStream?: Readable;
   /** 当前在 userUsedClient 上执行语句时的连接线程号，供 KILL QUERY */
@@ -54,7 +58,6 @@ export interface SqlServerSessionConnection {
   dbForReconnect: GetSqlServerDbConfigResult;
   eventPushers: Set<(msg: SSEMessage) => void>;
   closeTunnel?: () => Promise<void>;
-  keepAliveTimer?: ReturnType<typeof setInterval>;
   /** db/query-stream 未读完时的 mssql 流式请求 + 事务，须 teardown 后归还池 */
   sqlServerRowStream?: SqlServerStreamingQueryHandle;
   /** `db/query` 等非流式路径上可 `cancel()` 的当前 Request（由 `runSqlServerQueryWithColumnMetadata` 登记） */
@@ -65,4 +68,10 @@ export type SessionConnection = PostgresSessionConnection | MysqlSessionConnecti
 
 export function isPostgresSession(s: SessionConnection): s is PostgresSessionConnection {
   return s.dbKind === "postgres";
+}
+
+/** 会话摘要：唯一对外安全暴露的形状（供传输层与业务读取，不含任何句柄） */
+export interface SessionInfo {
+  connectionId: string;
+  dbKind: DbKind;
 }

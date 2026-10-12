@@ -3,6 +3,70 @@
  */
 import sql from "mssql";
 
+/**
+ * AI 助手用的 schema 上下文采集（原在 `sqlserver-db-handlers`）。
+ * 放在此处是为了让连接层（`db/connector-mssql.ts`）与业务 handler 都能引用，
+ * 且不产生 connector ⇄ handler 的模块环。
+ */
+export async function buildSqlServerSchemaContext(
+  pool: sql.ConnectionPool,
+  schema?: string
+): Promise<{ context: string; injected: string[] }> {
+  const schemas = schema?.trim()
+    ? [schema.trim()]
+    : (
+        await pool.request().query(`
+          SELECT TOP (2) SCHEMA_NAME AS schema_name
+          FROM INFORMATION_SCHEMA.SCHEMATA
+          WHERE SCHEMA_NAME NOT IN (
+            N'guest', N'INFORMATION_SCHEMA', N'sys', N'db_owner', N'db_accessadmin',
+            N'db_backupoperator', N'db_datareader', N'db_datawriter', N'db_ddladmin',
+            N'db_denydatareader', N'db_denydatawriter', N'db_securityadmin'
+          )
+          ORDER BY SCHEMA_NAME
+        `)
+      ).recordset.map((r: Record<string, unknown>) => String(r.schema_name ?? r.SCHEMA_NAME ?? "")).filter(Boolean);
+
+  const chunks: string[] = [];
+  const injected: string[] = [];
+  for (const s of schemas) {
+    const tablesRes = await pool
+      .request()
+      .input("sch", sql.NVarChar, s)
+      .query(`
+        SELECT TOP (6) TABLE_NAME AS table_name
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = @sch AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+      `);
+    for (const tr of (tablesRes.recordset ?? []) as Array<Record<string, unknown>>) {
+      const tname = String(tr.table_name ?? tr.TABLE_NAME ?? "");
+      if (!tname) continue;
+      const colRes = await pool
+        .request()
+        .input("sch", sql.NVarChar, s)
+        .input("tbl", sql.NVarChar, tname)
+        .query(`
+          SELECT TOP (12) COLUMN_NAME AS column_name, DATA_TYPE AS data_type
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = @sch AND TABLE_NAME = @tbl
+          ORDER BY ORDINAL_POSITION
+        `);
+      const cols = ((colRes.recordset ?? []) as Array<Record<string, unknown>>)
+        .map((c) => {
+          const cn = String(c.column_name ?? c.COLUMN_NAME ?? "");
+          const dt = String(c.data_type ?? c.DATA_TYPE ?? "");
+          return `${cn}:${dt}`;
+        })
+        .filter((x) => x !== ":");
+      const tableRef = `${s}.${tname}`;
+      chunks.push(`${tableRef}(${cols.join(", ")})`);
+      injected.push(tableRef);
+    }
+  }
+  return { context: chunks.join("\n"), injected };
+}
+
 /** node-mssql/tedious 对 XML 列的占位列名（SHOWPLAN 等） */
 const MSSQL_XML_COLUMN_ID = "XML_F52E2B61-18A1-11d1-B105-00805F49916B";
 

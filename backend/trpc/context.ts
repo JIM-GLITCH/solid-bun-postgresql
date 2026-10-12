@@ -3,14 +3,14 @@
  * 包含请求上下文信息，如原始请求（用于解析订阅令牌）等
  */
 
-import type { SessionConnection } from '../api-core';
-import { getSession } from '../api-core';
+import type { SessionInfo } from '../api-core';
+import { getSessionInfo } from '../api-core';
 
 export interface Context {
   /** 原始 HTTP 请求（Web 端；VSCode/Electrobun 走自定义 link 时为 undefined） */
   req?: Request;
-  /** 已建立的会话（若载荷中带有 connectionId 可在 procedure 内按需获取） */
-  session?: SessionConnection;
+  /** 已建立会话的摘要（不含连接句柄；需要连接能力请在 procedure 内用 connectorFor） */
+  session?: SessionInfo;
   connectionId?: string;
 }
 
@@ -21,6 +21,6 @@ export const createContext: CreateContextFn = async (opts) => {
   return {
     req: opts.req,
     connectionId,
-    session: connectionId ? getSession(connectionId) : undefined,
+    session: connectionId ? getSessionInfo(connectionId) : undefined,
   };
 };

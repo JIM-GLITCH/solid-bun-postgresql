@@ -1,7 +1,39 @@
 /**
  * 仅用 node-mssql 执行查询并取列元数据（arrayRowMode），供网格结果与 browse / enrich 使用。
+ *
+ * 另放置「流式句柄的 teardown 原语」：它只依赖 handle 自身，放在此文件可让连接层
+ * （`db/sessions.ts`）与业务 handler 都引用它，而**不产生模块环**。
+ * （`sqlserver-mssql-stream` 引用本文件的类型，故此处只用 `import type` 反向引用，运行时无环。）
  */
 import sql from "mssql";
+import type { SqlServerStreamingQueryHandle } from "./sqlserver-mssql-stream";
+
+/** 释放进行中的流式请求与事务（连接断开、重建、或开始新流式查询前调用） */
+export async function teardownSqlServerRowStream(handle: SqlServerStreamingQueryHandle | undefined): Promise<void> {
+  if (!handle) return;
+  try {
+    handle.mssqlRequest?.cancel();
+  } catch {
+    /* ignore */
+  }
+  if (!handle.transactionEnded) {
+    try {
+      await handle.transaction.rollback();
+    } catch {
+      /* ignore */
+    }
+    handle.transactionEnded = true;
+  }
+  const err = new Error("查询流已中断");
+  for (const w of handle.waiters) {
+    try {
+      w.reject(err);
+    } catch {
+      /* ignore */
+    }
+  }
+  handle.waiters = [];
+}
 
 /** mssql recordset（arrayRowMode）下 `result.columns` 中单列描述，与 lib/tedious/request createColumns 一致 */
 export type MssqlArrayRecordsetColumn = {

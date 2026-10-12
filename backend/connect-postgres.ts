@@ -93,9 +93,17 @@ export async function connectPostgres(db: GetDbConfigResult) {
 }
 
 export function createPostgresPool(db: GetDbConfigResult) {
-  return new Pool({
+  const pool = new Pool({
     ...db.config,
     max: db.sshEnabled ? 2 : 6,
     idleTimeoutMillis: 30000,
   });
+
+  // 监听连接池错误，避免未捕获的异常导致进程崩溃
+  pool.on("error", (err) => {
+    console.error("[PostgreSQL pool error]", err);
+    // 连接池错误会被 keepalive 捕获并处理，这里只是记录日志
+  });
+
+  return pool;
 }

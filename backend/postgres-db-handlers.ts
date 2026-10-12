@@ -1,22 +1,20 @@
 /**
  * PostgreSQL 下所有 db/* 请求的实现（从 api-core 拆分，便于按 dbType 扩展其他库）。
  */
-import type { ConnectDbRequest, DbKind, DatabaseCapabilities, PostgresLoginParams, SSEMessage } from "../shared/src";
-import { connectPostgres, createPostgresPool, getDbConfig } from "./connect-postgres";
+import type { ConnectDbRequest, DbKind, DatabaseCapabilities, SSEMessage } from "../shared/src";
 import { calculateColumnEditable } from "./column-editable";
-import type { Client, PoolClient } from "pg";
-import Cursor from "pg-cursor";
-import type { SessionConnection, PostgresSessionConnection } from "./session-connection";
+import type { Client, FieldDef } from "pg";
+import type { SessionConnection } from "./session-connection";
+import type { BorrowedClient, DbConnector } from "./db/contract";
+import { connectSession } from "./db/sessions";
 
-function pgSession(getSWithDb: (cid: string) => SessionConnection, cid: string): PostgresSessionConnection {
-  const s = getSWithDb(cid);
-  if (s.dbKind !== "postgres") throw new Error("内部错误：期望 PostgreSQL 会话");
-  return s;
-}
+/** 与 column-editable 内部一致的查询客户端形状（该类型未导出，此处复刻） */
+type QueryClient = Client | import("pg").Pool;
 
 export interface PostgresDbHandlerContext {
-  connectionMap: Map<string, SessionConnection>;
   getConnId: () => string;
+  /** 取当前会话的连接器（业务层唯一入口，替代直接访问 session 句柄） */
+  connectorFor: (cid: string) => DbConnector;
   getS: (cid: string) => SessionConnection;
   getSWithDb: (cid: string) => SessionConnection;
   getStatements: (sql: string) => string[];
@@ -39,10 +37,9 @@ export async function handlePostgresDbRequest(
   ctx: PostgresDbHandlerContext
 ): Promise<unknown> {
   const {
-    connectionMap,
+    connectorFor,
     getConnId,
     getS,
-    getSWithDb,
     getStatements,
     recreateUserUsedClient,
     attachPostgresClientHandlers,
@@ -60,46 +57,8 @@ export async function handlePostgresDbRequest(
     case "db/connect": {
       const params = payload as ConnectDbRequest;
       if (params.dbType !== "postgres") throw new Error("当前仅支持 PostgreSQL（dbType=postgres）");
-      const { connectionId: cid, dbType: _dbT, ...connectParams } = params;
-      const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
-
-      // 若已存在同 ID 连接，先断开（必须先关闭 pg 连接再关隧道，否则 server.close 会死锁）
-      const existing = connectionMap.get(cid);
-      if (existing) {
-        connectionMap.delete(cid);
-        stopUserClientKeepalive(existing);
-        if (existing.dbKind === "postgres") {
-          await existing.userUsedClient.end().catch(() => {});
-          await existing.backGroundPool.end().catch(() => {});
-        } else if (existing.dbKind === "sqlserver") {
-          await existing.userUsedClient.close().catch(() => {});
-        } else {
-          try {
-            existing.userUsedClient.release();
-          } catch {
-            /* ignore */
-          }
-          await existing.backGroundPool.end().catch(() => {});
-        }
-        await existing.closeTunnel?.().catch(() => {});
-      }
-
-      const db = await getDbConfig(loginParams);
-      const client = await connectPostgres(db);
-      const adminPool = createPostgresPool(db);
-
-      attachPostgresClientHandlers(cid, client);
-
-      connectionMap.set(cid, {
-        dbKind: "postgres",
-        userUsedClient: client,
-        backGroundPool: adminPool,
-        dbForReconnect: db,
-        eventPushers: new Set(),
-        closeTunnel: db.closeTunnel,
-      });
-      startUserClientKeepalive(cid);
-      return { success: true, connectionId: cid, dbType: "postgres" as const };
+      // 建连/旧连接清理/keepalive 统一由连接层负责
+      return connectSession(params);
     }
 
     case "db/disconnect": {
@@ -128,98 +87,21 @@ export async function handlePostgresDbRequest(
       if (statements.length === 0) {
         return { rows: [], columns: [], hasMore: false };
       }
-
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const session = pgSession(getSWithDb, cid);
-        const client = session.userUsedClient;
-        const adminPool = session.backGroundPool;
-        try {
-          if (session.cursor) {
-            await new Promise<void>((r) => session.cursor!.instance.close(() => r()));
-            session.cursor = undefined;
-          }
-
-          try {
-            const pidRes = await client.query("SELECT pg_backend_pid() as pid");
-            session.runningQueryPid = parseInt(String(pidRes.rows[0]?.pid ?? 0), 10) || undefined;
-          } catch {
-            session.runningQueryPid = (client as any).processID;
-          }
-
-          for (let i = 0; i < statements.length - 1; i++) {
-            await client.query(statements[i]);
-          }
-
-          const lastStatement = statements[statements.length - 1];
-          const cursor = client.query(new Cursor(lastStatement, [], { rowMode: "array" }));
-          const rows = await new Promise<any[]>((resolve, reject) => {
-            cursor.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
-          });
-
-          const fields = (cursor as any)._result?.fields;
-          const columnsInfo = fields ? await calculateColumnEditable(adminPool, fields, lastStatement) : [];
-          const isDone = rows.length < batchSize;
-
-          if (isDone) {
-            await new Promise<void>((r) => cursor.close(() => r()));
-            session.runningQueryPid = undefined;
-          } else {
-            session.cursor = { instance: cursor, columns: columnsInfo, isDone: false };
-          }
-
-          return { rows, columns: columnsInfo, hasMore: !isDone };
-        } catch (e) {
-          lastErr = e;
-          if (attempt === 0 && isPgUserClientDeadError(e)) {
-            await recreateUserUsedClient(cid);
-            continue;
-          }
-          throw e;
-        }
-      }
-      throw lastErr;
+      // 游标、执行中 pid、死连接重试均由连接层负责（连接器内部持有跨批次状态）
+      return connectorFor(cid).stream({ statements, batchSize });
     }
 
     case "db/query-stream-more": {
       const cid = getConnId();
       const { batchSize = 100 } = payload as { connectionId: string; batchSize?: number };
-      const session = pgSession(getSWithDb, cid);
-
-      if (!session.cursor || session.cursor.isDone) return { rows: [], hasMore: false };
-
-      const { cursor } = session;
-      let rows: any[];
-      try {
-        rows = await new Promise<any[]>((resolve, reject) => {
-          cursor.instance.read(batchSize, (err: any, r: any[]) => (err ? reject(err) : resolve(r)));
-        });
-      } catch (e) {
-        if (isPgUserClientDeadError(e)) {
-          session.cursor = undefined;
-          session.runningQueryPid = undefined;
-          await recreateUserUsedClient(cid);
-        }
-        throw e;
-      }
-      const isDone = rows.length < batchSize;
-
-      if (isDone) {
-        await new Promise<void>((r) => cursor.instance.close(() => r()));
-        session.cursor = undefined;
-        session.runningQueryPid = undefined;
-      } else {
-        cursor.isDone = false;
-      }
-
-      return { rows, hasMore: !isDone };
+      return connectorFor(cid).streamMore({ batchSize });
     }
 
     case "db/save-changes": {
       const cid = getConnId();
       const { sql } = payload as { connectionId: string; sql: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(sql);
+      const connector = connectorFor(cid);
+      const result = await connector.query(sql);
       sendSSEMessage(cid, {
         type: "INFO",
         message: `保存成功: ${result.rowCount ?? 0} 行受影响`,
@@ -251,12 +133,12 @@ export async function handlePostgresDbRequest(
       if (!colNames?.length || !Array.isArray(rows)) {
         throw new Error("缺少 columns 或 rows");
       }
-      const session = pgSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       const quote = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
       const qualified = `${quote(schema)}.${quote(table)}`;
       const cols = colNames.map(quote).join(", ");
       const BATCH = 100;
-      const runOne = async (chunk: any[][], client: PoolClient): Promise<number> => {
+      const runOne = async (chunk: any[][], client: BorrowedClient): Promise<number> => {
         const placeholders: string[] = [];
         const values: any[] = [];
         let paramIndex = 1;
@@ -282,23 +164,22 @@ export async function handlePostgresDbRequest(
 
       let total = 0;
       if (onError === "rollback") {
-        const client = await session.backGroundPool.connect();
-        try {
+        // 连接归还由 withPoolClient 保证（替代原 try/finally + release）
+        await connector.withPoolClient(async (client) => {
           await client.query("BEGIN");
-          for (let i = 0; i < rows.length; i += BATCH) {
-            const chunk = rows.slice(i, i + BATCH);
-            total += await runOne(chunk, client);
+          try {
+            for (let i = 0; i < rows.length; i += BATCH) {
+              const chunk = rows.slice(i, i + BATCH);
+              total += await runOne(chunk, client);
+            }
+            await client.query("COMMIT");
+          } catch (e) {
+            await client.query("ROLLBACK");
+            throw e;
           }
-          await client.query("COMMIT");
-        } catch (e) {
-          await client.query("ROLLBACK");
-          throw e;
-        } finally {
-          client.release();
-        }
+        });
       } else {
-        const client = await session.backGroundPool.connect();
-        try {
+        await connector.withPoolClient(async (client) => {
           for (let i = 0; i < rows.length; i += BATCH) {
             const chunk = rows.slice(i, i + BATCH);
             try {
@@ -314,9 +195,7 @@ export async function handlePostgresDbRequest(
               }
             }
           }
-        } finally {
-          client.release();
-        }
+        });
       }
       sendSSEMessage(cid, {
         type: "INFO",
@@ -328,22 +207,22 @@ export async function handlePostgresDbRequest(
 
     case "db/cancel-query": {
       const cid = getConnId();
-      const session = pgSession(getSWithDb, cid);
-      const pid = session.runningQueryPid;
-      if (!pid) return { success: false, error: "没有正在执行的查询" };
-      const result = await session.backGroundPool.query(`SELECT pg_cancel_backend($1)`, [pid]);
-      const cancelled = result.rows[0]?.pg_cancel_backend;
-      return { success: true, cancelled, message: cancelled ? "查询取消请求已发送" : "查询可能已完成或无法取消" };
+      const connector = connectorFor(cid);
+      const res = await connector.cancelCurrentQuery();
+      if (!res.cancelled && res.message === "没有正在执行的查询") {
+        return { success: false, error: "没有正在执行的查询" };
+      }
+      return { success: true, cancelled: res.cancelled, message: res.message };
     }
 
     case "db/explain": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      const session = pgSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query.trim()}`;
       try {
         sendSSEMessage(cid, { type: "QUERY", message: "执行 EXPLAIN ANALYZE...", timestamp: Date.now() });
-        const result = await session.backGroundPool.query(explainSql);
+        const result = await connector.query(explainSql);
         const row = result.rows[0];
         const jsonVal = row ? (row as any)["QUERY PLAN"] ?? (row as any).query_plan ?? (Array.isArray(row) ? row[0] : Object.values(row)[0]) : null;
         const plan = typeof jsonVal === "string" ? JSON.parse(jsonVal) : jsonVal;
@@ -357,8 +236,8 @@ export async function handlePostgresDbRequest(
 
     case "db/schemas": {
       const cid = getConnId();
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema' ORDER BY schema_name`
       );
       return { schemas: result.rows.map((r) => r.schema_name) };
@@ -367,14 +246,14 @@ export async function handlePostgresDbRequest(
     case "db/tables": {
       const cid = getConnId();
       const { schema } = payload as { connectionId: string; schema: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT table_name, table_type FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_type, table_name`,
         [schema]
       );
       let functions: Array<{ oid: number; schema: string; name: string; args: string }> = [];
       try {
-        const funcResult = await session.backGroundPool.query(
+        const funcResult = await connector.query(
           `SELECT p.oid, n.nspname AS schema, p.proname AS name, pg_get_function_identity_arguments(p.oid) AS args
            FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid JOIN pg_language l ON p.prolang = l.oid
            WHERE l.lanname = 'plpgsql' AND n.nspname = $1 ORDER BY p.proname`,
@@ -394,8 +273,8 @@ export async function handlePostgresDbRequest(
     case "db/columns": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT c.column_name, c.data_type, c.udt_name, c.is_nullable, c.column_default,
          c.character_maximum_length, c.numeric_precision, c.numeric_scale, c.identity_generation,
          pg_catalog.format_type(a.atttypid, a.atttypmod) AS pg_format_type
@@ -416,8 +295,8 @@ export async function handlePostgresDbRequest(
     case "db/indexes": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT
            i.relname AS index_name,
            am.amname AS index_type,
@@ -453,8 +332,8 @@ export async function handlePostgresDbRequest(
     case "db/primary-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT kcu.column_name FROM information_schema.table_constraints tc
          JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
          WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = $1 AND tc.table_name = $2 ORDER BY kcu.ordinal_position`,
@@ -466,8 +345,8 @@ export async function handlePostgresDbRequest(
     case "db/unique-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT tc.constraint_name, tc.constraint_type,
          array_agg(kcu.column_name ORDER BY kcu.ordinal_position) AS columns
          FROM information_schema.table_constraints tc
@@ -495,11 +374,11 @@ export async function handlePostgresDbRequest(
 
     case "db/data-types": {
       const cid = getConnId();
-      const session = pgSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       // 仅可出现在 CREATE TABLE 列上的类别：b 标量、e 枚举、r 范围、m multirange。
       // 排除 typtype=p（伪类型：anycompatible、any、void、internal 等，不能作存储列类型）。
       // 用 format_type 输出 SQL 常用名（smallint/integer/bigint），而非仅 typname（int2/int4/int8）。
-      const result = await session.backGroundPool.query(
+      const result = await connector.query(
         `SELECT DISTINCT pg_catalog.format_type(t.oid, NULL) AS name
          FROM pg_type t
          JOIN pg_namespace n ON t.typnamespace = n.oid
@@ -515,10 +394,10 @@ export async function handlePostgresDbRequest(
     case "db/execute-ddl": {
       const cid = getConnId();
       const { sql } = payload as { connectionId: string; sql: string };
-      const session = pgSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       try {
         sendSSEMessage(cid, { type: "QUERY", message: `执行 DDL: ${sql.slice(0, 80)}...`, timestamp: Date.now() });
-        await session.backGroundPool.query(sql);
+        await connector.query(sql);
         sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
         return { success: true };
       } catch (e: any) {
@@ -530,8 +409,8 @@ export async function handlePostgresDbRequest(
     case "db/foreign-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const outgoingResult = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const outgoingResult = await connector.query(
         `SELECT tc.constraint_name,
          kcu.column_name AS source_column,
          ccu.table_schema AS target_schema, ccu.table_name AS target_table, ccu.column_name AS target_column,
@@ -543,7 +422,7 @@ export async function handlePostgresDbRequest(
          WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2`,
         [schema, table]
       );
-      const incomingResult = await session.backGroundPool.query(
+      const incomingResult = await connector.query(
         `SELECT tc.constraint_name, tc.table_schema AS source_schema, tc.table_name AS source_table,
          kcu.column_name AS source_column, ccu.table_schema AS target_schema, ccu.table_name AS target_table, ccu.column_name AS target_column
          FROM information_schema.table_constraints tc
@@ -558,8 +437,8 @@ export async function handlePostgresDbRequest(
     case "db/table-ddl": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = connector;
 
       // 判断是表还是视图
       const tblRes = await pool.query(
@@ -641,8 +520,8 @@ export async function handlePostgresDbRequest(
     case "db/function-ddl": {
       const cid = getConnId();
       const { schema, function: funcName, oid } = payload as { connectionId: string; schema: string; function: string; oid?: number };
-      const session = pgSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = connector;
 
       let targetOid: number;
       if (oid != null) {
@@ -665,8 +544,8 @@ export async function handlePostgresDbRequest(
     case "db/schema-dump": {
       const cid = getConnId();
       const { schema, includeData = false } = payload as { connectionId: string; schema: string; includeData?: boolean };
-      const session = pgSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = connector;
       const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
       sendSSEMessage(cid, { type: "QUERY", message: `导出 schema ${schema}${includeData ? "（含数据）" : ""}...`, timestamp: Date.now() });
@@ -715,7 +594,7 @@ export async function handlePostgresDbRequest(
       const parts: string[] = [`-- Schema: ${schema}\n`, `CREATE SCHEMA IF NOT EXISTS ${quote(schema)};\n`];
 
       for (const t of sortedTables) {
-        const { ddl } = await forward("db/table-ddl", { connectionId: cid, dbType: session.dbKind, schema, table: t } as any) as { ddl: string };
+        const { ddl } = await forward("db/table-ddl", { connectionId: cid, dbType: connectorFor(cid).dbKind, schema, table: t } as any) as { ddl: string };
         parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
         if (includeData) {
           const colsRes = await pool.query(
@@ -746,11 +625,11 @@ export async function handlePostgresDbRequest(
       }
       for (const r of viewsRes.rows as any[]) {
         const v = (r as any).viewname;
-        const { ddl } = await forward("db/table-ddl", { connectionId: cid, dbType: session.dbKind, schema, table: v } as any) as { ddl: string };
+        const { ddl } = await forward("db/table-ddl", { connectionId: cid, dbType: connectorFor(cid).dbKind, schema, table: v } as any) as { ddl: string };
         parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
       }
       for (const r of funcsRes.rows as any[]) {
-        const { ddl } = await forward("db/function-ddl", { connectionId: cid, dbType: session.dbKind, schema, function: (r as any).proname, oid: (r as any).oid } as any) as { ddl: string };
+        const { ddl } = await forward("db/function-ddl", { connectionId: cid, dbType: connectorFor(cid).dbKind, schema, function: (r as any).proname, oid: (r as any).oid } as any) as { ddl: string };
         parts.push("\n" + ddl + (ddl.trim().endsWith(";") ? "\n" : ";\n"));
       }
 
@@ -761,8 +640,8 @@ export async function handlePostgresDbRequest(
     case "db/database-dump": {
       const cid = getConnId();
       const { includeData = false } = payload as { connectionId: string; includeData?: boolean };
-      const session = pgSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = connector;
 
       sendSSEMessage(cid, { type: "QUERY", message: `导出全库${includeData ? "（含数据）" : ""}...`, timestamp: Date.now() });
 
@@ -772,7 +651,7 @@ export async function handlePostgresDbRequest(
       const parts: string[] = ["-- Database Dump\n"];
       for (const r of schemasRes.rows as any[]) {
         const s = r.nspname;
-        const { dump } = await forward("db/schema-dump", { connectionId: cid, dbType: session.dbKind, schema: s, includeData } as any) as { dump: string };
+        const { dump } = await forward("db/schema-dump", { connectionId: cid, dbType: connectorFor(cid).dbKind, schema: s, includeData } as any) as { dump: string };
         parts.push(dump);
       }
       sendSSEMessage(cid, { type: "INFO", message: "全库导出完成", timestamp: Date.now() });
@@ -782,41 +661,32 @@ export async function handlePostgresDbRequest(
     case "db/query": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const session = pgSession(getSWithDb, cid);
-        const client = session.userUsedClient;
-        if ((client as any).processID) session.runningQueryPid = (client as any).processID;
-        try {
-          sendSSEMessage(cid, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
-          const result = await client.query({ text: query, rowMode: "array" });
-          session.runningQueryPid = undefined;
-          sendSSEMessage(cid, {
-            type: "INFO",
-            message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`,
-            timestamp: Date.now(),
-          });
-          const columnsInfo = await calculateColumnEditable(client, result.fields);
-          return { result: result.rows, columns: columnsInfo };
-        } catch (e: any) {
-          session.runningQueryPid = undefined;
-          if (attempt === 0 && isPgUserClientDeadError(e)) {
-            lastErr = e;
-            await recreateUserUsedClient(cid);
-            continue;
-          }
-          sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
-          throw e;
-        }
+      // 死连接重试与执行中 pid 登记均由连接层负责（queryAsUser 内部实现）
+      const connector = connectorFor(cid);
+      sendSSEMessage(cid, { type: "QUERY", message: `执行查询: ${query.slice(0, 100)}...`, timestamp: Date.now() });
+      try {
+        const result = await connector.queryAsUser({ text: query, rowMode: "array" });
+        sendSSEMessage(cid, {
+          type: "INFO",
+          message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`,
+          timestamp: Date.now(),
+        });
+        const columnsInfo = await calculateColumnEditable(
+          connector as unknown as QueryClient,
+          (result.fields ?? []) as FieldDef[]
+        );
+        return { result: result.rows, columns: columnsInfo };
+      } catch (e: any) {
+        sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${e.message}`, timestamp: Date.now(), detail: e.detail || e.hint });
+        throw e;
       }
-      throw lastErr;
     }
 
     case "db/table-comment": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT obj_description(c.oid, 'pg_class') AS comment
          FROM pg_class c
          JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -829,8 +699,8 @@ export async function handlePostgresDbRequest(
     case "db/check-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = pgSession(getSWithDb, cid);
-      const result = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const result = await connector.query(
         `SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS expression
          FROM pg_constraint con
          JOIN pg_class c ON c.oid = con.conrelid
@@ -848,8 +718,8 @@ export async function handlePostgresDbRequest(
       try {
         const cid = getConnId();
         const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-        const session = pgSession(getSWithDb, cid);
-        const pool = session.backGroundPool;
+        const connector = connectorFor(cid);
+        const pool = connector;
 
         const rel = await pool.query(
           `SELECT c.oid, c.relkind::text AS relkind FROM pg_class c
@@ -943,11 +813,11 @@ export async function handlePostgresDbRequest(
       try {
         const cid = getConnId();
         const { query } = payload as { connectionId: string; query: string };
-        const session = pgSession(getSWithDb, cid);
+        const connector = connectorFor(cid);
         const q = query.trim();
         if (!q) throw new Error("SQL 为空");
         const explainSql = `EXPLAIN (VERBOSE, COSTS ON, FORMAT TEXT) ${q}`;
-        const result = await session.backGroundPool.query(explainSql);
+        const result = await connector.query(explainSql);
         const lines: string[] = result.rows.map((row) => {
           const v =
             (row as Record<string, unknown>)["QUERY PLAN"] ??
@@ -966,14 +836,14 @@ export async function handlePostgresDbRequest(
         const cid = getConnId();
         const { limit = 20 } = payload as { connectionId: string; limit?: number };
         const lim = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 5), 200) : 20;
-        const session = pgSession(getSWithDb, cid);
-        const client = await session.backGroundPool.connect();
-        try {
+        const connector = connectorFor(cid);
+        return connector.withPoolClient(async (client) => {
           // 监控查询必须“快失败”，避免 UI 卡住；不用事务，避免某一步失败后进入 aborted 状态
           await client.query("SET statement_timeout = '2500ms'");
           await client.query("SET lock_timeout = '800ms'");
 
-          const connRes = await client.query(
+          try {
+            const connRes = await client.query(
             `SELECT
                COUNT(*)::int AS total,
                COUNT(*) FILTER (WHERE state = 'active')::int AS active,
@@ -1062,8 +932,8 @@ export async function handlePostgresDbRequest(
         } finally {
           try { await client.query("RESET statement_timeout"); } catch {}
           try { await client.query("RESET lock_timeout"); } catch {}
-          client.release();
         }
+        });
       } catch (e: any) {
         throw new Error(`session-monitor: ${e?.message ?? String(e)}`);
       }
@@ -1072,8 +942,8 @@ export async function handlePostgresDbRequest(
     case "db/installed-extensions": {
       try {
         const cid = getConnId();
-        const session = pgSession(getSWithDb, cid);
-        const result = await session.backGroundPool.query(
+        const connector = connectorFor(cid);
+        const result = await connector.query(
           `SELECT
              e.extname AS name,
              e.extversion AS installed_version,
@@ -1105,14 +975,14 @@ export async function handlePostgresDbRequest(
         const cid = getConnId();
         const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
         if (!Number.isInteger(pid) || pid <= 0) throw new Error("pid 非法");
-        const session = pgSession(getSWithDb, cid);
-        const self = await session.backGroundPool.query("SELECT pg_backend_pid() AS self_pid");
+        const connector = connectorFor(cid);
+        const self = await connector.query("SELECT pg_backend_pid() AS self_pid");
         const selfPid = Number(self.rows[0]?.self_pid ?? 0);
         if (pid === selfPid) {
           throw new Error("不允许操作当前监控会话自身 pid");
         }
         const fn = action === "terminate" ? "pg_terminate_backend" : "pg_cancel_backend";
-        const rs = await session.backGroundPool.query(
+        const rs = await connector.query(
           `SELECT ${fn}($1) AS ok`,
           [pid]
         );

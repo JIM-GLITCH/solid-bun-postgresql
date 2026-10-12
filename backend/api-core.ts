@@ -1,11 +1,14 @@
 /**
  * 后端 API 核心：纯业务逻辑，与传输方式无关
  * 供 HTTP 处理器（`api-handlers-http`）与 tRPC router 共同调用
+ *
+ * 连接生命周期（注册表 / 建连 / 断开 / 重连 / keepalive / 事件推送）已抽到
+ * `backend/db/sessions.ts`；本文件只做「method → 业务」分发，不持有任何连接句柄。
+ * 为兼容既有调用方（tRPC context、Electrobun、VSCode），相关读取入口在此再导出。
  */
 
 import {
   getSqlSegments,
-  type PostgresLoginParams,
   type ApiMethod,
   type ApiRequestPayload,
   type ConnectDbRequest,
@@ -13,138 +16,57 @@ import {
   type DbKind,
   type StoredConnectionParams,
   type SSEMessage,
-  defaultDatabaseCapabilities,
   isMysqlFamily,
   isSqlServer,
 } from "../shared/src";
-import { connectPostgres, getDbConfig, type GetDbConfigResult } from "./connect-postgres";
-import type { MysqlSessionConnection, SessionConnection, SqlServerSessionConnection } from "./session-connection";
+import type { Pool as MysqlPool } from "mysql2/promise";
+import type { Pool } from "pg";
 import { handlePostgresDbRequest, type PostgresDbHandlerContext } from "./postgres-db-handlers";
-import { handleMysqlDbRequest, teardownMysqlStreaming, type MysqlDbHandlerContext } from "./mysql-db-handlers";
-import {
-  buildSqlServerSchemaContext,
-  handleSqlServerDbRequest,
-  type SqlServerDbHandlerContext,
-} from "./sqlserver-db-handlers";
-import { openSqlServerPool } from "./connect-sqlserver";
-import { teardownSqlServerRowStream } from "./sqlserver-mssql-stream";
+import { handleMysqlDbRequest, type MysqlDbHandlerContext } from "./mysql-db-handlers";
+import { handleSqlServerDbRequest, type SqlServerDbHandlerContext } from "./sqlserver-db-handlers";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
 import { getStoredSubscriptionToken } from "./subscription-token-store";
 import { getSubscriptionApiBaseFromEnv } from "./subscription-license";
 import { runAiSqlTask, type AiApiMode } from "./ai-service";
-import type { Pool as MysqlPool } from "mysql2/promise";
-import type { Client, Pool } from "pg";
+import type { SessionConnection } from "./session-connection";
+import type { DbConnector } from "./db/contract";
+import {
+  assertSessionDbType,
+  attachPostgresClientHandlers,
+  capabilitiesForKind,
+  connectSession,
+  disconnectConnection,
+  disposeAllSessions,
+  getSession,
+  getSessionInfo,
+  installSessionDisposeOnExit,
+  isPgUserClientDeadError,
+  recreateUserUsedClient,
+  sendSSEMessage,
+  sessionConnectorOf,
+  shouldRouteDbRequestToMysql,
+  shouldRouteDbRequestToSqlServer,
+  startMysqlUserClientKeepalive,
+  startUserClientKeepalive,
+  stopUserClientKeepalive,
+  subscribeSessionEvents,
+} from "./db/sessions";
 
 export type { SessionConnection } from "./session-connection";
 export type { SSEMessage };
+/** 传输层应当读的收窄形状（不含连接句柄） */
+export type { SessionInfo } from "./db/contract";
 
-/**
- * 载荷中的 dbType 仅作提示；路由与权限以 connectionMap 内会话的 dbKind 为准。
- * 避免因前端刷新后未再登记 dbType（默认 postgres）导致已建立的 MySQL 会话请求失败、侧栏空白。
- */
-function assertSessionDbType(session: SessionConnection, dbType: DbKind | undefined): void {
-  void session;
-  void dbType;
-}
+// 传输层读取入口：实现已移到 `db/sessions.ts`，此处再导出以保持既有 import 路径可用
+export { getSession, getSessionInfo, subscribeSessionEvents, sendSSEMessage, disconnectConnection };
 
-function capabilitiesForKind(kind: DbKind) {
-  return defaultDatabaseCapabilities(kind);
-}
+/** 进程退出收口（供宿主入口显式调用；`installSessionDisposeOnExit` 已自动挂钩） */
+export { disposeAllSessions };
 
-function isPgUserClientDeadError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e ?? "");
-  return /not queryable|connection error|Connection terminated/i.test(msg);
-}
-
-function isMysqlUserClientDeadError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e ?? "");
-  return /Connection lost|ECONNRESET|PROTOCOL_CONNECTION_LOST|not connected/i.test(msg);
-}
-
-function isSqlServerPoolDeadError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e ?? "");
-  return /ECONNRESET|Connection lost|socket|timeout|closed|Failed to connect|broken/i.test(msg);
-}
-
-function attachPostgresClientHandlers(cid: string, client: Client): void {
-  client.on("error", (err: Error) => {
-    sendSSEMessage(cid, { type: "ERROR", message: err.message || String(err), timestamp: Date.now() });
-  });
-  client.on("notice", (msg: any) => {
-    const severity = (msg.severity || "NOTICE").toUpperCase();
-    sendSSEMessage(cid, {
-      type: severity as SSEMessage["type"],
-      message: msg.message || String(msg),
-      timestamp: Date.now(),
-      detail: msg.detail || msg.hint || undefined,
-    });
-  });
-  client.on("notification", (msg: any) => {
-    sendSSEMessage(cid, {
-      type: "NOTIFICATION",
-      message: `[${msg.channel}] ${msg.payload || "(无内容)"}`,
-      timestamp: Date.now(),
-    });
-  });
-  client.on("end", () => {
-    sendSSEMessage(cid, { type: "WARNING", message: "数据库连接已断开", timestamp: Date.now() });
-  });
-}
-
-/** Monaco 等使用的长连接 Client 异常后 pg 会报 not queryable；连接池仍可用故侧栏只读查询正常 */
-async function recreateUserUsedClient(cid: string): Promise<void> {
-  const session = connectionMap.get(cid);
-  if (!session) throw new Error("连接不存在");
-  if (session.dbKind !== "postgres") throw new Error("内部错误：非 PostgreSQL 会话");
-  if (session.cursor) {
-    try {
-      await new Promise<void>((r) => session.cursor!.instance.close(() => r()));
-    } catch {
-      /* ignore */
-    }
-    session.cursor = undefined;
-  }
-  session.runningQueryPid = undefined;
-  await session.userUsedClient.end().catch(() => {});
-  const client = await connectPostgres(session.dbForReconnect);
-  attachPostgresClientHandlers(cid, client);
-  session.userUsedClient = client;
-  sendSSEMessage(cid, { type: "INFO", message: "查询专用连接已自动重建", timestamp: Date.now() });
-}
-
-async function recreateMysqlUserUsedClient(cid: string): Promise<void> {
-  const session = connectionMap.get(cid);
-  if (!session) throw new Error("连接不存在");
-  if (!isMysqlFamily(session.dbKind)) throw new Error("内部错误：非 MySQL/MariaDB 会话");
-  const m = session as MysqlSessionConnection;
-  try {
-    m.userUsedClient.release();
-  } catch {
-    /* ignore */
-  }
-  const conn = await m.backGroundPool.getConnection();
-  m.userUsedClient = conn;
-  sendSSEMessage(cid, { type: "INFO", message: "查询专用连接已自动重建", timestamp: Date.now() });
-}
-
-async function recreateSqlServerPool(cid: string): Promise<void> {
-  const session = connectionMap.get(cid);
-  if (!session) throw new Error("连接不存在");
-  if (session.dbKind !== "sqlserver") throw new Error("内部错误：非 SQL Server 会话");
-  const s = session as SqlServerSessionConnection;
-  if (s.sqlServerRowStream) {
-    await teardownSqlServerRowStream(s.sqlServerRowStream);
-    s.sqlServerRowStream = undefined;
-  }
-  s.sqlServerActiveRequest = undefined;
-  await s.userUsedClient.close().catch(() => {});
-  const pool = await openSqlServerPool(s.dbForReconnect);
-  s.userUsedClient = pool;
-  s.backGroundPool = pool;
-  sendSSEMessage(cid, { type: "INFO", message: "SQL Server 连接池已自动重建", timestamp: Date.now() });
-}
+// Phase 2：keepalive 是 Effect 常驻 fiber，安装进程退出收口（幂等）
+installSessionDisposeOnExit();
 
 /** 按不在引号/注释内的 ; 拆成多条语句（与前端分块规则一致，仅不分空行）。 */
 function getStatements(sql: string): string[] {
@@ -155,88 +77,7 @@ function getStatements(sql: string): string[] {
     .filter(Boolean);
 }
 
-/** 以 connectionId 为 key 存储多个连接 */
-const connectionMap = new Map<string, SessionConnection>();
-
-/**
- * `db/*` 是否交给 MySQL 处理器（与 PostgreSQL 二选一）。
- * 建连看载荷 `dbType`；已建连看会话 `connectionMap` 中 `dbKind`。
- */
-function shouldRouteDbRequestToMysql(method: string, payload: unknown): boolean {
-  if (!method.startsWith("db/")) return false;
-  if (method === "db/connect") {
-    return isMysqlFamily((payload as ConnectDbRequest).dbType);
-  }
-  const cid = (payload as { connectionId?: string }).connectionId;
-  if (cid == null || String(cid) === "") return false;
-  const k = connectionMap.get(String(cid))?.dbKind;
-  return k != null && isMysqlFamily(k);
-}
-
-function shouldRouteDbRequestToSqlServer(method: string, payload: unknown): boolean {
-  if (!method.startsWith("db/")) return false;
-  if (method === "db/connect") {
-    return (payload as ConnectDbRequest).dbType === "sqlserver";
-  }
-  const cid = (payload as { connectionId?: string }).connectionId;
-  if (cid == null || String(cid) === "") return false;
-  return connectionMap.get(String(cid))?.dbKind === "sqlserver";
-}
 const aiKeyStore = new Map<string, string>();
-
-/** 探活间隔：略小于常见 idle 超时，避免首条 Monaco 查询才暴露死连接 */
-const USER_CLIENT_KEEPALIVE_MS = 60_000;
-const USER_CLIENT_KEEPALIVE_SQL = "SELECT 1 --keepalive";
-
-function stopUserClientKeepalive(session: SessionConnection): void {
-  if (session.keepAliveTimer != null) {
-    clearInterval(session.keepAliveTimer);
-    session.keepAliveTimer = undefined;
-  }
-}
-
-function startUserClientKeepalive(cid: string): void {
-  const session = connectionMap.get(cid);
-  if (!session) return;
-  stopUserClientKeepalive(session);
-  session.keepAliveTimer = setInterval(() => {
-    void (async () => {
-      const s = connectionMap.get(cid);
-      if (!s) return;
-      if (s.dbKind === "postgres") {
-        if (s.cursor) return;
-        try {
-          await s.userUsedClient.query(USER_CLIENT_KEEPALIVE_SQL);
-        } catch (e) {
-          if (isPgUserClientDeadError(e)) {
-            await recreateUserUsedClient(cid).catch(() => {});
-          }
-        }
-      } else if (s.dbKind === "sqlserver") {
-        if (s.sqlServerRowStream) return;
-        try {
-          await s.userUsedClient.request().query("SELECT 1");
-        } catch (e) {
-          if (isSqlServerPoolDeadError(e)) {
-            await recreateSqlServerPool(cid).catch(() => {});
-          }
-        }
-      } else {
-        try {
-          await s.userUsedClient.query("SELECT 1");
-        } catch (e) {
-          if (isMysqlUserClientDeadError(e)) {
-            await recreateMysqlUserUsedClient(cid).catch(() => {});
-          }
-        }
-      }
-    })();
-  }, USER_CLIENT_KEEPALIVE_MS);
-}
-
-function startMysqlUserClientKeepalive(cid: string): void {
-  startUserClientKeepalive(cid);
-}
 
 let aiKeyResolver: ((keyRef: string) => Promise<string | undefined>) | null = null;
 
@@ -285,95 +126,6 @@ async function resolveAiApiKey(keyRef: string): Promise<string | undefined> {
   return undefined;
 }
 
-async function buildPostgresSchemaContext(pool: Pool, schema?: string): Promise<{ context: string; injected: string[] }> {
-  const schemas = schema
-    ? [schema]
-    : (
-      await pool.query(
-        `SELECT schema_name
-         FROM information_schema.schemata
-         WHERE schema_name NOT LIKE 'pg_%' AND schema_name != 'information_schema'
-         ORDER BY schema_name
-         LIMIT 2`
-      )
-    ).rows.map((r: any) => r.schema_name as string);
-
-  const chunks: string[] = [];
-  const injected: string[] = [];
-  for (const s of schemas) {
-    const tablesRes = await pool.query(
-      `SELECT table_name
-       FROM information_schema.tables
-       WHERE table_schema = $1 AND table_type = 'BASE TABLE'
-       ORDER BY table_name
-       LIMIT 6`,
-      [s]
-    );
-    for (const t of tablesRes.rows as Array<{ table_name: string }>) {
-      const colsRes = await pool.query(
-        `SELECT column_name, data_type
-         FROM information_schema.columns
-         WHERE table_schema = $1 AND table_name = $2
-         ORDER BY ordinal_position
-         LIMIT 12`,
-        [s, t.table_name]
-      );
-      const cols = colsRes.rows.map((c: any) => `${c.column_name}:${c.data_type}`).join(", ");
-      const tableRef = `${s}.${t.table_name}`;
-      chunks.push(`${tableRef}(${cols})`);
-      injected.push(tableRef);
-    }
-  }
-  return { context: chunks.join("\n"), injected };
-}
-
-async function buildMysqlSchemaContext(pool: MysqlPool, schema?: string): Promise<{ context: string; injected: string[] }> {
-  const schemas = schema
-    ? [schema]
-    : (
-        (
-          await pool.query(
-            `SELECT SCHEMA_NAME AS schema_name FROM information_schema.SCHEMATA
-             WHERE SCHEMA_NAME NOT IN ('information_schema','mysql','performance_schema','sys')
-             ORDER BY SCHEMA_NAME LIMIT 2`
-          )
-        )[0] as Array<Record<string, unknown>>
-      ).map((r) => String(r.schema_name ?? r.SCHEMA_NAME ?? "")).filter(Boolean);
-
-  const chunks: string[] = [];
-  const injected: string[] = [];
-  for (const s of schemas) {
-    const [tableRows] = await pool.query(
-      `SELECT TABLE_NAME AS table_name FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'
-       ORDER BY TABLE_NAME LIMIT 6`,
-      [s]
-    );
-    for (const tr of (tableRows as Array<Record<string, unknown>>) ?? []) {
-      const tname = String(tr.table_name ?? tr.TABLE_NAME ?? "");
-      if (!tname) continue;
-      const [colRows] = await pool.query(
-        `SELECT COLUMN_NAME AS column_name, DATA_TYPE AS data_type
-         FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-         ORDER BY ORDINAL_POSITION LIMIT 12`,
-        [s, tname]
-      );
-      const cols = ((colRows as Array<Record<string, unknown>>) ?? [])
-        .map((c) => {
-          const cn = String(c.column_name ?? c.COLUMN_NAME ?? "");
-          const dt = String(c.data_type ?? c.DATA_TYPE ?? "");
-          return `${cn}:${dt}`;
-        })
-        .filter((x) => x !== ":");
-      const tableRef = `${s}.${tname}`;
-      chunks.push(`${tableRef}(${cols.join(", ")})`);
-      injected.push(tableRef);
-    }
-  }
-  return { context: chunks.join("\n"), injected };
-}
-
 function aiDialectDisplayLabel(dialect: DbKind): string {
   if (dialect === "postgres") return "PostgreSQL";
   if (dialect === "mariadb") return "MariaDB";
@@ -381,19 +133,15 @@ function aiDialectDisplayLabel(dialect: DbKind): string {
   return "MySQL";
 }
 
-async function buildAiSchemaContext(session: SessionConnection, schema?: string): Promise<{ context: string; injected: string[] }> {
-  switch (session.dbKind) {
-    case "postgres":
-      return buildPostgresSchemaContext(session.backGroundPool as Pool, schema);
-    case "mysql":
-    case "mariadb":
-      return buildMysqlSchemaContext(session.backGroundPool as MysqlPool, schema);
-    case "sqlserver":
-      return buildSqlServerSchemaContext((session as SqlServerSessionConnection).backGroundPool, schema);
-    default:
-      throw new Error("不支持的会话类型");
-  }
+async function buildAiSchemaContext(
+  connector: DbConnector,
+  schema?: string
+): Promise<{ context: string; injected: string[] }> {
+  // schema 采集已整体下沉到连接层（各 DbConnector 的 buildSchemaContext）
+  return connector.buildSchemaContext(schema);
 }
+
+// ── AI 提示词组装 ────────────────────────────────────────────
 
 function buildPortableSqlPrompt(params: {
   sql: string;
@@ -498,21 +246,21 @@ function normalizeAiSqlRequest(
 }
 
 async function buildPortablePromptWithSchema(
-  session: SessionConnection,
+  connector: DbConnector,
   params: { sql: string; schema?: string; instructions?: string }
 ): Promise<{ prompt: string; schemaInjected: string[] }> {
-  const schemaMeta = await buildAiSchemaContext(session, params.schema);
+  const schemaMeta = await buildAiSchemaContext(connector, params.schema);
   const prompt = buildPortableSqlPrompt({
     sql: params.sql,
     schemaContext: schemaMeta.context,
     extraInstruction: params.instructions,
-    dialect: session.dbKind,
+    dialect: connector.dbKind,
   });
   return { prompt, schemaInjected: schemaMeta.injected };
 }
 
 async function executeAiSqlEdit(params: {
-  session: SessionConnection;
+  connector: DbConnector;
   sql: string;
   keyRef: string;
   schema?: string;
@@ -526,7 +274,7 @@ async function executeAiSqlEdit(params: {
   elapsedMs?: number;
   schemaInjected: string[];
 }> {
-  const promptMeta = await buildPortablePromptWithSchema(params.session, {
+  const promptMeta = await buildPortablePromptWithSchema(params.connector, {
     sql: params.sql,
     schema: params.schema,
     instructions: params.instruction,
@@ -545,71 +293,14 @@ async function executeAiSqlEdit(params: {
       maxTokens: aiConfig.maxTokens,
     },
     {
-      systemPrompt: buildAiJsonSystemPrompt(params.session.dbKind),
+      systemPrompt: buildAiJsonSystemPrompt(params.connector.dbKind),
       userPrompt: promptMeta.prompt,
     }
   );
   return { ...result, schemaInjected: promptMeta.schemaInjected };
 }
 
-/** 断开并释放连接资源（供 SSE 关闭时调用，释放标签页关闭后的泄漏） */
-export async function disconnectConnection(connectionId: string): Promise<void> {
-  const conn = connectionMap.get(connectionId);
-  if (conn) {
-    connectionMap.delete(connectionId);
-    stopUserClientKeepalive(conn);
-    if (conn.dbKind === "postgres") {
-      await conn.userUsedClient.end().catch(() => {});
-      await conn.backGroundPool.end().catch(() => {});
-    } else if (conn.dbKind === "sqlserver") {
-      if (conn.sqlServerRowStream) {
-        await teardownSqlServerRowStream(conn.sqlServerRowStream);
-        conn.sqlServerRowStream = undefined;
-      }
-      await conn.userUsedClient.close().catch(() => {});
-    } else {
-      if (isMysqlFamily(conn.dbKind)) {
-        teardownMysqlStreaming(conn);
-      }
-      try {
-        conn.userUsedClient.release();
-      } catch {
-        /* ignore */
-      }
-      await conn.backGroundPool.end().catch(() => {});
-    }
-    await conn.closeTunnel?.().catch(() => {});
-  }
-}
-
-export function sendSSEMessage(connectionId: string, message: SSEMessage) {
-  const conn = connectionMap.get(connectionId);
-  if (!conn) return;
-
-  for (const push of conn.eventPushers) {
-    try {
-      push(message);
-    } catch (e) {
-      conn.eventPushers.delete(push);
-    }
-  }
-}
-
-export function getSession(connectionId: string): SessionConnection | undefined {
-  return connectionMap.get(connectionId);
-}
-
-/** 订阅连接的事件推送，返回取消订阅函数 */
-export function subscribeSessionEvents(
-  connectionId: string,
-  push: (msg: SSEMessage) => void
-): () => void {
-  const conn = connectionMap.get(connectionId);
-  if (!conn) throw new Error("未找到数据库连接，请先连接数据库");
-
-  conn.eventPushers.add(push);
-  return () => conn.eventPushers.delete(push);
-}
+// ── API 分发 ─────────────────────────────────────────────────
 
 /** 处理 API 请求，返回纯数据（可 JSON 序列化） */
 export async function handleApiRequest<M extends ApiMethod>(
@@ -635,11 +326,18 @@ export async function handleApiRequest<M extends ApiMethod>(
     return s;
   };
 
+  /** 业务 handler 访问连接能力的唯一入口 */
+  const sessionConnectorFor = (cid: string): DbConnector => {
+    const c = sessionConnectorOf(cid);
+    if (!c) throw new Error("未找到数据库连接，请先连接数据库");
+    return c;
+  };
+
   if (typeof method === "string" && method.startsWith("db/")) {
     if (shouldRouteDbRequestToMysql(method, payload)) {
       const mysqlCtx: MysqlDbHandlerContext = {
-        connectionMap,
         getConnId,
+        connectorFor: sessionConnectorFor,
         getS,
         getSWithDb,
         sendSSEMessage,
@@ -654,15 +352,15 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     if (shouldRouteDbRequestToSqlServer(method, payload)) {
       const sqlServerCtx: SqlServerDbHandlerContext = {
-        connectionMap,
         getConnId,
+        connectorFor: sessionConnectorFor,
         getS,
         getSWithDb,
         sendSSEMessage,
         disconnectConnection,
         assertSessionDbType,
         capabilitiesForKind,
-        startSqlServerUserClientKeepalive: startMysqlUserClientKeepalive,
+        startSqlServerUserClientKeepalive: startUserClientKeepalive,
         stopUserClientKeepalive,
       };
       return handleSqlServerDbRequest(method, payload, sqlServerCtx);
@@ -670,8 +368,8 @@ export async function handleApiRequest<M extends ApiMethod>(
 
     let pgCtxRef!: PostgresDbHandlerContext;
     const pgCtx: PostgresDbHandlerContext = {
-      connectionMap,
       getConnId,
+      connectorFor: sessionConnectorFor,
       getS,
       getSWithDb,
       getStatements,
@@ -923,7 +621,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       if (!req.sql.trim()) throw new Error("sql 不能为空");
       const session = getS(req.connectionId);
       return executeAiSqlEdit({
-        session,
+        connector: sessionConnectorFor(req.connectionId),
         sql: req.sql,
         keyRef: req.keyRef,
         schema: req.schema,
@@ -936,7 +634,7 @@ export async function handleApiRequest<M extends ApiMethod>(
       if (!req.connectionId) throw new Error("缺少 connectionId");
       if (!req.sql.trim()) throw new Error("sql 不能为空");
       const session = getS(req.connectionId);
-      const promptMeta = await buildPortablePromptWithSchema(session, {
+      const promptMeta = await buildPortablePromptWithSchema(sessionConnectorFor(req.connectionId), {
         sql: req.sql,
         schema: req.schema,
         instructions: req.instructions,
@@ -955,9 +653,9 @@ export async function handleApiRequest<M extends ApiMethod>(
       };
       if (!sql?.trim()) throw new Error("sql 不能为空");
       const session = getS(promptDiffConnId);
-      const schemaMeta = await buildAiSchemaContext(session, schema);
+      const schemaMeta = await buildAiSchemaContext(sessionConnectorFor(promptDiffConnId), schema);
       return {
-        prompt: buildDiffSqlPrompt({ sql, schemaContext: schemaMeta.context, dialect: session.dbKind }),
+        prompt: buildDiffSqlPrompt({ sql, schemaContext: schemaMeta.context, dialect: sessionConnectorFor(promptDiffConnId).dbKind }),
         schemaInjected: schemaMeta.injected,
       };
     }
@@ -966,3 +664,6 @@ export async function handleApiRequest<M extends ApiMethod>(
       throw new Error(`未知 API 方法: ${method}`);
   }
 }
+
+/** 建立数据库连接（供 db/* 分发使用；实现见 `db/sessions.ts`） */
+export { connectSession };

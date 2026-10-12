@@ -5,22 +5,17 @@ import type { Readable } from "node:stream";
 import type { Connection as MysqlCallbackConnection, FieldPacket } from "mysql2";
 import type { Pool, PoolConnection } from "mysql2/promise";
 import type {
+  ColumnEditableInfo,
   ConnectDbRequest,
   DbKind,
   DatabaseCapabilities,
-  PostgresLoginParams,
   SSEMessage,
 } from "../shared/src";
 import { getSqlSegments, isMysqlFamily } from "../shared/src";
-import { createMysqlPool, getMysqlDbConfig } from "./connect-mysql";
 import { calculateMysqlColumnEditable } from "./mysql-column-editable";
-import type { MysqlSessionConnection, SessionConnection } from "./session-connection";
-
-function mysqlSession(getSWithDb: (cid: string) => SessionConnection, cid: string): MysqlSessionConnection {
-  const s = getSWithDb(cid);
-  if (!isMysqlFamily(s.dbKind)) throw new Error("内部错误：期望 MySQL/MariaDB 会话");
-  return s as MysqlSessionConnection;
-}
+import type { SessionConnection } from "./session-connection";
+import type { DbConnector } from "./db/contract";
+import { connectSession, teardownMysqlStreaming } from "./db/sessions";
 
 function getStatementsFromSql(sql: string): string[] {
   const s = sql.trim();
@@ -35,20 +30,28 @@ function mysqlBacktickIdent(id: string): string {
 }
 
 /**
- * 仅在请求里显式带了 defaultSchema（侧栏当前库）时执行 USE。
- * 不再用 session.mysqlCurrentDatabase 回退发 USE，避免每次查询都多一轮 USE；
- * 会话默认库依赖 DSN 中的 database，或由用户曾在侧栏选库时写入的 mysqlCurrentDatabase（仅当发生过 USE 时更新）。
+ * 把 `DbConnector` 适配成 `calculateMysqlColumnEditable` 需要的「池形状」。
+ * 该函数只用到 `pool.query(sql, params)` 且依赖 mysql2 的 `[rows, fields]` 元组，
+ * 因此这里用池查询通道还原元组形状，避免把连接句柄暴露给业务。
  */
-async function ensureMysqlDefaultDatabase(
-  session: MysqlSessionConnection,
-  conn: PoolConnection,
-  overrideSchema?: string | null
-): Promise<void> {
-  const o = overrideSchema != null ? String(overrideSchema).trim() : "";
-  if (!o) return;
-  await conn.query(`USE ${mysqlBacktickIdent(o)}`);
-  session.mysqlCurrentDatabase = o;
+function mysqlColumnMetaClient(connector: DbConnector) {
+  return {
+    // calculateMysqlColumnEditable 依赖 mysql2 的 [rows, fields] 元组形状
+    query: async <R>(sql: string, params?: unknown[]) => {
+      const res = await connector.query(sql, params);
+      return [res.rows, res.fields] as [R[], unknown];
+    },
+  } as unknown as Parameters<typeof calculateMysqlColumnEditable>[0];
 }
+
+async function calculateMysqlColumnEditableFromConnector(
+  connector: DbConnector,
+  fields: FieldPacket[]
+): Promise<ColumnEditableInfo[]> {
+  return calculateMysqlColumnEditable(mysqlColumnMetaClient(connector), fields, connector.currentDatabase?.());
+}
+
+// ensureMysqlDefaultDatabase 已下沉到 `db/connector-mysql.ts`（连接层原语）
 
 function toRowArray(raw: unknown): unknown[][] {
   if (Array.isArray(raw) && raw.length > 0 && Array.isArray((raw as unknown[])[0])) {
@@ -238,114 +241,15 @@ async function mysqlFetchSlowQueries(
   };
 }
 
-function mysqlCallbackConnection(promiseConn: PoolConnection): MysqlCallbackConnection {
-  return (promiseConn as unknown as { connection: MysqlCallbackConnection }).connection;
-}
-
-/** 断开前或新建流式查询前：销毁进行中的行流，避免连接卡在半读状态 */
-export function teardownMysqlStreaming(session: MysqlSessionConnection): void {
-  const s = session.mysqlRowStream;
-  if (s && !s.destroyed) {
-    s.destroy();
-  }
-  session.mysqlRowStream = undefined;
-  session.mysqlRunningThreadId = undefined;
-}
-
-function mysqlStreamFirstBatch(
-  stream: Readable,
-  batchSize: number
-): Promise<{ rows: unknown[][]; fieldPackets: FieldPacket[] | undefined; hasMore: boolean }> {
-  return new Promise((resolve, reject) => {
-    let fieldsPackets: FieldPacket[] | undefined;
-    const rows: unknown[][] = [];
-
-    const onFields = (f: FieldPacket[]) => {
-      fieldsPackets = f;
-    };
-
-    const cleanup = () => {
-      stream.off("fields", onFields);
-      stream.off("data", onData);
-      stream.off("end", onEnd);
-      stream.off("error", onError);
-    };
-
-    const onData = (row: unknown) => {
-      const r = Array.isArray(row) ? (row as unknown[]) : [row];
-      rows.push(r);
-      if (rows.length >= batchSize) {
-        stream.pause();
-        cleanup();
-        resolve({
-          rows,
-          fieldPackets: fieldsPackets,
-          hasMore: true,
-        });
-      }
-    };
-
-    const onEnd = () => {
-      cleanup();
-      resolve({
-        rows,
-        fieldPackets: fieldsPackets,
-        hasMore: false,
-      });
-    };
-
-    const onError = (err: Error) => {
-      cleanup();
-      reject(err);
-    };
-
-    stream.on("fields", onFields);
-    stream.on("data", onData);
-    stream.once("end", onEnd);
-    stream.once("error", onError);
-  });
-}
-
-function mysqlStreamNextBatch(stream: Readable, batchSize: number): Promise<{ rows: unknown[][]; done: boolean }> {
-  return new Promise((resolve, reject) => {
-    const rows: unknown[][] = [];
-
-    const cleanup = () => {
-      stream.off("data", onData);
-      stream.off("end", onEnd);
-      stream.off("error", onError);
-    };
-
-    const onData = (row: unknown) => {
-      const r = Array.isArray(row) ? (row as unknown[]) : [row];
-      rows.push(r);
-      if (rows.length >= batchSize) {
-        stream.pause();
-        cleanup();
-        resolve({ rows, done: false });
-      }
-    };
-
-    const onEnd = () => {
-      cleanup();
-      resolve({ rows, done: true });
-    };
-
-    const onError = (err: Error) => {
-      cleanup();
-      reject(err);
-    };
-
-    stream.on("data", onData);
-    stream.once("end", onEnd);
-    stream.once("error", onError);
-    stream.resume();
-  });
-}
+// 以下连接层原语已下沉，避免业务模块持有驱动句柄：
+//   - teardownMysqlStreaming  → `db/sessions.ts`
+//   - mysqlCallbackConnection / mysqlStreamFirstBatch / mysqlStreamNextBatch
+//     / ensureMysqlDefaultDatabase → `db/connector-mysql.ts`
 
 export interface MysqlDbHandlerContext {
-  connectionMap: Map<string, SessionConnection>;
   getConnId: () => string;
+  /** 取当前会话的连接器（业务层唯一入口，替代直接访问 session 句柄） */
+  connectorFor: (cid: string) => DbConnector;
   getS: (cid: string) => SessionConnection;
   getSWithDb: (cid: string) => SessionConnection;
   sendSSEMessage: (cid: string, msg: SSEMessage) => void;
@@ -362,7 +266,7 @@ export async function handleMysqlDbRequest(
   ctx: MysqlDbHandlerContext
 ): Promise<unknown> {
   const {
-    connectionMap,
+    connectorFor,
     getConnId,
     getS,
     getSWithDb,
@@ -384,46 +288,8 @@ export async function handleMysqlDbRequest(
       if (params.dbType !== "mysql" && params.dbType !== "mariadb") {
         throw new Error("内部错误：db/connect 此分支须 dbType=mysql|mariadb");
       }
-      const { connectionId: cid, dbType, ...connectParams } = params;
-      const mysqlFamilyKind: "mysql" | "mariadb" = dbType;
-      const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
-
-      const existing = connectionMap.get(cid);
-      if (existing) {
-        connectionMap.delete(cid);
-        stopUserClientKeepalive(existing);
-        if (existing.dbKind === "postgres") {
-          await existing.userUsedClient.end().catch(() => {});
-          await existing.backGroundPool.end().catch(() => {});
-        } else if (existing.dbKind === "sqlserver") {
-          await existing.userUsedClient.close().catch(() => {});
-        } else {
-          try {
-            existing.userUsedClient.release();
-          } catch {
-            /* ignore */
-          }
-          await existing.backGroundPool.end().catch(() => {});
-        }
-        await existing.closeTunnel?.().catch(() => {});
-      }
-
-      const db = await getMysqlDbConfig(loginParams);
-      const pool = createMysqlPool(db);
-      const userConn = await pool.getConnection();
-      const initialDb = String(loginParams.database ?? "").trim();
-
-      connectionMap.set(cid, {
-        dbKind: mysqlFamilyKind,
-        userUsedClient: userConn,
-        backGroundPool: pool,
-        dbForReconnect: db,
-        eventPushers: new Set(),
-        closeTunnel: db.closeTunnel,
-        ...(initialDb ? { mysqlCurrentDatabase: initialDb } : {}),
-      });
-      startMysqlUserClientKeepalive(cid);
-      return { success: true, connectionId: cid, dbType: mysqlFamilyKind };
+      // 建连/旧连接清理/keepalive 统一由连接层负责
+      return connectSession(params);
     }
 
     case "db/disconnect": {
@@ -454,46 +320,12 @@ export async function handleMysqlDbRequest(
         return { rows: [], columns: [], hasMore: false };
       }
 
-      const bs = Math.max(1, batchSize ?? 100);
-      const session = mysqlSession(getSWithDb, cid);
-      teardownMysqlStreaming(session);
-
-      const conn = session.userUsedClient;
-      session.mysqlRunningThreadId = conn.threadId;
-
-      let rowStream: Readable | undefined;
-      try {
-        await ensureMysqlDefaultDatabase(session, conn, defaultSchema);
-        for (let i = 0; i < statements.length - 1; i++) {
-          await conn.query(statements[i]);
-        }
-        const lastStatement = statements[statements.length - 1];
-        const rawConn = mysqlCallbackConnection(conn);
-        const cmd = rawConn.query({ sql: lastStatement, rowsAsArray: true });
-        rowStream = cmd.stream({ highWaterMark: Math.max(2, bs) }) as Readable;
-
-        const { rows, fieldPackets, hasMore } = await mysqlStreamFirstBatch(rowStream, bs);
-
-        const columns =
-          fieldPackets?.length && fieldPackets.length > 0
-            ? await calculateMysqlColumnEditable(session.backGroundPool, fieldPackets, session.mysqlCurrentDatabase)
-            : [];
-
-        if (hasMore) {
-          session.mysqlRowStream = rowStream;
-        } else {
-          session.mysqlRunningThreadId = undefined;
-          rowStream = undefined;
-        }
-
-        return { rows, columns, hasMore };
-      } catch (e) {
-        if (rowStream && !rowStream.destroyed) {
-          rowStream.destroy();
-        }
-        teardownMysqlStreaming(session);
-        throw e;
-      }
+      // 行流、执行中 threadId、USE 处理、死连接重试均由连接层负责
+      return connectorFor(cid).stream({
+        statements,
+        batchSize: Math.max(1, batchSize ?? 100),
+        defaultSchema,
+      });
     }
 
     case "db/query-stream-more": {
@@ -503,47 +335,31 @@ export async function handleMysqlDbRequest(
         batchSize?: number;
         defaultSchema?: string;
       };
-      const bs = Math.max(1, batchSize ?? 100);
-      const session = mysqlSession(getSWithDb, cid);
-      const stream = session.mysqlRowStream;
-      if (!stream || stream.destroyed) {
-        return { rows: [], hasMore: false };
-      }
-      try {
-        await ensureMysqlDefaultDatabase(session, session.userUsedClient, defaultSchema);
-        const { rows, done } = await mysqlStreamNextBatch(stream, bs);
-        if (done) {
-          teardownMysqlStreaming(session);
-        }
-        return { rows, hasMore: !done };
-      } catch (e) {
-        teardownMysqlStreaming(session);
-        throw e;
-      }
+      return connectorFor(cid).streamMore({ batchSize: Math.max(1, batchSize ?? 100), defaultSchema });
     }
 
     case "db/schemas": {
       const cid = getConnId();
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       const excludeLower = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
-      const [rows] = await session.backGroundPool.query<Array<Record<string, unknown>>>("SHOW DATABASES");
+      const { rows } = await connector.query("SHOW DATABASES");
       const schemas = (rows ?? [])
-        .map((r) => {
+        .map((r: Record<string, unknown>) => {
           const v =
             r.Database ??
             r.database ??
             (typeof r === "object" && r !== null ? Object.values(r)[0] : undefined);
           return v != null ? String(v) : "";
         })
-        .filter((name) => name.length > 0 && !excludeLower.has(name.toLowerCase()));
+        .filter((name: string) => name.length > 0 && !excludeLower.has(name.toLowerCase()));
       return { schemas };
     }
 
     case "db/tables": {
       const cid = getConnId();
       const { schema } = payload as { connectionId: string; schema: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [resultRows] = await session.backGroundPool.query<Array<Record<string, unknown>>>(
+      const connector = connectorFor(cid);
+      const { rows: resultRows } = await connector.query(
         `SELECT TABLE_NAME AS table_name, TABLE_TYPE AS table_type FROM information_schema.TABLES
          WHERE TABLE_SCHEMA = ? ORDER BY TABLE_TYPE, TABLE_NAME`,
         [schema]
@@ -560,8 +376,8 @@ export async function handleMysqlDbRequest(
     case "db/columns": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [cols] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: cols } = await connector.query(
         `SELECT column_name, data_type, is_nullable, column_default, character_maximum_length,
          numeric_precision, numeric_scale, column_comment, extra AS identity_generation
          FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
@@ -587,12 +403,9 @@ export async function handleMysqlDbRequest(
     case "db/save-changes": {
       const cid = getConnId();
       const { sql } = payload as { connectionId: string; sql: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [res] = await session.backGroundPool.query(sql);
-      const affected =
-        res && typeof res === "object" && "affectedRows" in res
-          ? Number((res as import("mysql2").ResultSetHeader).affectedRows ?? 0)
-          : 0;
+      const connector = connectorFor(cid);
+      const { rows: res, header } = await connector.query(sql);
+      const affected = Number(header?.affectedRows ?? 0);
       sendSSEMessage(cid, {
         type: "INFO",
         message: `保存成功: ${affected} 行受影响`,
@@ -624,8 +437,7 @@ export async function handleMysqlDbRequest(
       if (!colNames?.length || !Array.isArray(rows)) {
         throw new Error("缺少 columns 或 rows");
       }
-      const session = mysqlSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
       const qn = (s: string) => mysqlBacktickIdent(s);
       const qualified = `${qn(schema)}.${qn(table)}`;
       const colList = colNames.map(qn).join(", ");
@@ -644,35 +456,32 @@ export async function handleMysqlDbRequest(
         return { sql: ins, flat };
       };
 
-      const runOne = async (chunk: unknown[][]) => {
+      const runOne = async (chunk: unknown[][], on?: { query: (sql: string, values?: unknown[]) => Promise<{ rowCount?: number }> }) => {
         const { sql: ins, flat } = buildInsert(chunk);
-        const [r] = await pool.query(ins, flat);
-        if (r && typeof r === "object" && "affectedRows" in r) {
-          return Number((r as import("mysql2").ResultSetHeader).affectedRows ?? chunk.length);
+        if (on) {
+          const res = await on.query(ins, flat);
+          return typeof res.rowCount === "number" ? res.rowCount : chunk.length;
         }
-        return chunk.length;
+        const res = await connector.query(ins, flat);
+        return typeof res.rowCount === "number" ? res.rowCount : chunk.length;
       };
 
       let total = 0;
       if (onError === "rollback") {
-        const conn = await pool.getConnection();
-        try {
-          await conn.beginTransaction();
-          for (let i = 0; i < rows.length; i += BATCH) {
-            const chunk = rows.slice(i, i + BATCH);
-            const { sql: ins, flat } = buildInsert(chunk);
-            const [r] = await conn.query(ins, flat);
-            total += r && typeof r === "object" && "affectedRows" in r
-              ? Number((r as import("mysql2").ResultSetHeader).affectedRows ?? chunk.length)
-              : chunk.length;
+        // 连接归还由 withPoolClient 保证（替代原 try/finally + release）
+        await connector.withPoolClient(async (client) => {
+          await client.beginTransaction?.();
+          try {
+            for (let i = 0; i < rows.length; i += BATCH) {
+              const chunk = rows.slice(i, i + BATCH);
+              total += await runOne(chunk, client);
+            }
+            await client.commit?.();
+          } catch (e) {
+            await client.rollback?.().catch(() => {});
+            throw e;
           }
-          await conn.commit();
-        } catch (e) {
-          await conn.rollback().catch(() => {});
-          throw e;
-        } finally {
-          conn.release();
-        }
+        });
       } else {
         for (let i = 0; i < rows.length; i += BATCH) {
           const chunk = rows.slice(i, i + BATCH);
@@ -699,31 +508,29 @@ export async function handleMysqlDbRequest(
 
     case "db/cancel-query": {
       const cid = getConnId();
-      const session = mysqlSession(getSWithDb, cid);
-      const tid = session.mysqlRunningThreadId;
-      if (tid == null) {
-        return { success: false, cancelled: false, message: "没有正在执行的查询" };
+      const res = await connectorFor(cid).cancelCurrentQuery();
+      if (res.message === "没有正在执行的查询") {
+        return { success: false, cancelled: false, message: res.message };
       }
-      try {
-        await session.backGroundPool.query(`KILL QUERY ${Number(tid)}`);
-        return { success: true, cancelled: true, message: "查询取消请求已发送" };
-      } catch {
-        return { success: true, cancelled: false, message: "查询可能已完成或无法取消" };
-      }
+      return { success: true, cancelled: res.cancelled, message: res.message };
     }
 
     case "db/explain": {
       const cid = getConnId();
       const { query, defaultSchema } = payload as { connectionId: string; query: string; defaultSchema?: string };
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       const q = query.trim();
       sendSSEMessage(cid, { type: "QUERY", message: "执行 EXPLAIN...", timestamp: Date.now() });
-      const poolConn = await session.backGroundPool.getConnection();
-      try {
-        await ensureMysqlDefaultDatabase(session, poolConn, defaultSchema);
+      // 借一条池连接并把 USE 与后续 EXPLAIN 绑定在同一条连接上（withPoolClient 保证归还）
+      return connector.withPoolClient(async (client) => {
+        if (defaultSchema != null && String(defaultSchema).trim()) {
+          await (client.exec
+            ? client.exec(`USE ${mysqlBacktickIdent(String(defaultSchema).trim())}`)
+            : client.query(`USE ${mysqlBacktickIdent(String(defaultSchema).trim())}`));
+        }
         // MySQL 8.0.18+：EXPLAIN ANALYZE 会真实执行查询（与 PostgreSQL EXPLAIN ANALYZE 一致），输出树形文本
         try {
-          const [analyzeRows] = await poolConn.query(`EXPLAIN ANALYZE ${q}`);
+          const { rows: analyzeRows } = await client.query(`EXPLAIN ANALYZE ${q}`);
           const ar = analyzeRows as Record<string, unknown>[];
           if (ar?.length) {
             const text = ar
@@ -747,36 +554,27 @@ export async function handleMysqlDbRequest(
           /* 版本过低或语法不支持 */
         }
         try {
-          const [rows] = await poolConn.query(`EXPLAIN FORMAT=JSON ${q}`);
+          const { rows } = await client.query(`EXPLAIN FORMAT=JSON ${q}`);
           const row = (rows as Record<string, unknown>[])[0];
-          const raw =
-            row?.EXPLAIN ??
-            row?.explain ??
-            Object.values(row ?? {})[0];
+          const raw = row?.EXPLAIN ?? row?.explain ?? Object.values(row ?? {})[0];
           const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
           const plan = Array.isArray(parsed) ? parsed : [parsed];
           sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成 (FORMAT=JSON)", timestamp: Date.now() });
           return { plan };
         } catch {
-          const [lines] = await poolConn.query(`EXPLAIN ${q}`);
-          const textPlan = (lines as Record<string, unknown>[]).map((r) =>
-            String(Object.values(r).join("\t"))
-          );
+          const { rows: lines } = await client.query(`EXPLAIN ${q}`);
+          const textPlan = (lines as Record<string, unknown>[]).map((r) => String(Object.values(r).join("\t")));
           sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成（传统 EXPLAIN 文本）", timestamp: Date.now() });
           return { plan: [{ Plan: textPlan.join("\n"), Format: "text" }] };
         }
-      } finally {
-        poolConn.release();
-      }
+      });
     }
 
     case "db/indexes": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [statRows] = await session.backGroundPool.query<
-        Array<Record<string, unknown>>
-      >(
+      const connector = connectorFor(cid);
+      const { rows: statRows } = await connector.query(
         `SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, INDEX_TYPE
          FROM information_schema.STATISTICS
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
@@ -811,8 +609,8 @@ export async function handleMysqlDbRequest(
     case "db/primary-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [pk] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: pk } = await connector.query(
         `SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY'
          ORDER BY ORDINAL_POSITION`,
@@ -828,8 +626,8 @@ export async function handleMysqlDbRequest(
     case "db/unique-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [ucRows] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: ucRows } = await connector.query(
         `SELECT tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE,
          GROUP_CONCAT(kcu.COLUMN_NAME ORDER BY kcu.ORDINAL_POSITION) AS cols
          FROM information_schema.TABLE_CONSTRAINTS tc
@@ -853,8 +651,8 @@ export async function handleMysqlDbRequest(
 
     case "db/data-types": {
       const cid = getConnId();
-      const session = mysqlSession(getSWithDb, cid);
-      const [trows] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: trows } = await connector.query(
         `SELECT DISTINCT DATA_TYPE AS name FROM information_schema.COLUMNS ORDER BY DATA_TYPE`
       );
       const fromDb = (trows as Array<{ name?: string; NAME?: string }>).map((r) =>
@@ -866,14 +664,14 @@ export async function handleMysqlDbRequest(
     case "db/execute-ddl": {
       const cid = getConnId();
       const { sql } = payload as { connectionId: string; sql: string };
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       try {
         sendSSEMessage(cid, {
           type: "QUERY",
           message: `执行 DDL: ${sql.slice(0, 80)}...`,
           timestamp: Date.now(),
         });
-        await session.backGroundPool.query(sql);
+        await connector.query(sql);
         sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
         return { success: true };
       } catch (e: unknown) {
@@ -886,8 +684,8 @@ export async function handleMysqlDbRequest(
     case "db/foreign-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [outgoing] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: outgoing } = await connector.query(
         `SELECT kcu.CONSTRAINT_NAME,
          kcu.COLUMN_NAME AS source_column,
          kcu.REFERENCED_TABLE_SCHEMA AS target_schema,
@@ -902,7 +700,7 @@ export async function handleMysqlDbRequest(
            AND kcu.REFERENCED_TABLE_NAME IS NOT NULL`,
         [schema, table]
       );
-      const [incoming] = await session.backGroundPool.query(
+      const { rows: incoming } = await connector.query(
         `SELECT kcu.CONSTRAINT_NAME,
          kcu.TABLE_SCHEMA AS source_schema, kcu.TABLE_NAME AS source_table,
          kcu.COLUMN_NAME AS source_column,
@@ -936,11 +734,10 @@ export async function handleMysqlDbRequest(
     case "db/table-ddl": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
       const db = mysqlBacktickIdent(schema);
       const tb = mysqlBacktickIdent(table);
-      const [tblMeta] = await pool.query(
+      const { rows: tblMeta } = await connector.query(
         `SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
         [schema, table]
       );
@@ -949,12 +746,12 @@ export async function handleMysqlDbRequest(
       }
       const tt = String((tblMeta as Record<string, unknown>[])[0]?.TABLE_TYPE ?? "BASE TABLE");
       if (tt === "VIEW") {
-        const [cr] = await pool.query(`SHOW CREATE VIEW ${db}.${tb}`);
+        const { rows: cr } = await connector.query(`SHOW CREATE VIEW ${db}.${tb}`);
         const row = (cr as Record<string, unknown>[])[0];
         const ddl = String(row?.["Create View"] ?? row?.["create view"] ?? "");
         return { ddl };
       }
-      const [cr] = await pool.query(`SHOW CREATE TABLE ${db}.${tb}`);
+      const { rows: cr } = await connector.query(`SHOW CREATE TABLE ${db}.${tb}`);
       const row = (cr as Record<string, unknown>[])[0];
       const ddl = String(row?.["Create Table"] ?? row?.["create table"] ?? "");
       return { ddl };
@@ -963,9 +760,8 @@ export async function handleMysqlDbRequest(
     case "db/function-ddl": {
       const cid = getConnId();
       const { schema, function: funcName } = payload as { connectionId: string; schema: string; function: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-      const [rt] = await pool.query(
+      const connector = connectorFor(cid);
+      const { rows: rt } = await connector.query(
         `SELECT ROUTINE_TYPE FROM information_schema.ROUTINES
          WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME = ? LIMIT 1`,
         [schema, funcName]
@@ -977,11 +773,11 @@ export async function handleMysqlDbRequest(
       const db = mysqlBacktickIdent(schema);
       const fn = mysqlBacktickIdent(funcName);
       if (typ === "PROCEDURE") {
-        const [cr] = await pool.query(`SHOW CREATE PROCEDURE ${db}.${fn}`);
+        const { rows: cr } = await connector.query(`SHOW CREATE PROCEDURE ${db}.${fn}`);
         const row = (cr as Record<string, unknown>[])[0];
         return { ddl: String(row?.["Create Procedure"] ?? "") };
       }
-      const [crf] = await pool.query(`SHOW CREATE FUNCTION ${db}.${fn}`);
+      const { rows: crf } = await connector.query(`SHOW CREATE FUNCTION ${db}.${fn}`);
       const rowf = (crf as Record<string, unknown>[])[0];
       return { ddl: String(rowf?.["Create Function"] ?? "") };
     }
@@ -989,15 +785,14 @@ export async function handleMysqlDbRequest(
     case "db/schema-dump": {
       const cid = getConnId();
       const { schema, includeData = false } = payload as { connectionId: string; schema: string; includeData?: boolean };
-      const session = mysqlSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
       sendSSEMessage(cid, {
         type: "QUERY",
         message: `导出库 ${schema}${includeData ? "（含数据）" : ""}...`,
         timestamp: Date.now(),
       });
       const parts: string[] = [`-- MySQL database: ${schema}\n\n`];
-      const [objs] = await pool.query(
+      const { rows: objs } = await connector.query(
         `SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES
          WHERE TABLE_SCHEMA = ? ORDER BY TABLE_TYPE DESC, TABLE_NAME`,
         [schema]
@@ -1017,18 +812,18 @@ export async function handleMysqlDbRequest(
         const tb = mysqlBacktickIdent(tname);
         try {
           if (ttyp === "VIEW") {
-            const [cr] = await pool.query(`SHOW CREATE VIEW ${db}.${tb}`);
+            const { rows: cr } = await connector.query(`SHOW CREATE VIEW ${db}.${tb}`);
             const row = (cr as Record<string, unknown>[])[0];
             parts.push(String(row?.["Create View"] ?? "") + ";\n\n");
           } else {
-            const [cr] = await pool.query(`SHOW CREATE TABLE ${db}.${tb}`);
+            const { rows: cr } = await connector.query(`SHOW CREATE TABLE ${db}.${tb}`);
             const row = (cr as Record<string, unknown>[])[0];
             parts.push(String(row?.["Create Table"] ?? "") + ";\n\n");
             if (includeData && ttyp === "BASE TABLE") {
-              const [dataRows] = await pool.query({ sql: `SELECT * FROM ${db}.${tb}`, rowsAsArray: true });
+              const { rows: dataRows } = await connector.query({ text: `SELECT * FROM ${db}.${tb}`, rowMode: "array" });
               const matrix = toRowArray(dataRows);
               if (matrix.length) {
-                const [colRes] = await pool.query(
+                const { rows: colRes } = await connector.query(
                   `SELECT COLUMN_NAME FROM information_schema.COLUMNS
                    WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
                   [schema, tname]
@@ -1050,7 +845,7 @@ export async function handleMysqlDbRequest(
           parts.push(`-- skip ${tname}\n\n`);
         }
       }
-      const [routines] = await pool.query(
+      const { rows: routines } = await connector.query(
         `SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?`,
         [schema]
       );
@@ -1061,10 +856,10 @@ export async function handleMysqlDbRequest(
         const rb = mysqlBacktickIdent(rn);
         try {
           if (rt.toUpperCase() === "PROCEDURE") {
-            const [cr] = await pool.query(`SHOW CREATE PROCEDURE ${db}.${rb}`);
+            const { rows: cr } = await connector.query(`SHOW CREATE PROCEDURE ${db}.${rb}`);
             parts.push(String((cr as Record<string, unknown>[])[0]?.["Create Procedure"] ?? "") + ";\n\n");
           } else {
-            const [cr] = await pool.query(`SHOW CREATE FUNCTION ${db}.${rb}`);
+            const { rows: cr } = await connector.query(`SHOW CREATE FUNCTION ${db}.${rb}`);
             parts.push(String((cr as Record<string, unknown>[])[0]?.["Create Function"] ?? "") + ";\n\n");
           }
         } catch {
@@ -1078,25 +873,24 @@ export async function handleMysqlDbRequest(
     case "db/database-dump": {
       const cid = getConnId();
       const { includeData = false } = payload as { connectionId: string; includeData?: boolean };
-      const session = mysqlSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
       sendSSEMessage(cid, {
         type: "QUERY",
         message: `导出实例（多库）${includeData ? "（含数据）" : ""}...`,
         timestamp: Date.now(),
       });
       const exclude = new Set(["information_schema", "mysql", "performance_schema", "sys"]);
-      const [dbs] = await pool.query<Array<Record<string, unknown>>>("SHOW DATABASES");
+      const { rows: dbs } = await connector.query("SHOW DATABASES");
       const names = (dbs ?? [])
-        .map((r) => String(r.Database ?? r.database ?? Object.values(r)[0] ?? ""))
+        .map((r: Record<string, unknown>) => String(r.Database ?? r.database ?? Object.values(r)[0] ?? ""))
         .filter((n) => n && !exclude.has(n.toLowerCase()));
       const parts: string[] = [
-        session.dbKind === "mariadb" ? "-- MariaDB multi-database dump\n\n" : "-- MySQL multi-database dump\n\n",
+        connector.dbKind === "mariadb" ? "-- MariaDB multi-database dump\n\n" : "-- MySQL multi-database dump\n\n",
       ];
       for (const dbName of names) {
         const { dump } = (await handleMysqlDbRequest(
           "db/schema-dump",
-          { connectionId: cid, dbType: session.dbKind, schema: dbName, includeData },
+          { connectionId: cid, dbType: connector.dbKind, schema: dbName, includeData },
           ctx
         )) as { dump: string };
         parts.push(dump);
@@ -1108,23 +902,18 @@ export async function handleMysqlDbRequest(
     case "db/query": {
       const cid = getConnId();
       const { query, defaultSchema } = payload as { connectionId: string; query: string; defaultSchema?: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const conn = session.userUsedClient;
-      session.mysqlRunningThreadId = conn.threadId;
+      const connector = connectorFor(cid);
+      // 会话专用连接上的执行中 threadId / USE 处理 / 数组行 / 字段元数据均在连接层内完成
       try {
-        await ensureMysqlDefaultDatabase(session, conn, defaultSchema);
         sendSSEMessage(cid, {
           type: "QUERY",
           message: `执行查询: ${query.slice(0, 100)}...`,
           timestamp: Date.now(),
         });
-        const [raw, fields] = await conn.query({ sql: query.trim(), rowsAsArray: true });
-        const result = toRowArray(raw);
-        const fp = fields as FieldPacket[] | undefined;
-        const columns =
-          fp?.length && fp.length > 0
-            ? await calculateMysqlColumnEditable(session.backGroundPool, fp, session.mysqlCurrentDatabase)
-            : [];
+        const res = await connector.queryWithDefaultSchema!(query.trim(), defaultSchema);
+        const result = toRowArray(res.rows);
+        const fp = res.fields as FieldPacket[] | undefined;
+        const columns = fp?.length && fp.length > 0 ? await calculateMysqlColumnEditableFromConnector(connector, fp) : [];
         sendSSEMessage(cid, {
           type: "INFO",
           message: `完成: ${result.length} 行`,
@@ -1135,16 +924,14 @@ export async function handleMysqlDbRequest(
         const msg = e instanceof Error ? e.message : String(e);
         sendSSEMessage(cid, { type: "ERROR", message: `查询错误: ${msg}`, timestamp: Date.now() });
         throw e;
-      } finally {
-        session.mysqlRunningThreadId = undefined;
       }
     }
 
     case "db/table-comment": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [rows] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows } = await connector.query(
         `SELECT TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
         [schema, table]
       );
@@ -1156,9 +943,9 @@ export async function handleMysqlDbRequest(
     case "db/check-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       try {
-        const [rows] = await session.backGroundPool.query(
+        const { rows } = await connector.query(
           `SELECT cc.CONSTRAINT_NAME AS name, cc.CHECK_CLAUSE AS expression
            FROM information_schema.CHECK_CONSTRAINTS cc
            JOIN information_schema.TABLE_CONSTRAINTS tc
@@ -1183,8 +970,8 @@ export async function handleMysqlDbRequest(
     case "db/partition-info": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = mysqlSession(getSWithDb, cid);
-      const [prows] = await session.backGroundPool.query(
+      const connector = connectorFor(cid);
+      const { rows: prows } = await connector.query(
         `SELECT PARTITION_NAME, PARTITION_METHOD, PARTITION_EXPRESSION, SUBPARTITION_METHOD,
                 PARTITION_DESCRIPTION
          FROM information_schema.PARTITIONS
@@ -1220,10 +1007,10 @@ export async function handleMysqlDbRequest(
     case "db/explain-text": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       const q = query.trim();
       if (!q) throw new Error("SQL 为空");
-      const [rows] = await session.backGroundPool.query(`EXPLAIN ${q}`);
+      const { rows } = await connector.query(`EXPLAIN ${q}`);
       const lines = (rows as Record<string, unknown>[]).map((row) =>
         Object.entries(row)
           .map(([k, v]) => `${k}: ${v}`)
@@ -1236,10 +1023,9 @@ export async function handleMysqlDbRequest(
       const cid = getConnId();
       const { limit = 20 } = payload as { connectionId: string; limit?: number };
       const lim = Number.isFinite(limit) ? Math.min(Math.max(Number(limit), 5), 200) : 20;
-      const session = mysqlSession(getSWithDb, cid);
+      const connector = connectorFor(cid);
       try {
-        const pool = session.backGroundPool;
-        const [statsRows] = await pool.query(
+        const { rows: statsRows } = await connector.query(
           `SELECT
              COUNT(*) AS total,
              SUM(CASE WHEN COMMAND != 'Sleep' THEN 1 ELSE 0 END) AS active,
@@ -1259,8 +1045,11 @@ export async function handleMysqlDbRequest(
           idle: Number(s0.idle ?? 0),
           waiting: Number(s0.waiting ?? 0),
         };
-        const lockWaits = await mysqlStatLockWaits(pool, lim);
-        const { rows: slowQueries, source: slowQuerySource } = await mysqlFetchSlowQueries(pool, lim);
+        const lockWaits = await mysqlStatLockWaits(mysqlColumnMetaClient(connector), lim);
+        const { rows: slowQueries, source: slowQuerySource } = await mysqlFetchSlowQueries(
+          mysqlColumnMetaClient(connector),
+          lim
+        );
         return {
           connectionStats,
           lockWaits,
@@ -1291,14 +1080,14 @@ export async function handleMysqlDbRequest(
       const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
       const pidInt = Math.floor(Number(pid));
       if (!Number.isFinite(pidInt) || pidInt <= 0) throw new Error("pid 非法");
-      const session = mysqlSession(getSWithDb, cid);
-      const self = session.userUsedClient.threadId;
+      const connector = connectorFor(cid);
+      const self = connector.sessionThreadId();
       if (pidInt === self) {
         throw new Error("不允许结束当前会话自身线程");
       }
       const sql = action === "terminate" ? `KILL ${pidInt}` : `KILL QUERY ${pidInt}`;
       try {
-        await session.backGroundPool.query(sql);
+        await connector.query(sql);
         return { success: true, pid: pidInt, action };
       } catch {
         return { success: false, pid: pidInt, action };

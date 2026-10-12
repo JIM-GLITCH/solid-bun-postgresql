@@ -76,6 +76,13 @@ export async function getSqlServerDbConfig(params: PostgresLoginParams): Promise
 
 export async function openSqlServerPool(res: GetSqlServerDbConfigResult): Promise<InstanceType<typeof sql.ConnectionPool>> {
   const pool = new sql.ConnectionPool(res.config);
+
+  // 监听连接池错误，避免未捕获的异常导致进程崩溃
+  pool.on("error", (err) => {
+    console.error("[SQL Server pool error]", err);
+    // 连接池错误会被 keepalive 捕获并处理，这里只是记录日志
+  });
+
   await pool.connect();
   return pool;
 }

@@ -62,7 +62,7 @@ export async function getMysqlDbConfig(params: PostgresLoginParams): Promise<Get
 }
 
 export function createMysqlPool(db: GetMysqlDbConfigResult): mysql.Pool {
-  return mysql.createPool({
+  const pool = mysql.createPool({
     host: db.config.host,
     port: db.config.port,
     database: db.config.database,
@@ -73,4 +73,8 @@ export function createMysqlPool(db: GetMysqlDbConfigResult): mysql.Pool {
     connectionLimit: db.sshEnabled ? 2 : 6,
     queueLimit: 0,
   });
+
+  // MySQL2 连接池通过 connection 事件监听器处理错误
+  // 错误会在查询时抛出，由 keepalive 捕获处理
+  return pool;
 }

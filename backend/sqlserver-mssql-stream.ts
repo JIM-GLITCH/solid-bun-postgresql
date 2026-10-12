@@ -5,6 +5,7 @@
 import sql from "mssql";
 import {
   mssqlRecordsetColumnsToSqlServerMeta,
+  teardownSqlServerRowStream,
   type MssqlArrayRecordsetColumn,
   type SqlServerColumnMeta,
 } from "./sqlserver-mssql-query";
@@ -88,31 +89,7 @@ export async function drainSqlServerStreamBatch(
   return { rows, hasMore };
 }
 
-export async function teardownSqlServerRowStream(handle: SqlServerStreamingQueryHandle | undefined): Promise<void> {
-  if (!handle) return;
-  try {
-    handle.mssqlRequest?.cancel();
-  } catch {
-    /* ignore */
-  }
-  if (!handle.transactionEnded) {
-    try {
-      await handle.transaction.rollback();
-    } catch {
-      /* ignore */
-    }
-    handle.transactionEnded = true;
-  }
-  const err = new Error("查询流已中断");
-  for (const w of handle.waiters) {
-    try {
-      w.reject(err);
-    } catch {
-      /* ignore */
-    }
-  }
-  handle.waiters = [];
-}
+// teardownSqlServerRowStream 已下沉到 `sqlserver-mssql-query.ts`（避免与连接层形成模块环）
 
 const BATCH_PREFIX = "SET ROWCOUNT 0;\n";
 

@@ -14,6 +14,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter, createContext } from "../backend/trpc";
+import { sendSSEMessage } from "../backend/db/sessions";
+import { projectionKeys } from "../backend/db/sessions-effect";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -85,6 +87,39 @@ async function setupStatic() {
   // SEA 或打包后必为生产模式；仅 ts 源码直接跑时为开发
   const isDev = !isSea && __filename.endsWith(".ts");
   const PORT = Number(process.env.PORT) || (isDev ? 3101 : 3000);
+
+  // 全局错误处理：捕获未处理的异常和 Promise rejection
+  process.on("uncaughtException", (err) => {
+    console.error("[uncaughtException]", err);
+    // 通知所有活跃连接数据库连接已断开
+    for (const connectionId of projectionKeys()) {
+      try {
+        sendSSEMessage(connectionId, {
+          type: "ERROR",
+          message: `后端异常: ${err instanceof Error ? err.message : String(err)}`,
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        // 忽略通知失败
+      }
+    }
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    console.error("[unhandledRejection]", reason);
+    // 通知所有活跃连接数据库连接已断开
+    for (const connectionId of projectionKeys()) {
+      try {
+        sendSSEMessage(connectionId, {
+          type: "ERROR",
+          message: `未处理的 Promise rejection: ${reason instanceof Error ? reason.message : String(reason)}`,
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        // 忽略通知失败
+      }
+    }
+  });
 
   serve({ fetch: app.fetch, port: PORT });
   console.log(`API server at http://localhost:${PORT} (Node)`);

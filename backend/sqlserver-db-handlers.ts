@@ -7,21 +7,23 @@ import type {
   ConnectDbRequest,
   DatabaseCapabilities,
   DbKind,
-  PostgresLoginParams,
   SSEMessage,
 } from "../shared/src";
 import { getSqlSegments } from "../shared/src";
-import { getSqlServerDbConfig, openSqlServerPool } from "./connect-sqlserver";
-import type { SessionConnection, SqlServerSessionConnection } from "./session-connection";
+import type { SessionConnection } from "./session-connection";
+import { connectSession } from "./db/sessions";
+import { mssqlPoolOf } from "./db/connector-mssql";
+import type { DbConnector } from "./db/contract";
 import {
   normalizeMssqlJsType,
   runSqlServerQueryWithColumnMetadata,
+  teardownSqlServerRowStream,
   type SqlServerColumnMeta,
 } from "./sqlserver-mssql-query";
 import {
   drainSqlServerStreamBatch,
   startSqlServerStreamingQuery,
-  teardownSqlServerRowStream,
+  type SqlServerStreamingQueryHandle,
 } from "./sqlserver-mssql-stream";
 import {
   sqlServerFetchEstimatedPlanXml,
@@ -32,10 +34,12 @@ import {
   sqlServerSessionControl,
 } from "./sqlserver-support";
 
-function sqlServerSession(getSWithDb: (cid: string) => SessionConnection, cid: string): SqlServerSessionConnection {
-  const s = getSWithDb(cid);
-  if (s.dbKind !== "sqlserver") throw new Error("内部错误：期望 SQL Server 会话");
-  return s;
+/**
+ * 取一条可链式 `.input()` 的 mssql Request（参数化查询用）。
+ * 业务侧不持有池，池由连接层通过 `mssqlPoolOf` 按需提供。
+ */
+function mssqlRequest(connector: DbConnector): sql.Request {
+  return mssqlPoolOf(connector).request();
 }
 
 function getStatementsFromSql(sql: string): string[] {
@@ -916,69 +920,10 @@ function formatMssqlErrorChain(e: unknown): string {
   return parts.length > 0 ? parts.join(" → ") : "未知错误";
 }
 
-export async function buildSqlServerSchemaContext(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  pool: any,
-  schema?: string
-): Promise<{ context: string; injected: string[] }> {
-  const schemas = schema?.trim()
-    ? [schema.trim()]
-    : (
-        await pool.request().query(`
-          SELECT TOP (2) SCHEMA_NAME AS schema_name
-          FROM INFORMATION_SCHEMA.SCHEMATA
-          WHERE SCHEMA_NAME NOT IN (
-            N'guest', N'INFORMATION_SCHEMA', N'sys', N'db_owner', N'db_accessadmin',
-            N'db_backupoperator', N'db_datareader', N'db_datawriter', N'db_ddladmin',
-            N'db_denydatareader', N'db_denydatawriter', N'db_securityadmin'
-          )
-          ORDER BY SCHEMA_NAME
-        `)
-      ).recordset.map((r: Record<string, unknown>) => String(r.schema_name ?? r.SCHEMA_NAME ?? "")).filter(Boolean);
-
-  const chunks: string[] = [];
-  const injected: string[] = [];
-  for (const s of schemas) {
-    const tablesRes = await pool
-      .request()
-      .input("sch", sql.NVarChar, s)
-      .query(`
-        SELECT TOP (6) TABLE_NAME AS table_name
-        FROM INFORMATION_SCHEMA.TABLES
-        WHERE TABLE_SCHEMA = @sch AND TABLE_TYPE = 'BASE TABLE'
-        ORDER BY TABLE_NAME
-      `);
-    for (const tr of (tablesRes.recordset ?? []) as Array<Record<string, unknown>>) {
-      const tname = String(tr.table_name ?? tr.TABLE_NAME ?? "");
-      if (!tname) continue;
-      const colRes = await pool
-        .request()
-        .input("sch", sql.NVarChar, s)
-        .input("tbl", sql.NVarChar, tname)
-        .query(`
-          SELECT TOP (12) COLUMN_NAME AS column_name, DATA_TYPE AS data_type
-          FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = @sch AND TABLE_NAME = @tbl
-          ORDER BY ORDINAL_POSITION
-        `);
-      const cols = ((colRes.recordset ?? []) as Array<Record<string, unknown>>)
-        .map((c) => {
-          const cn = String(c.column_name ?? c.COLUMN_NAME ?? "");
-          const dt = String(c.data_type ?? c.DATA_TYPE ?? "");
-          return `${cn}:${dt}`;
-        })
-        .filter((x) => x !== ":");
-      const tableRef = `${s}.${tname}`;
-      chunks.push(`${tableRef}(${cols.join(", ")})`);
-      injected.push(tableRef);
-    }
-  }
-  return { context: chunks.join("\n"), injected };
-}
-
 export interface SqlServerDbHandlerContext {
-  connectionMap: Map<string, SessionConnection>;
   getConnId: () => string;
+  /** 取当前会话的连接器（业务层唯一入口，替代直接访问 session 句柄） */
+  connectorFor: (cid: string) => DbConnector;
   getS: (cid: string) => SessionConnection;
   getSWithDb: (cid: string) => SessionConnection;
   sendSSEMessage: (cid: string, msg: SSEMessage) => void;
@@ -995,7 +940,7 @@ export async function handleSqlServerDbRequest(
   ctx: SqlServerDbHandlerContext
 ): Promise<unknown> {
   const {
-    connectionMap,
+    connectorFor,
     getConnId,
     getS,
     getSWithDb,
@@ -1017,48 +962,8 @@ export async function handleSqlServerDbRequest(
       if (params.dbType !== "sqlserver") {
         throw new Error("内部错误：db/connect 此分支须 dbType=sqlserver");
       }
-      const { connectionId: cid, dbType, ...connectParams } = params;
-      void dbType;
-      const loginParams: PostgresLoginParams = { ...connectParams, password: connectParams.password ?? "" };
-
-      const existing = connectionMap.get(cid);
-      if (existing) {
-        connectionMap.delete(cid);
-        stopUserClientKeepalive(existing);
-        if (existing.dbKind === "postgres") {
-          await existing.userUsedClient.end().catch(() => {});
-          await existing.backGroundPool.end().catch(() => {});
-        } else if (existing.dbKind === "sqlserver") {
-          const ex = existing as SqlServerSessionConnection;
-          if (ex.sqlServerRowStream) {
-            await teardownSqlServerRowStream(ex.sqlServerRowStream);
-            ex.sqlServerRowStream = undefined;
-          }
-          await existing.userUsedClient.close().catch(() => {});
-        } else {
-          try {
-            existing.userUsedClient.release();
-          } catch {
-            /* ignore */
-          }
-          await existing.backGroundPool.end().catch(() => {});
-        }
-        await existing.closeTunnel?.().catch(() => {});
-      }
-
-      const db = await getSqlServerDbConfig(loginParams);
-      const pool = await openSqlServerPool(db);
-
-      connectionMap.set(cid, {
-        dbKind: "sqlserver",
-        userUsedClient: pool,
-        backGroundPool: pool,
-        dbForReconnect: db,
-        eventPushers: new Set(),
-        closeTunnel: db.closeTunnel,
-      });
-      startSqlServerUserClientKeepalive(cid);
-      return { success: true, connectionId: cid, dbType: "sqlserver" as const };
+      // 建连/旧连接清理/keepalive 统一由连接层负责
+      return connectSession(params);
     }
 
     case "db/disconnect": {
@@ -1090,76 +995,36 @@ export async function handleSqlServerDbRequest(
       }
 
       const bs = Math.max(1, batchSize ?? 100);
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
-
-      if (session.sqlServerRowStream) {
-        await teardownSqlServerRowStream(session.sqlServerRowStream);
-        session.sqlServerRowStream = undefined;
-      }
-
-      const preamble = statements.slice(0, -1);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
       const lastStatement = statements[statements.length - 1]!;
 
-      let h;
+      // 流句柄、列可编辑性装配、生命周期均交给连接层（业务只提供列判定回调）
       try {
-        h = await startSqlServerStreamingQuery(pool, {
-          preambleBatches: preamble,
-          selectSql: lastStatement,
-          browseSourceSql: lastStatement,
+        return await connector.stream({
+          statements,
           batchSize: bs,
+          streamColumnsFor: async (handle) => {
+            const h = handle as SqlServerStreamingQueryHandle;
+            const base: ColumnEditableInfo[] = h.columnMeta.map((col, idx) =>
+              columnEditableFromSqlServerMeta(col, idx + 1)
+            );
+            const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, lastStatement);
+            return enrichSqlServerQueryColumnsEditable(pool, base, h.columnMeta, browseRows);
+          },
         });
       } catch (e: unknown) {
         throw new Error(formatMssqlErrorChain(e));
       }
-
-      const base: ColumnEditableInfo[] = h.columnMeta.map((col, idx) => columnEditableFromSqlServerMeta(col, idx + 1));
-      let columns: ColumnEditableInfo[];
-      try {
-        const browseRows = await fetchSqlServerBrowseColumnMetadata(pool, lastStatement);
-        columns = await enrichSqlServerQueryColumnsEditable(pool, base, h.columnMeta, browseRows);
-      } catch (e: unknown) {
-        await teardownSqlServerRowStream(h);
-        throw new Error(formatMssqlErrorChain(e));
-      }
-
-      let rows: unknown[][];
-      let hasMore: boolean;
-      try {
-        ({ rows, hasMore } = await drainSqlServerStreamBatch(h, bs));
-      } catch (e: unknown) {
-        await teardownSqlServerRowStream(h);
-        throw new Error(formatMssqlErrorChain(e));
-      }
-
-      if (hasMore) {
-        session.sqlServerRowStream = h;
-      } else {
-        await teardownSqlServerRowStream(h);
-      }
-
-      return { rows, columns, hasMore };
     }
 
     case "db/query-stream-more": {
       const cid = getConnId();
       const { batchSize = 100 } = payload as { connectionId: string; batchSize?: number; defaultSchema?: string };
       const bs = Math.max(1, batchSize ?? 100);
-      const session = sqlServerSession(getSWithDb, cid);
-      const h = session.sqlServerRowStream;
-      if (!h) {
-        return { rows: [], hasMore: false };
-      }
       try {
-        const { rows, hasMore } = await drainSqlServerStreamBatch(h, bs);
-        if (!hasMore) {
-          session.sqlServerRowStream = undefined;
-          await teardownSqlServerRowStream(h);
-        }
-        return { rows, hasMore };
+        return await connectorFor(cid).streamMore({ batchSize: bs });
       } catch (e: unknown) {
-        session.sqlServerRowStream = undefined;
-        await teardownSqlServerRowStream(h);
         throw new Error(formatMssqlErrorChain(e));
       }
     }
@@ -1167,12 +1032,10 @@ export async function handleSqlServerDbRequest(
     case "db/query": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string; defaultSchema?: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      if (session.sqlServerRowStream) {
-        await teardownSqlServerRowStream(session.sqlServerRowStream);
-        session.sqlServerRowStream = undefined;
-      }
-      const pool = session.userUsedClient;
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+      // 新查询前先释放未读完的行流（连接层负责 teardown）
+      await connector.teardownStream();
       try {
         sendSSEMessage(cid, {
           type: "QUERY",
@@ -1180,7 +1043,7 @@ export async function handleSqlServerDbRequest(
           timestamp: Date.now(),
         });
         const { rows, columns } = await buildSqlServerGridQueryResult(pool, query.trim(), undefined, (r) => {
-          session.sqlServerActiveRequest = r ?? undefined;
+          connector.setActiveRequest?.(r ?? undefined);
         });
         sendSSEMessage(cid, {
           type: "INFO",
@@ -1197,36 +1060,20 @@ export async function handleSqlServerDbRequest(
 
     case "db/cancel-query": {
       const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const stream = session.sqlServerRowStream;
-      if (stream?.mssqlRequest) {
-        try {
-          stream.mssqlRequest.cancel();
-        } catch {
-          /* ignore */
-        }
-        session.sqlServerRowStream = undefined;
-        await teardownSqlServerRowStream(stream);
-        return { success: true, cancelled: true, message: "已请求中断流式查询" };
+      const res = await connectorFor(cid).cancelCurrentQuery();
+      if (!res.cancelled) {
+        return { success: false, cancelled: false, message: "没有正在执行的查询" };
       }
-      const ar = session.sqlServerActiveRequest;
-      if (ar) {
-        try {
-          ar.cancel();
-        } catch {
-          /* ignore */
-        }
-        return { success: true, cancelled: true, message: "已请求中断查询" };
-      }
-      return { success: false, cancelled: false, message: "没有正在执行的查询" };
+      return { success: true, cancelled: true, message: res.message };
     }
 
     case "db/explain": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      sendSSEMessage(cid, { type: "QUERY", message: "获取执行计划 (SHOWPLAN_XML)...", timestamp: Date.now() });
-      const xml = await sqlServerFetchEstimatedPlanXml(session.backGroundPool, query);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+sendSSEMessage(cid, { type: "QUERY", message: "获取执行计划 (SHOWPLAN_XML)...", timestamp: Date.now() });
+      const xml = await sqlServerFetchEstimatedPlanXml(mssqlPoolOf(connectorFor(cid)), query);
       if (xml.trim()) {
         sendSSEMessage(cid, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() });
         return { plan: [{ Plan: xml, Format: "mssql-showplan-xml" as const }] };
@@ -1234,7 +1081,7 @@ export async function handleSqlServerDbRequest(
       sendSSEMessage(cid, { type: "QUERY", message: "SHOWPLAN_XML 无结果，尝试 SHOWPLAN_ALL 文本...", timestamp: Date.now() });
       let lines: string[] = [];
       try {
-        lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+        lines = await sqlServerFetchExplainTextLines(mssqlPoolOf(connectorFor(cid)), query);
       } catch {
         lines = [];
       }
@@ -1259,9 +1106,10 @@ export async function handleSqlServerDbRequest(
     case "db/explain-text": {
       const cid = getConnId();
       const { query } = payload as { connectionId: string; query: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        const lines = await sqlServerFetchExplainTextLines(session.backGroundPool, query);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+try {
+        const lines = await sqlServerFetchExplainTextLines(mssqlPoolOf(connectorFor(cid)), query);
         return { lines };
       } catch (e: unknown) {
         throw new Error(`explain-text: ${formatMssqlErrorChain(e)}`);
@@ -1271,9 +1119,10 @@ export async function handleSqlServerDbRequest(
     case "db/partition-info": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        return await sqlServerFetchPartitionInfo(session.backGroundPool, schema, table);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+try {
+        return await sqlServerFetchPartitionInfo(mssqlPoolOf(connectorFor(cid)), schema, table);
       } catch (e: unknown) {
         throw new Error(`partition-info: ${formatMssqlErrorChain(e)}`);
       }
@@ -1282,9 +1131,10 @@ export async function handleSqlServerDbRequest(
     case "db/session-monitor": {
       const cid = getConnId();
       const { limit = 20 } = payload as { connectionId: string; limit?: number };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        return await sqlServerFetchSessionMonitor(session.backGroundPool, limit);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+try {
+        return await sqlServerFetchSessionMonitor(mssqlPoolOf(connectorFor(cid)), limit);
       } catch (e: unknown) {
         throw new Error(`session-monitor: ${formatMssqlErrorChain(e)}`);
       }
@@ -1293,19 +1143,21 @@ export async function handleSqlServerDbRequest(
     case "db/session-control": {
       const cid = getConnId();
       const { pid, action } = payload as { connectionId: string; pid: number; action: "cancel" | "terminate" };
-      const session = sqlServerSession(getSWithDb, cid);
-      const self = await sqlServerGetOwnSpid(session.backGroundPool);
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+const self = await sqlServerGetOwnSpid(mssqlPoolOf(connectorFor(cid)));
       if (pid === self) throw new Error("不允许操作当前监控连接自身会话");
-      const ok = await sqlServerSessionControl(session.backGroundPool, pid, action);
+      const ok = await sqlServerSessionControl(mssqlPoolOf(connectorFor(cid)), pid, action);
       return { success: ok, pid, action };
     }
 
     case "db/save-changes": {
       const cid = getConnId();
       const { sql: ddl } = payload as { connectionId: string; sql: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
-        const result = await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+try {
+        const result = await mssqlPoolOf(connectorFor(cid)).request().query(normalizeSqlServerDdlBatch(ddl));
         const affected = sumRowsAffected(result.rowsAffected);
         sendSSEMessage(cid, {
           type: "INFO",
@@ -1347,8 +1199,8 @@ export async function handleSqlServerDbRequest(
         throw new Error("指定 conflictColumns 时必须提供 onConflict（nothing 或 update）");
       }
       const useMerge = !!(conflictColumns?.length && onConflict);
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
       const colWidth = Math.max(1, colNames.length);
       const batchRows = Math.max(1, Math.floor(MSSQL_IMPORT_MAX_PARAMS / colWidth));
 
@@ -1438,14 +1290,15 @@ export async function handleSqlServerDbRequest(
     case "db/execute-ddl": {
       const cid = getConnId();
       const { sql: ddl } = payload as { connectionId: string; sql: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      try {
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
+try {
         sendSSEMessage(cid, {
           type: "QUERY",
           message: `执行 DDL: ${ddl.slice(0, 80)}...`,
           timestamp: Date.now(),
         });
-        await session.backGroundPool.request().query(normalizeSqlServerDdlBatch(ddl));
+        await mssqlPoolOf(connectorFor(cid)).request().query(normalizeSqlServerDdlBatch(ddl));
         sendSSEMessage(cid, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() });
         return { success: true };
       } catch (e: unknown) {
@@ -1457,8 +1310,8 @@ export async function handleSqlServerDbRequest(
 
     case "db/schemas": {
       const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool.request().query(`
+      const connector = connectorFor(cid);
+      const r = await connector.query(`
         SELECT SCHEMA_NAME AS schema_name
         FROM INFORMATION_SCHEMA.SCHEMATA
         WHERE SCHEMA_NAME NOT IN (
@@ -1477,9 +1330,8 @@ export async function handleSqlServerDbRequest(
     case "db/tables": {
       const cid = getConnId();
       const { schema } = payload as { connectionId: string; schema: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .query(`
           SELECT TABLE_NAME AS table_name, TABLE_TYPE AS table_type
@@ -1500,9 +1352,8 @@ export async function handleSqlServerDbRequest(
     case "db/columns": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1531,9 +1382,8 @@ export async function handleSqlServerDbRequest(
     case "db/indexes": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1559,9 +1409,8 @@ export async function handleSqlServerDbRequest(
     case "db/primary-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1590,8 +1439,8 @@ export async function handleSqlServerDbRequest(
     case "db/foreign-keys": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
       const outR = await pool
         .request()
         .input("sch", sql.NVarChar, schema)
@@ -1667,9 +1516,8 @@ export async function handleSqlServerDbRequest(
     case "db/unique-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1704,9 +1552,8 @@ export async function handleSqlServerDbRequest(
     case "db/check-constraints": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1726,9 +1573,8 @@ export async function handleSqlServerDbRequest(
     case "db/table-comment": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool
-        .request()
+      const connector = connectorFor(cid);
+      const r = await mssqlRequest(connector)
         .input("sch", sql.NVarChar, schema)
         .input("tbl", sql.NVarChar, table)
         .query(`
@@ -1746,8 +1592,8 @@ export async function handleSqlServerDbRequest(
 
     case "db/data-types": {
       const cid = getConnId();
-      const session = sqlServerSession(getSWithDb, cid);
-      const r = await session.backGroundPool.request().query(`
+      const connector = connectorFor(cid);
+      const r = await connector.query(`
         SELECT name FROM sys.types WHERE is_user_defined = 0 AND name NOT IN (N'sysname') ORDER BY name
       `);
       const fromSys = ((r.recordset ?? []) as Array<Record<string, unknown>>).map((x) =>
@@ -1759,8 +1605,8 @@ export async function handleSqlServerDbRequest(
     case "db/table-ddl": {
       const cid = getConnId();
       const { schema, table } = payload as { connectionId: string; schema: string; table: string };
-      const session = sqlServerSession(getSWithDb, cid);
-      const pool = session.backGroundPool;
+      const connector = connectorFor(cid);
+      const pool = mssqlPoolOf(connector);
 
       const meta = await pool
         .request()

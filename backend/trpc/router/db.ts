@@ -13,7 +13,7 @@ import { t } from '../init';
 import { z } from 'zod';
 import { observable } from '@trpc/server/observable';
 import { TRPCError } from '@trpc/server';
-import { handleApiRequest, getSession, subscribeSessionEvents } from '../../api-core';
+import { handleApiRequest, getSessionInfo, subscribeSessionEvents } from '../../api-core';
 import type {
   ConnectDbRequest,
   ColumnEditableInfo,
@@ -340,7 +340,7 @@ export const dbRouter = t.router({
     .input(z.object({ connectionId: z.string() }))
     .subscription(({ input }) => {
       return observable<SSEMessage>((emit) => {
-        const session = getSession(input.connectionId);
+        const session = getSessionInfo(input.connectionId);
         if (!session) {
           emit.error(new TRPCError({ code: 'NOT_FOUND', message: '未找到数据库连接，请先连接数据库' }));
           return;
