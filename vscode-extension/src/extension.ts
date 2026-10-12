@@ -4,7 +4,7 @@
 // - 扩展侧：createWebviewRpcBridge 按 procedure path 分派——业务走 appRouter，
 //   宿主专属的 path（`host.*` / `subscription.openLogin` …）由 procedureOverrides 就地实现
 import * as vscode from "vscode";
-import { Messenger } from "vscode-messenger";
+import { Messenger, type MessengerDiagnostic } from "vscode-messenger";
 import type { WebviewIdMessageParticipant } from "vscode-messenger-common";
 import { observable } from "@trpc/server/observable";
 import { createWebviewRpcBridge, type WebviewRpcBridge } from "../../backend/vscode-messenger-bridge.js";
@@ -196,7 +196,7 @@ async function manageSubscriptionAccount(deps: SubscriptionDeps): Promise<void> 
   }
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): MessengerDiagnostic {
   const tokenStorage = new TokenStorage(context.secrets);
   const getApiBase = () => getSubscriptionConfig().apiBase;
   const getFrontendUrl = () => getSubscriptionConfig().frontendUrl;
@@ -260,6 +260,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
   context.subscriptions.push(themeListener);
+
+  // 暴露 vscode-messenger 的诊断（调试）API：经扩展 exports 返回，
+  // 供消息交互跟踪 / 调试工具读取当前 webviews、handlers、pending 请求并订阅消息事件。
+  return messenger.diagnosticApi();
 }
 
 export function deactivate() {}
