@@ -4,7 +4,7 @@
   "description": "",
   "scripts": {
     "deploy": "bun standalone/deploy.ts",
-    "dev": "concurrently -n api,vite \"tsx watch --include backend/**/*.ts --include shared/**/*.ts standalone/server-node.ts\" \"vp dev\"",
+    "dev": "cross-env SUBSCRIPTION_OFF=1 DBPLAYER_SUBSCRIPTION_OFF=1 concurrently -n api,vite \"tsx watch --include backend/**/*.ts --include shared/**/*.ts standalone/server-node.ts\" \"vp dev\"",
     "dev:standalone": "vp dev -c standalone/vite.config.standalone.ts",
     "build:linux": "bun run standalone/build-linux.ts",
     "build:win": "bun run standalone/build-win.ts",
@@ -50,6 +50,7 @@
     "babel-preset-solid": "^1.9.10",
     "baseline-browser-mapping": "^2.9.14",
     "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
     "electrobun": "latest",
     "eslint": "^9.25.1",
     "fast-check": "^4.6.0",
