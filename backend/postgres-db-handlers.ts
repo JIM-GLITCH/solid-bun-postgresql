@@ -7,10 +7,65 @@ import type { Client, FieldDef } from "pg";
 import type { SessionConnection } from "./session-connection";
 import type { BorrowedClient, DbConnector } from "./db/contract";
 import { connectSession } from "./db/sessions";
+// import { Context, Effect } from "effect";
+// import { z } from "zod";
 
 /** 与 column-editable 内部一致的查询客户端形状（该类型未导出，此处复刻） */
 type QueryClient = Client | import("pg").Pool;
 
+/*
+ * Effect 重构方案框架（暂未启用）
+ * 
+ * 以下代码展示了如何使用 Effect v4 重构 postgres-db-handlers
+ * 由于 Effect v4 API 变化较大，需要逐步迁移
+ * 
+ * 重构要点：
+ * 1. 使用 Context.Service 定义独立的 Context Tags
+ * 2. 创建组合 Effect（CurrentConnector, CurrentSession 等）减少重复
+ * 3. 将 sendSSEMessage 等工具函数改造为 Effect，自动获取 cid
+ * 4. 使用 zod 进行 payload 验证
+ * 5. 所有 handler 改为 Effect.gen 形式
+ * 
+ * 参考示例：
+ 
+import { Context, Effect } from "effect";
+import { z } from "zod";
+
+// ========== Effect Context Tags ==========
+export class GetConnId extends Context.Service<GetConnId, () => string>()("GetConnId") {}
+export class ConnectorFor extends Context.Service<ConnectorFor, (cid: string) => DbConnector>()("ConnectorFor") {}
+// ... 其他 Tags
+
+// ========== 组合 Effect ==========
+export const CurrentConnector = Effect.gen(function* () {
+  const getConnId = yield* GetConnId;
+  const connectorFor = yield* ConnectorFor;
+  return connectorFor(getConnId());
+});
+
+// ========== 工具 Effect ==========
+export const sendSSEMessage = (msg: SSEMessage) =>
+  Effect.gen(function* () {
+    const getConnId = yield* GetConnId;
+    const sendSSE = yield* SendSSEMessage;
+    sendSSE(getConnId(), msg);
+  });
+
+export const sendInfo = (message: string) =>
+  sendSSEMessage({ type: "INFO", message, timestamp: Date.now() });
+
+// ========== Handler 示例 ==========
+const handleSaveChangesEffect = (payload: unknown) =>
+  Effect.gen(function* () {
+    const { sql } = yield* parsePayloadWithZod(SaveChangesPayloadSchema)(payload);
+    const connector = yield* CurrentConnector;
+    const result = yield* Effect.tryPromise(() => connector.query(sql));
+    yield* sendInfo(`保存成功: ${result.rowCount ?? 0} 行受影响`);
+    return { success: true, rowCount: result.rowCount };
+  });
+*/
+
+// 保留旧的接口用于兼容
 export interface PostgresDbHandlerContext {
   getConnId: () => string;
   /** 取当前会话的连接器（业务层唯一入口，替代直接访问 session 句柄） */
@@ -995,4 +1050,85 @@ export async function handlePostgresDbRequest(
       throw new Error(`未知 API 方法: ${method}`);
   }
 }
+
+// ========== Effect 版本的 Handlers ==========
+// 注意：这是 Effect v4 的重构示例，由于 v4 API 变化较大，这里暂时注释掉
+// 完整迁移需要参考 Effect v4 文档逐步完成
+/*
+const handleConnectEffect = (payload: unknown) =>
+  Effect.gen(function* () {
+    const params = payload as ConnectDbRequest;
+    if (params.dbType !== "postgres") {
+      return yield* Effect.die(new Error("当前仅支持 PostgreSQL（dbType=postgres）"));
+    }
+    return yield* Effect.tryPromise(() => connectSession(params));
+  });
+
+// 其他 handlers 暂时保留原实现包装
+const handleDisconnectEffect = (payload: unknown, ctx: PostgresDbHandlerContext) =>
+  Effect.gen(function* () {
+    return yield* Effect.tryPromise(() => handlePostgresDbRequest("db/disconnect", payload, ctx));
+  });
+
+// ... 其他 handlers 类似
+*/
+
+// ========== Effect 版本的主路由函数 ==========
+// 暂时注释，待 handlers 完成后启用
+/*
+export const handlePostgresDbRequestEffect = (
+  method: string,
+  payload: unknown,
+  ctx: PostgresDbHandlerContext
+): Effect.Effect<unknown, Error,
+  | GetConnId
+  | ConnectorFor
+  | GetS
+  | GetSWithDb
+  | GetStatements
+  | RecreateUserUsedClient
+  | AttachPostgresClientHandlers
+  | StartUserClientKeepalive
+  | StopUserClientKeepalive
+  | SendSSEMessage
+  | DisconnectConnection
+  | AssertSessionDbType
+  | CapabilitiesForKind
+  | IsPgUserClientDeadError
+  | Forward
+> => {
+  switch (method) {
+    case "db/connect":
+      return handleConnectEffect(payload);
+    // ... 其他 cases
+    default:
+      return Effect.fail(new Error(`未知 API 方法: ${method}`));
+  }
+};
+*/
+
+// ========== Context 提供器辅助函数 ==========
+// 暂时注释，待主路由函数完成后启用
+/*
+export const providePostgresDbHandlerContext = (
+  ctx: PostgresDbHandlerContext
+) => (effect: Effect.Effect<unknown, Error, any>) =>
+  effect.pipe(
+    Effect.provideService(GetConnId, ctx.getConnId),
+    Effect.provideService(ConnectorFor, ctx.connectorFor),
+    Effect.provideService(GetS, ctx.getS),
+    Effect.provideService(GetSWithDb, ctx.getSWithDb),
+    Effect.provideService(GetStatements, ctx.getStatements),
+    Effect.provideService(RecreateUserUsedClient, ctx.recreateUserUsedClient),
+    Effect.provideService(AttachPostgresClientHandlers, ctx.attachPostgresClientHandlers),
+    Effect.provideService(StartUserClientKeepalive, ctx.startUserClientKeepalive),
+    Effect.provideService(StopUserClientKeepalive, ctx.stopUserClientKeepalive),
+    Effect.provideService(SendSSEMessage, ctx.sendSSEMessage),
+    Effect.provideService(DisconnectConnection, ctx.disconnectConnection),
+    Effect.provideService(AssertSessionDbType, ctx.assertSessionDbType),
+    Effect.provideService(CapabilitiesForKind, ctx.capabilitiesForKind),
+    Effect.provideService(IsPgUserClientDeadError, ctx.isPgUserClientDeadError),
+    Effect.provideService(Forward, ctx.forward)
+  );
+*/
 
