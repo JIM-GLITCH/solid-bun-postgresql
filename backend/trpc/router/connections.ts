@@ -2,15 +2,22 @@
  * Connections Router
  * 处理数据库连接的保存、删除、更新等操作
  *
- * 业务逻辑复用 `backend/api-core` 的 `handleApiRequest`（单一真源），
+ * 业务逻辑复用 `backend/api-core` 的专用函数（单一真源），
  * 这里只做输入校验与 query/mutation 语义划分。
  */
 
 import { t } from '../init';
 import { z } from 'zod';
-import { handleApiRequest } from '../../api-core';
+import {
+  connectionsList,
+  connectionsSave,
+  connectionsDelete,
+  connectionsUpdateMeta,
+  connectionsReorder,
+  connectionsGetParams,
+  connectionsConnect,
+} from '../../api-core';
 import type {
-  ConnectionSavePayload,
   DbKind,
   StoredConnectionParams,
 } from '../../../shared/src';
@@ -27,19 +34,17 @@ const sshShape = {
 };
 
 /** 已保存连接摘要（返回类型真源） */
-export interface StoredConnectionSummary {
+export type StoredConnectionSummary = {
   id: string;
   label: string;
   enc?: string;
   name?: string;
   group?: string;
-}
+};
 
 export const connectionsRouter = t.router({
   /** 获取已保存的连接列表 */
-  list: t.procedure.query(
-    () => handleApiRequest('connections/list', {}) as Promise<StoredConnectionSummary[]>
-  ),
+  list: t.procedure.query(() => connectionsList()),
 
   /** 保存连接（新建或更新） */
   save: t.procedure
@@ -58,51 +63,27 @@ export const connectionsRouter = t.router({
         ...sshShape,
       })
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest(
-          'connections/save',
-          input as unknown as ConnectionSavePayload
-        ) as Promise<{ success: boolean; error?: string }>
-    ),
+    .mutation(({ input }) => connectionsSave(input)),
 
   /** 删除连接 */
   delete: t.procedure
     .input(z.object({ id: z.string() }))
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('connections/delete', input) as Promise<{ success: boolean; error?: string }>
-    ),
+    .mutation(({ input }) => connectionsDelete(input)),
 
   /** 更新连接元数据（名称） */
   updateMeta: t.procedure
     .input(z.object({ id: z.string(), name: z.string().optional() }))
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('connections/update-meta', input) as Promise<{
-          success: boolean;
-          error?: string;
-        }>
-    ),
+    .mutation(({ input }) => connectionsUpdateMeta(input)),
 
   /** 重新排序连接列表 */
   reorder: t.procedure
     .input(z.object({ list: z.array(z.unknown()) }))
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('connections/reorder', input) as Promise<{
-          success: boolean;
-          error?: string;
-        }>
-    ),
+    .mutation(({ input }) => connectionsReorder(input)),
 
   /** 获取连接参数（用于编辑，含密码） */
   getParams: t.procedure
     .input(z.object({ id: z.string() }))
-    .query(
-      ({ input }) =>
-        handleApiRequest('connections/get-params', input) as Promise<StoredConnectionParams | null>
-    ),
+    .query(({ input }) => connectionsGetParams(input)),
 
   /**
    * 连接数据库（使用已保存的连接参数）
@@ -110,12 +91,5 @@ export const connectionsRouter = t.router({
    */
   connect: t.procedure
     .input(z.object({ id: z.string(), sessionId: z.string().optional() }))
-    .mutation(({ input }) =>
-      handleApiRequest('connections/connect', input) as Promise<{
-        success: boolean;
-        connectionId?: string;
-        dbType?: DbKind;
-        error?: string;
-      }>
-    ),
+    .mutation(({ input }) => connectionsConnect(input)),
 });

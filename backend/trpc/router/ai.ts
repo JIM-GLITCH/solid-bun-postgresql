@@ -2,31 +2,28 @@
  * AI Router
  * AI 配置 / Key 删除 / 连通性测试 / SQL 编辑与 Prompt 构建
  *
- * 返回类型在此集中标注（`handleApiRequest` 返回 `unknown`），供前端直接调用时推断。
+ * 业务逻辑复用 `backend/api-core` 的专用函数（单一真源），
+ * 这里只做输入校验与 query/mutation 语义划分。
  */
 
 import { t } from '../init';
 import { z } from 'zod';
-import { handleApiRequest } from '../../api-core';
+import {
+  aiConfigGet,
+  aiConfigSet,
+  aiKeyDelete,
+  aiTestConnection,
+  aiSqlEdit,
+  aiPromptBuild,
+  aiPromptBuildDiff,
+  handleApiRequest,
+} from '../../api-core';
 
 const aiApiMode = z.enum(['openai-compatible', 'anthropic']);
 
 export const aiRouter = t.router({
   /** 读取 AI 运行配置 */
-  configGet: t.procedure.query(
-    () =>
-      handleApiRequest('ai/config/get', {}) as Promise<{
-        apiMode: 'openai-compatible' | 'anthropic';
-        baseUrl?: string;
-        model: string;
-        keyRef: string;
-        temperature: number;
-        topP?: number;
-        stream?: boolean;
-        maxTokens: number;
-        hasKey: boolean;
-      }>
-  ),
+  configGet: t.procedure.query(() => aiConfigGet()),
 
   /** 写入 AI 运行配置 */
   configSet: t.procedure
@@ -43,16 +40,12 @@ export const aiRouter = t.router({
         maxTokens: z.number().optional(),
       })
     )
-    .mutation(
-      ({ input }) => handleApiRequest('ai/config/set', input) as Promise<{ success: boolean }>
-    ),
+    .mutation(({ input }) => aiConfigSet(input)),
 
   /** 删除已保存的 API Key */
   keyDelete: t.procedure
     .input(z.object({ keyRef: z.string().optional() }).optional())
-    .mutation(
-      ({ input }) => handleApiRequest('ai/key/delete', input ?? {}) as Promise<{ success: boolean }>
-    ),
+    .mutation(({ input }) => aiKeyDelete(input)),
 
   /** 测试 AI 连通性 */
   testConnection: t.procedure
@@ -70,10 +63,7 @@ export const aiRouter = t.router({
         })
         .optional()
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('ai/test-connection', input ?? {}) as Promise<{ success: boolean }>
-    ),
+    .mutation(({ input }) => aiTestConnection(input)),
 
   /** AI 编辑 SQL */
   sqlEdit: t.procedure
@@ -86,18 +76,7 @@ export const aiRouter = t.router({
         schema: z.string().optional(),
       })
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('ai/sql-edit', input) as Promise<{
-          sql: string;
-          rationale: string;
-          warnings: string[];
-          alternatives?: string[];
-          usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
-          elapsedMs?: number;
-          schemaInjected?: string[];
-        }>
-    ),
+    .mutation(({ input }) => aiSqlEdit(input)),
 
   /** 构建编辑用 prompt */
   promptBuild: t.procedure
@@ -109,13 +88,7 @@ export const aiRouter = t.router({
         instructions: z.string().optional(),
       })
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('ai/prompt-build', input) as Promise<{
-          prompt: string;
-          schemaInjected?: string[];
-        }>
-    ),
+    .mutation(({ input }) => aiPromptBuild(input)),
 
   /** 构建 diff 用 prompt */
   promptBuildDiff: t.procedure
@@ -126,11 +99,5 @@ export const aiRouter = t.router({
         schema: z.string().optional(),
       })
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('ai/prompt-build-diff', input) as Promise<{
-          prompt: string;
-          schemaInjected?: string[];
-        }>
-    ),
+    .mutation(({ input }) => aiPromptBuildDiff(input)),
 });

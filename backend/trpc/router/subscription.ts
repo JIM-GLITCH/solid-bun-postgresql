@@ -1,13 +1,16 @@
 /**
  * Subscription Router
  * 订阅校验 / 账号信息 / 账号登录态
+ *
+ * 业务逻辑复用 `backend/api-core` 的专用函数（单一真源），
+ * 这里只做输入校验与 query/mutation 语义划分。
  */
 
 import { t } from '../init';
 import { z } from 'zod';
 import { observable } from '@trpc/server/observable';
 import { TRPCError } from '@trpc/server';
-import { handleApiRequest } from '../../api-core';
+import { subscriptionAssert, subscriptionAccount } from '../../api-core';
 import {
   assertSubscriptionLicensed,
   parseSubscriptionAccessToken,
@@ -36,13 +39,11 @@ export const subscriptionRouter = t.router({
     .input(z.object({ feature: z.enum(['visual-query-builder', 'table-designer']) }))
     .mutation(async ({ input, ctx }) => {
       await assertSubscriptionLicensed(ctx.req ? parseSubscriptionAccessToken(ctx.req) : null);
-      return handleApiRequest('subscription/assert', input);
+      return subscriptionAssert(input);
     }),
 
   /** 当前账号状态 */
-  account: t.procedure.query(
-    () => handleApiRequest('subscription/account', {}) as Promise<SubscriptionAccount>
-  ),
+  account: t.procedure.query(() => subscriptionAccount()),
 
   /**
    * 打开订阅站登录页（宿主动作：扩展在系统浏览器打开）。
