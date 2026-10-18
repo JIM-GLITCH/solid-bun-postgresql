@@ -1,7 +1,7 @@
 /**
  * MySQL 查询结果列：根据 Field 元数据 + information_schema 判断是否可编辑（需主键/唯一键列均在结果中）。
  */
-import type { FieldPacket } from "mysql2";
+import type { FieldPacket, RowDataPacket } from "mysql2";
 import type { Pool } from "mysql2/promise";
 import type { ColumnEditableInfo } from "../shared/src";
 
@@ -145,7 +145,7 @@ export async function calculateMysqlColumnEditable(
     const orTc = pairs.map(() => "(tc.table_schema = ? AND tc.table_name = ?)").join(" OR ");
     const tcParams = pairs.flatMap(([db, tbl]) => [db, tbl]);
 
-    const [cRows] = await pool.query<ConstraintRow[]>(
+    const [cRows] = await pool.query(
       `SELECT tc.table_schema AS table_schema, tc.table_name AS table_name,
               tc.constraint_type AS constraint_type, tc.constraint_name AS constraint_name,
               kcu.column_name AS column_name, kcu.ordinal_position AS ordinal_position
@@ -160,9 +160,10 @@ export async function calculateMysqlColumnEditable(
        ORDER BY tc.table_schema, tc.table_name, tc.constraint_type, tc.constraint_name, kcu.ordinal_position`,
       tcParams
     );
+    const cRowsTyped = cRows as RowDataPacket[] as ConstraintRow[];
 
     const byConstraint = new Map<string, ConstraintRow[]>();
-    for (const r of cRows ?? []) {
+    for (const r of cRowsTyped ?? []) {
       const tk = tableKey(String(r.table_schema), String(r.table_name));
       const ck = `${tk}${SEP}${String(r.constraint_name)}`;
       if (!byConstraint.has(ck)) byConstraint.set(ck, []);
@@ -189,15 +190,16 @@ export async function calculateMysqlColumnEditable(
     const orCol = pairs.map(() => "(table_schema = ? AND table_name = ?)").join(" OR ");
     const colParams = pairs.flatMap(([db, tbl]) => [db, tbl]);
 
-    const [nRows] = await pool.query<NullableRow[]>(
+    const [nRows] = await pool.query(
       `SELECT table_schema AS table_schema, table_name AS table_name,
               column_name AS column_name, is_nullable AS is_nullable
        FROM information_schema.columns
        WHERE ${orCol}`,
       colParams
     );
+    const nRowsTyped = nRows as RowDataPacket[] as NullableRow[];
 
-    for (const r of nRows ?? []) {
+    for (const r of nRowsTyped ?? []) {
       const tk = tableKey(String(r.table_schema), String(r.table_name));
       if (!nullableByTable.has(tk)) nullableByTable.set(tk, new Map());
       nullableByTable.get(tk)!.set(String(r.column_name), String(r.is_nullable).toUpperCase() === "YES");
