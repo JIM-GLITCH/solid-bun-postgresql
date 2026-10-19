@@ -16,7 +16,6 @@ import {
   aiSqlEdit,
   aiPromptBuild,
   aiPromptBuildDiff,
-  handleApiRequest,
 } from '../../api-core';
 
 const aiApiMode = z.enum(['openai-compatible', 'anthropic']);

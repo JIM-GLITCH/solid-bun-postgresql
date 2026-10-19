@@ -17,17 +17,18 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const BACKEND = join(ROOT, "backend");
 
 /**
- * 业务层文件（连接层是 `backend/db/**` 与 `backend/sqlserver-support.ts`，不在此列）。
+ * 业务层文件（连接层是 `backend/db/**`、`backend/db-handlers/**` 与
+ * `backend/sqlserver-support.ts`，不在此列）。
  *
  * 说明：`sqlserver-support.ts` 虽是平铺文件，但内容是**连接层 helper**
  * （SHOWPLAN / 分区元数据 / 会话监控 / `sqlServerSessionControl`），
- * 且 `db/connector-mssql.ts` 依赖它——若把它算作业务层会形成反向依赖，故归入连接层。
+ * 且 `db-handlers/strategies/sqlserver-strategy-effect.ts` 依赖它——若把它算作业务层会形成反向依赖，故归入连接层。
+ *
+ * 方言 handler（原 postgres/mysql/sqlserver-db-handlers.ts）已全部迁入
+ * `backend/db-handlers/`，旧文件随本次重构删除。
  */
 const BUSINESS_FILES = [
   "api-core.ts",
-  "postgres-db-handlers.ts",
-  "mysql-db-handlers.ts",
-  "sqlserver-db-handlers.ts",
   "column-editable.ts",
   "mysql-column-editable.ts",
 ];
@@ -36,14 +37,10 @@ const DRIVER_MODULES = /["'](pg|pg-cursor|mysql2(?:\/promise)?|mssql|ssh2)["']/;
 
 /**
  * 已记录的业务层运行时驱动依赖（不计失败，但会打出提示）。
- *
- * `sqlserver-db-handlers.ts` 需要 `sql.Transaction` / `sql.Request` 做事务编排与
- * 参数化插入（`db/import-rows`），当前形态下无法零依赖；彻底消除需要把事务编排
- * 下沉到连接层（见设计文档 Phase 3 后续项）。此处如实记录而非隐藏。
+ * `sqlserver-db-handlers.ts` 下线后暂无登记项；其 `sql.Transaction` 事务编排
+ * （import-rows rollback）尚未在新栈恢复，属已知缺口。
  */
-const ACKED_RUNTIME_DEPS = [
-  { file: "sqlserver-db-handlers.ts", module: "mssql", why: "sql.Transaction / sql.Request（事务与参数化插入）" },
-];
+const ACKED_RUNTIME_DEPS = [];
 
 /** 业务层不得出现的会话连接句柄访问 */
 const FORBIDDEN_SESSION_FIELDS =

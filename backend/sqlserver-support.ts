@@ -1,11 +1,11 @@
 /**
- * SQL Server：EXPLAIN、分区元数据、会话监控（与 sqlserver-db-handlers 解耦的纯查询逻辑）
+ * SQL Server：EXPLAIN、分区元数据、会话监控（供连接层 db-handlers 策略使用的纯查询逻辑）
  */
 import sql from "mssql";
 
 /**
  * AI 助手用的 schema 上下文采集（原在 `sqlserver-db-handlers`）。
- * 放在此处是为了让连接层（`db/connector-mssql.ts`）与业务 handler 都能引用，
+ * 放在此处是为了让连接层（`db-handlers/strategies/sqlserver-strategy-effect.ts`）与业务 handler 都能引用，
  * 且不产生 connector ⇄ handler 的模块环。
  */
 export async function buildSqlServerSchemaContext(

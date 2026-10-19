@@ -103,7 +103,7 @@ export async function buildMysqlSchemaContext(pool: MysqlPool, schema?: string):
   return { context: chunks.join("\n"), injected };
 }
 
-/** SQL Server：由 `sqlserver-db-handlers` 提供的实现注入，避免连接层反向依赖业务模块 */
+/** SQL Server：由连接层策略（`db-handlers/strategies/sqlserver-strategy-effect.ts`）注入实现，避免反向依赖 */
 export type MssqlSchemaContextBuilder = (
   pool: MssqlConnectionPool,
   schema?: string

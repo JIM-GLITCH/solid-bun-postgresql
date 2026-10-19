@@ -30,10 +30,10 @@ import {
 import { createMysqlPool, getMysqlDbConfig, type GetMysqlDbConfigResult } from "../connect-mysql";
 import { getSqlServerDbConfig, openSqlServerPool, type GetSqlServerDbConfigResult } from "../connect-sqlserver";
 import type { SessionConnection } from "../session-connection";
-import { createPgConnector } from "./connector-pg";
+import { createPgConnector } from "../db-handlers/strategies/postgres-strategy-effect";
 import { isConnectionLost } from "./errors";
-import { createMysqlConnector } from "./connector-mysql";
-import { createMssqlConnector } from "./connector-mssql";
+import { createMysqlConnector } from "../db-handlers/strategies/mysql-strategy-effect";
+import { createMssqlConnector } from "../db-handlers/strategies/sqlserver-strategy-effect";
 import type { ConnectionId, DbConnector, SessionInfo } from "./contract";
 
 /** 探活间隔：略小于常见 idle 超时，避免首条 Monaco 查询才暴露死连接 */

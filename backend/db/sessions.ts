@@ -320,7 +320,7 @@ export function assertSessionDbType(session: SessionConnection, dbType: DbKind |
 
 /**
  * 断开前或新建流式查询前：销毁进行中的 mysql 行流。
- * 实现已随连接器内聚到 `connector-mysql.ts`，此处再导出以兼容既有调用方。
+ * 实现已随连接器内聚到 `db-handlers/strategies/mysql-strategy-effect.ts`，此处再导出以兼容既有调用方。
  */
 export function teardownMysqlStreaming(session: MysqlSessionConnection): void {
   const s = session.mysqlRowStream;

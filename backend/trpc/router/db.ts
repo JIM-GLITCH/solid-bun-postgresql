@@ -2,18 +2,28 @@
  * DB Router
  * 处理数据库连接、查询、DDL 等全部 db/* 操作。
  *
- * 业务实现复用 `backend/api-core` 的 `handleApiRequest`（单一真源）；
- * 这里只负责输入校验 / query-mutation 语义 / 返回类型标注 / 订阅实现（替代旧的 SSE `/api/events`）。
+ * 业务实现直接调用 `backend/db-handlers` 的 Effect handler 函数；
+ * 这里只负责输入校验 / query-mutation 语义 / 返回类型标注 / 订阅实现。
  *
- * 返回类型是「唯一真源」：`handleApiRequest` 返回 `unknown`，在此集中标注，
+ * 返回类型是「唯一真源」：handler 函数返回类型在此集中标注，
  * 前端即可直接 `trpc.db.xxx.query(...)` 获得类型推断，无需再包一层封装。
  */
-
+import { Effect } from 'effect';
 import { t } from '../init';
 import { z } from 'zod';
 import { observable } from '@trpc/server/observable';
 import { TRPCError } from '@trpc/server';
-import { handleApiRequest, getSessionInfo, subscribeSessionEvents } from '../../api-core';
+import { getSessionInfo, subscribeSessionEvents } from '../../api-core';
+import {
+  dbConnect, dbDisconnect, dbCapabilities, dbSchemas, dbTables, dbColumns,
+  dbQueryStream, dbQueryStreamMore, dbQuery, dbCancelQuery, dbSaveChanges, dbExplain,
+  dbExplainText, dbIndexes, dbPrimaryKeys, dbUniqueConstraints, dbForeignKeys,
+  dbDataTypes, dbTableComment, dbCheckConstraints, dbPartitionInfo, dbExecuteDdl,
+  dbTableDdl, dbFunctionDdl, dbSchemaDump, dbDatabaseDump, dbImportRows,
+  dbSessionMonitor, dbSessionControl, dbInstalledExtensions,
+  getStrategy,
+  CurrentConnectionId, CurrentDbType,
+} from '../../db-handlers';
 import type {
   ConnectDbRequest,
   ColumnEditableInfo,
@@ -33,25 +43,45 @@ const dbBase = {
 /** 便捷：schema + table 组合 */
 const schemaTable = { ...dbBase, schema: z.string(), table: z.string() };
 
+/**
+ * 统一运行 db handler——**请求级 Context 的唯一 provide 点**：
+ * 1. 把 zod 校验后的 input 投影为 `CurrentConnectionId` / `CurrentDbType`；
+ * 2. handler 经 `currentConnection` 按需解析「会话 + 连接器 + 方言策略」
+ *    （策略按服务端真源 session.dbKind 选择，客户端声明的 dbType 仅做校验）；
+ * 3. provide 之后 R = never，才能交给 `Effect.runPromise`。
+ *
+ * ⚠️ 这两个 tag 只允许在这里 provide；handler 内只 yield，不得在别处提供。
+ */
+const runDbHandler = <P, A, E>(
+  handler: (params: P) => Effect.Effect<A, E, CurrentConnectionId | CurrentDbType>
+) =>
+  ({ input }: { input: P & { connectionId: string; dbType: DbKind } }): Promise<A> =>
+    Effect.runPromise(
+      handler(input).pipe(
+        Effect.provideService(CurrentConnectionId, input.connectionId),
+        Effect.provideService(CurrentDbType, input.dbType),
+      )
+    );
+
 // ── 各 db/* 方法的返回类型（与 api-core 实现一致）────────────────────────
 /** 分区表元数据（非分区表为 role:none） */
 export type PartitionInfo =
   | { role: 'none' }
   | {
-      role: 'parent';
-      strategy: string | null;
-      partitionKey: string | null;
-      partitions: Array<{ schema: string; name: string; qualified: string; bound: string }>;
-    }
+    role: 'parent';
+    strategy: string | null;
+    partitionKey: string | null;
+    partitions: Array<{ schema: string; name: string; qualified: string; bound: string }>;
+  }
   | {
-      role: 'partition';
-      parentQualified: string;
-      parentSchema: string;
-      parentName: string;
-      thisBound: string;
-      strategy: string | null;
-      partitionKey: string | null;
-    };
+    role: 'partition';
+    parentQualified: string;
+    parentSchema: string;
+    parentName: string;
+    thisBound: string;
+    strategy: string | null;
+    partitionKey: string | null;
+  };
 
 /** 会话与锁监控摘要 */
 export type SessionMonitorResult = {
@@ -68,11 +98,11 @@ export type SessionMonitorResult = {
   }>;
   slowQueries: Array<Record<string, unknown>>;
   slowQuerySource:
-    | 'pg_stat_statements'
-    | 'pg_stat_activity'
-    | 'mysql_processlist'
-    | 'mysql_events_statements'
-    | 'mssql_requests';
+  | 'pg_stat_statements'
+  | 'pg_stat_activity'
+  | 'mysql_processlist'
+  | 'mysql_events_statements'
+  | 'mssql_requests';
   collectedAt: number;
 };
 
@@ -131,10 +161,7 @@ type DbResults = {
   'db/installed-extensions': InstalledExtensionsResult;
 };
 
-/** 把校验后的输入交给业务层（业务层返回 pure data），并按方法标注返回类型 */
-function call<K extends keyof DbResults>(method: K, input: unknown): Promise<DbResults[K]> {
-  return handleApiRequest(method as never, input as never) as Promise<DbResults[K]>;
-}
+
 
 export const dbRouter = t.router({
   // ── 连接 ─────────────────────────────────────────────
@@ -158,31 +185,27 @@ export const dbRouter = t.router({
         sshPrivateKey: z.string().optional(),
       })
     )
-    .mutation(
-      ({ input }) =>
-        handleApiRequest('db/connect', input as ConnectDbRequest) as Promise<{
-          success: boolean;
-          connectionId?: string;
-          dbType?: DbKind;
-          error?: unknown;
-        }>
+    .mutation(({ input }) =>
+      // 真正的连接逻辑在 dbConnect（→ connectSession → sessionsRuntime.openSession）。
+      // zod 的 dbKindSchema 已校验 dbType 为四者之一，此处收敛为 ConnectDbRequest 判别联合。
+      Effect.runPromise(dbConnect(input as ConnectDbRequest))
     ),
 
   /** 断开数据库连接 */
   disconnect: t.procedure
     .input(z.object(dbBase))
-    .mutation(({ input }) => call('db/disconnect', input)),
+    .mutation(runDbHandler(dbDisconnect)),
 
   /** 当前会话的方言能力 */
   capabilities: t.procedure
     .input(z.object(dbBase))
-    .query(({ input }) => call('db/capabilities', input)),
+    .query(runDbHandler(dbCapabilities)),
 
   // ── 查询执行 ─────────────────────────────────────────
   /** 执行查询（非流式） */
   query: t.procedure
     .input(z.object({ ...dbBase, query: z.string(), defaultSchema: z.string().optional() }))
-    .mutation(({ input }) => handleApiRequest('db/query', input)),
+    .mutation(runDbHandler(dbQuery)),
 
   /** 流式查询 - 第一批 */
   queryStream: t.procedure
@@ -195,110 +218,110 @@ export const dbRouter = t.router({
         defaultSchema: z.string().optional(),
       })
     )
-    .mutation(({ input }) => call('db/query-stream', input)),
+    .mutation(runDbHandler(dbQueryStream)),
 
   /** 流式查询 - 加载更多 */
   queryStreamMore: t.procedure
     .input(z.object({ ...dbBase, batchSize: z.number().optional(), defaultSchema: z.string().optional() }))
-    .mutation(({ input }) => call('db/query-stream-more', input)),
+    .mutation(runDbHandler(dbQueryStreamMore)),
 
   /** 取消当前查询 */
   cancelQuery: t.procedure
     .input(z.object(dbBase))
-    .mutation(({ input }) => call('db/cancel-query', input)),
+    .mutation(runDbHandler(dbCancelQuery)),
 
   /** 保存修改 */
   saveChanges: t.procedure
     .input(z.object({ ...dbBase, sql: z.string() }))
-    .mutation(({ input }) => call('db/save-changes', input)),
+    .mutation(runDbHandler(dbSaveChanges)),
 
   /** EXPLAIN ANALYZE（JSON 执行计划） */
   explain: t.procedure
     .input(z.object({ ...dbBase, query: z.string(), defaultSchema: z.string().optional() }))
-    .mutation(({ input }) => call('db/explain', input)),
+    .mutation(runDbHandler(dbExplain)),
 
   /** EXPLAIN 文本计划（不执行查询） */
   explainText: t.procedure
     .input(z.object({ ...dbBase, query: z.string() }))
-    .query(({ input }) => call('db/explain-text', input)),
+    .query(runDbHandler(dbExplainText)),
 
   // ── 元数据 ───────────────────────────────────────────
   /** 获取 schemas */
-  schemas: t.procedure.input(z.object(dbBase)).query(({ input }) => call('db/schemas', input)),
+  schemas: t.procedure.input(z.object(dbBase)).query(runDbHandler(dbSchemas)),
 
   /** 获取表 / 视图 / 函数 */
   tables: t.procedure
     .input(z.object({ ...dbBase, schema: z.string() }))
-    .query(({ input }) => call('db/tables', input)),
+    .query(runDbHandler(dbTables)),
 
   /** 获取列信息 */
   columns: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/columns', input)),
+    .query(runDbHandler(dbColumns)),
 
   /** 获取索引 */
   indexes: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/indexes', input)),
+    .query(runDbHandler(dbIndexes)),
 
   /** 获取主键列名 */
   primaryKeys: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/primary-keys', input)),
+    .query(runDbHandler(dbPrimaryKeys)),
 
   /** 获取唯一约束（含主键） */
   uniqueConstraints: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/unique-constraints', input)),
+    .query(runDbHandler(dbUniqueConstraints)),
 
   /** 获取外键 */
   foreignKeys: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/foreign-keys', input)),
+    .query(runDbHandler(dbForeignKeys)),
 
   /** 获取数据类型列表 */
-  dataTypes: t.procedure.input(z.object(dbBase)).query(({ input }) => call('db/data-types', input)),
+  dataTypes: t.procedure.input(z.object(dbBase)).query(runDbHandler(dbDataTypes)),
 
   /** 获取表注释 */
   tableComment: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/table-comment', input)),
+    .query(runDbHandler(dbTableComment)),
 
   /** 获取检查约束列表 */
   checkConstraints: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/check-constraints', input)),
+    .query(runDbHandler(dbCheckConstraints)),
 
   /** 分区表信息 */
   partitionInfo: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/partition-info', input)),
+    .query(runDbHandler(dbPartitionInfo)),
 
   // ── DDL ──────────────────────────────────────────────
   /** 执行 DDL（CREATE/ALTER TABLE 等） */
   executeDdl: t.procedure
     .input(z.object({ ...dbBase, sql: z.string() }))
-    .mutation(({ input }) => call('db/execute-ddl', input)),
+    .mutation(runDbHandler(dbExecuteDdl)),
 
   /** 获取表 / 视图的 DDL */
   tableDdl: t.procedure
     .input(z.object(schemaTable))
-    .query(({ input }) => call('db/table-ddl', input)),
+    .query(runDbHandler(dbTableDdl)),
 
   /** 获取函数的源码 DDL */
   functionDdl: t.procedure
     .input(z.object({ ...dbBase, schema: z.string(), function: z.string(), oid: z.number().optional() }))
-    .query(({ input }) => call('db/function-ddl', input)),
+    .query(runDbHandler(dbFunctionDdl)),
 
   /** 导出指定 schema 的 SQL dump */
   schemaDump: t.procedure
     .input(z.object({ ...dbBase, schema: z.string(), includeData: z.boolean().optional() }))
-    .query(({ input }) => call('db/schema-dump', input)),
+    .query(runDbHandler(dbSchemaDump)),
 
   /** 导出全库的 SQL dump */
   databaseDump: t.procedure
     .input(z.object({ ...dbBase, includeData: z.boolean().optional() }))
-    .query(({ input }) => call('db/database-dump', input)),
+    .query(runDbHandler(dbDatabaseDump)),
 
   // ── 数据写入 ─────────────────────────────────────────
   /** 批量导入行到表 */
@@ -313,23 +336,23 @@ export const dbRouter = t.router({
         onError: z.enum(['rollback', 'discard']).optional(),
       })
     )
-    .mutation(({ input }) => call('db/import-rows', input)),
+    .mutation(runDbHandler(dbImportRows)),
 
   // ── 会话 / 会话控制 ──────────────────────────────────
   /** 会话与锁监控摘要 */
   sessionMonitor: t.procedure
     .input(z.object({ ...dbBase, limit: z.number().optional() }))
-    .query(({ input }) => call('db/session-monitor', input)),
+    .query(runDbHandler(dbSessionMonitor)),
 
   /** 取消当前语句或终止连接 */
   sessionControl: t.procedure
     .input(z.object({ ...dbBase, pid: z.number(), action: z.enum(['cancel', 'terminate']) }))
-    .mutation(({ input }) => call('db/session-control', input)),
+    .mutation(runDbHandler(dbSessionControl)),
 
   /** 当前数据库已安装的扩展 */
   installedExtensions: t.procedure
     .input(z.object(dbBase))
-    .query(({ input }) => call('db/installed-extensions', input)),
+    .query(runDbHandler(dbInstalledExtensions)),
 
   // ── 订阅（替代旧 SSE `/api/events`）──────────────────
   /**

@@ -3,27 +3,15 @@
  * 供 HTTP 处理器（`api-handlers-http`）与 tRPC router 共同调用
  *
  * 连接生命周期（注册表 / 建连 / 断开 / 重连 / keepalive / 事件推送）已抽到
- * `backend/db/sessions.ts`；本文件只做「method → 业务」分发，不持有任何连接句柄。
- * 为兼容既有调用方（tRPC context、Electrobun、VSCode），相关读取入口在此再导出。
+ * `backend/db/sessions.ts`；本文件只提供非 db/* 的业务函数。
  */
 
 import {
-  getSqlSegments,
-  type ApiMethod,
-  type ApiRequestPayload,
   type ConnectDbRequest,
-  type ConnectionSavePayload,
   type DbKind,
   type StoredConnectionParams,
   type SSEMessage,
-  isMysqlFamily,
-  isSqlServer,
 } from "../shared/src";
-import type { Pool as MysqlPool } from "mysql2/promise";
-import type { Pool } from "pg";
-import { handlePostgresDbRequest, type PostgresDbHandlerContext } from "./postgres-db-handlers";
-import { handleMysqlDbRequest, type MysqlDbHandlerContext } from "./mysql-db-handlers";
-import { handleSqlServerDbRequest, type SqlServerDbHandlerContext } from "./sqlserver-db-handlers";
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
@@ -34,7 +22,6 @@ import type { SessionConnection } from "./session-connection";
 import type { DbConnector } from "./db/contract";
 import {
   assertSessionDbType,
-  attachPostgresClientHandlers,
   capabilitiesForKind,
   connectSession,
   disconnectConnection,
@@ -42,15 +29,7 @@ import {
   getSession,
   getSessionInfo,
   installSessionDisposeOnExit,
-  isPgUserClientDeadError,
-  recreateUserUsedClient,
   sendSSEMessage,
-  sessionConnectorOf,
-  shouldRouteDbRequestToMysql,
-  shouldRouteDbRequestToSqlServer,
-  startMysqlUserClientKeepalive,
-  startUserClientKeepalive,
-  stopUserClientKeepalive,
   subscribeSessionEvents,
 } from "./db/sessions";
 
@@ -67,15 +46,6 @@ export { disposeAllSessions };
 
 // Phase 2：keepalive 是 Effect 常驻 fiber，安装进程退出收口（幂等）
 installSessionDisposeOnExit();
-
-/** 按不在引号/注释内的 ; 拆成多条语句（与前端分块规则一致，仅不分空行）。 */
-function getStatements(sql: string): string[] {
-  const s = sql.trim();
-  if (!s) return [];
-  return getSqlSegments(s, { blankLineSeparator: false })
-    .map((seg) => s.slice(seg.start, seg.end).trim())
-    .filter(Boolean);
-}
 
 const aiKeyStore = new Map<string, string>();
 
@@ -470,11 +440,7 @@ export async function connectionsConnect(params: { id: string; sessionId?: strin
   if (!connParams) throw new Error("未找到已保存的连接");
   const { id: storedId, dbType, ...loginParams } = connParams;
   const connectionId = sessionId ? `${storedId}-${sessionId}` : storedId;
-  return handleApiRequest("db/connect", { connectionId, dbType: dbType ?? "postgres", ...loginParams } as ConnectDbRequest) as Promise<{
-    success: boolean;
-    connectionId?: string;
-    dbType?: DbKind;
-  }>;
+  return connectSession({ connectionId, dbType: dbType ?? "postgres", ...loginParams } as ConnectDbRequest);
 }
 
 // ── AI API 函数（供 tRPC 直接调用）────────────────────────────────
@@ -661,172 +627,3 @@ export async function aiPromptBuildDiff(params: {
   };
 }
 
-// ── API 分发 ─────────────────────────────────────────────────
-
-/** 处理 API 请求，返回纯数据（可 JSON 序列化） */
-export async function handleApiRequest<M extends ApiMethod>(
-  method: M,
-  payload: ApiRequestPayload[M]
-): Promise<unknown> {
-  const getConnId = (): string => {
-    const p = payload as { connectionId?: string };
-    if (!p.connectionId) throw new Error("缺少 connectionId");
-    return p.connectionId;
-  };
-  const getS = (cid: string) => {
-    const s = getSession(cid);
-    if (!s) throw new Error("未找到数据库连接，请先连接数据库");
-    return s;
-  };
-
-  /** 校验载荷中的 dbType 与会话一致（除 db/connect 外凡带 connectionId 的 db/* 均应使用） */
-  const getSWithDb = (cid: string) => {
-    const p = payload as { dbType?: DbKind };
-    const s = getS(cid);
-    assertSessionDbType(s, p.dbType);
-    return s;
-  };
-
-  if (typeof method === "string" && method.startsWith("db/")) {
-    if (shouldRouteDbRequestToMysql(method, payload)) {
-      const mysqlCtx: MysqlDbHandlerContext = {
-        getConnId,
-        connectorFor: sessionConnectorFor,
-        getS,
-        getSWithDb,
-        sendSSEMessage,
-        disconnectConnection,
-        assertSessionDbType,
-        capabilitiesForKind,
-        startMysqlUserClientKeepalive,
-        stopUserClientKeepalive,
-      };
-      return handleMysqlDbRequest(method, payload, mysqlCtx);
-    }
-
-    if (shouldRouteDbRequestToSqlServer(method, payload)) {
-      const sqlServerCtx: SqlServerDbHandlerContext = {
-        getConnId,
-        connectorFor: sessionConnectorFor,
-        getS,
-        getSWithDb,
-        sendSSEMessage,
-        disconnectConnection,
-        assertSessionDbType,
-        capabilitiesForKind,
-        startSqlServerUserClientKeepalive: startUserClientKeepalive,
-        stopUserClientKeepalive,
-      };
-      return handleSqlServerDbRequest(method, payload, sqlServerCtx);
-    }
-
-    let pgCtxRef!: PostgresDbHandlerContext;
-    const pgCtx: PostgresDbHandlerContext = {
-      getConnId,
-      connectorFor: sessionConnectorFor,
-      getS,
-      getSWithDb,
-      getStatements,
-      recreateUserUsedClient,
-      attachPostgresClientHandlers,
-      startUserClientKeepalive,
-      stopUserClientKeepalive,
-      sendSSEMessage,
-      disconnectConnection,
-      assertSessionDbType,
-      capabilitiesForKind,
-      isPgUserClientDeadError,
-      forward: (m, p) => handlePostgresDbRequest(m, p, pgCtxRef),
-    };
-    pgCtxRef = pgCtx;
-    return handlePostgresDbRequest(method, payload, pgCtx);
-  }
-
-  switch (method) {
-    case "connections/list": {
-      return connectionsList();
-    }
-
-    case "connections/save": {
-      return connectionsSave(payload as Parameters<typeof connectionsSave>[0]);
-    }
-
-    case "connections/delete": {
-      return connectionsDelete(payload as Parameters<typeof connectionsDelete>[0]);
-    }
-
-    case "connections/update-meta": {
-      return connectionsUpdateMeta(payload as Parameters<typeof connectionsUpdateMeta>[0]);
-    }
-
-    case "connections/connect": {
-      return connectionsConnect(payload as Parameters<typeof connectionsConnect>[0]);
-    }
-
-    case "connections/reorder": {
-      return connectionsReorder(payload as Parameters<typeof connectionsReorder>[0]);
-    }
-
-    case "connections/get-params": {
-      return connectionsGetParams(payload as Parameters<typeof connectionsGetParams>[0]);
-    }
-
-    case "query-history/add": {
-      return queryHistoryAdd(payload as Parameters<typeof queryHistoryAdd>[0]);
-    }
-
-    case "query-history/search": {
-      return queryHistorySearch(payload as Parameters<typeof queryHistorySearch>[0]);
-    }
-
-    case "query-history/delete": {
-      return queryHistoryDelete(payload as Parameters<typeof queryHistoryDelete>[0]);
-    }
-
-    case "query-history/clear": {
-      return queryHistoryClear();
-    }
-
-    case "subscription/assert": {
-      return subscriptionAssert(payload as Parameters<typeof subscriptionAssert>[0]);
-    }
-
-    case "subscription/account": {
-      return subscriptionAccount();
-    }
-
-    case "ai/config/get": {
-      return aiConfigGet();
-    }
-
-    case "ai/config/set": {
-      return aiConfigSet(payload as Parameters<typeof aiConfigSet>[0]);
-    }
-
-    case "ai/key/delete": {
-      return aiKeyDelete(payload as Parameters<typeof aiKeyDelete>[0]);
-    }
-
-    case "ai/test-connection": {
-      return aiTestConnection(payload as Parameters<typeof aiTestConnection>[0]);
-    }
-
-    case "ai/sql-edit": {
-      return aiSqlEdit(payload as Parameters<typeof aiSqlEdit>[0]);
-    }
-
-    case "ai/prompt-build": {
-      return aiPromptBuild(payload as Parameters<typeof aiPromptBuild>[0]);
-    }
-
-    case "ai/prompt-build-diff": {
-      return aiPromptBuildDiff(payload as Parameters<typeof aiPromptBuildDiff>[0]);
-    }
-
-    default:
-      throw new Error(`未知 API 方法: ${method}`);
-  }
-}
-
-/** 建立数据库连接（供 db/* 分发使用；实现见 `db/sessions.ts`） */
-export { connectSession };
