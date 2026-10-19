@@ -476,7 +476,9 @@ export function TableDesignerUnified(props: TableDesignerUnifiedProps) {
       const snapshot: OriginalState = {
         tableName: props.table ?? "",
         tableComment: loadedComment,
-        primaryKeyConstraintName: data.pkRes.constraintName,
+        // db/primary-keys 当前只返回 columns（约束名未随新 tRPC 契约返回）；
+        // 缺失时 buildAlterTableSql 回退到 PK_<table> 生成名
+        primaryKeyConstraintName: (data.pkRes as { constraintName?: string }).constraintName,
         columns: JSON.parse(JSON.stringify(loadedColumns)),
         indexes: JSON.parse(JSON.stringify(loadedIndexes)),
         foreignKeys: JSON.parse(JSON.stringify(loadedForeignKeys)),

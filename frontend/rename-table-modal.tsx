@@ -104,7 +104,7 @@ export default function RenameTableModal(props: RenameTableModalProps) {
             </div>
           </div>
           <div style={{ "margin-bottom": "16px" }}>
-            <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, "margin-bottom": "6px" }} htmlFor="rename-new-name">
+            <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, "margin-bottom": "6px" }} for="rename-new-name">
               新表名
             </label>
             <input

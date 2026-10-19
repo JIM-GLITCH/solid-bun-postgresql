@@ -90,7 +90,7 @@ export interface ConnectPostgresRequest extends PostgresLoginParams {
 
 /**
  * 建连请求：按 `dbType` 判别（与 `api-core` 中 `db/connect` 路由一致）。
- * 新增方言时在 {@link DbKind} 与此 union 中各增加一支，并实现 `*-db-handlers.ts`。
+ * 新增方言时在 {@link DbKind} 与此 union 中各增加一支，并实现 `backend/db-handlers/strategies/` 下对应的 strategy。
  */
 export type ConnectDbRequest =
   | (PostgresLoginParams & { connectionId: string; dbType: "postgres" })

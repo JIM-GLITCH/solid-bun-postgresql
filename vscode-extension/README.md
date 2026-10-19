@@ -105,7 +105,7 @@ vscode-extension/
 - 运行在 **Extension Host**（Node.js 环境）
 - 创建并管理 Webview 窗口
 - 接收前端通过 `postMessage` 发送的 API 请求
-- 调用 `backend/api-handlers-vscode` 处理请求，返回结果
+- 经 `createWebviewRpcBridge`（vscode-messenger）按 procedure path 派发：业务直达服务端 `appRouter`，宿主专属 path 由本扩展 override
 
 #### `src/index.html`
 - Webview 的 HTML 模板
@@ -133,12 +133,12 @@ vscode-extension/
 ┌────────────────────▼────────────────────────────────────┐
 │ Extension Host (Node.js - TypeScript)                   │
 │ - extension.ts 接收 postMessage                         │
-│ - api-handlers-vscode 派发到业务逻辑层                  │
+│ - createWebviewRpcBridge 按 procedure path 派发          │
 └────────────────────┬────────────────────────────────────┘
                      │
 ┌────────────────────▼────────────────────────────────────┐
 │ 业务逻辑层 (共享 - backend/)                            │
-│ - api-core: PostgreSQL 连接、SQL 执行、数据编辑        │
+│ - api-core / db-handlers：多方言连接、SQL 执行、数据编辑 │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -149,8 +149,8 @@ vscode-extension/
 | 部分 | 使用方式 |
 |------|--------|
 | **前端** | 同一套 Solid 应用，通过抽象的 `Transport` 接口在 HTTP 和 postMessage 间切换 |
-| **后端业务逻辑** | `backend/api-core` 处理 PostgreSQL 操作，HTTP 和 postMessage 版本共用 |
-| **API 处理** | `backend/api-core` 为共用逻辑，`api-handlers-http` / `api-handlers-vscode` 分别为 HTTP 与 VSCode 适配 |
+| **后端业务逻辑** | `backend/api-core` 处理多方言（PostgreSQL / MySQL / SQL Server）数据库操作，HTTP 与 VSCode 版本共用 |
+| **API 处理** | `backend/api-core` 为共用逻辑；HTTP 侧仅保留 keepalive 断开端点（`api-handlers-http`），VSCode 侧经 `vscode-messenger` 桥接，业务 procedure 直达服务端 `appRouter` |
 
 这样设计保证了 Standalone 和 VSCode 两个版本功能一致，易于维护。
 

@@ -37,7 +37,7 @@ export default function FakeDataModal(props: FakeDataModalProps) {
       trpc.db.uniqueConstraints.query({ ...dbConn(connectionId), schema: schema, table: table }),
     ])
       .then(([colRes, pkRes, uqRes]) => {
-        if (colRes.error) throw new Error(colRes.error);
+        // 失败经 tRPC reject 抛出，由下方 catch 处理；columns 返回无 error 字段
         const raw = (colRes.columns || []) as TableColumn[];
         // MySQL 生成列 / PG 等不可写入列：跳过，否则 INSERT 失败
         setColumns(raw.filter((c) => !isGeneratedStoredColumn(c)));
@@ -64,7 +64,7 @@ export default function FakeDataModal(props: FakeDataModalProps) {
       const res = await trpc.db.importRows.mutate({ ...dbConn(props.connectionId), schema: props.schema, table: props.table, columns: columnNames, rows: rows, ...({
         onError: "rollback",
       }) });
-      if (res.error) throw new Error(res.error);
+      // 失败经 tRPC reject 抛出，由下方 catch 处理；importRows 返回无 error 字段
       props.onSuccess?.(`已生成并导入 ${res.rowCount ?? rows.length} 行假数据`);
       props.onClose();
     } catch (e: any) {

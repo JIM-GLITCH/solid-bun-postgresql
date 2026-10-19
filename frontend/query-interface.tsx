@@ -491,10 +491,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const startTime = performance.now();  // 记录开始时间
     try {
       const data = await trpc.db.queryStream.mutate({ ...dbConn(cid), statements: statements, batchSize: 100, defaultSchema: mysqlDefaultSchemaForConn(cid) });
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      // 失败经 tRPC reject 抛出，由下方 catch 统一处理；StreamBatch 无 error 字段
 
       // 设置列信息；列数不变时保留已有列宽，避免 Set null/保存后突变
       const newCols = data.columns || [];
@@ -536,10 +533,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setLoadingMore(true);
     try {
       const data = await trpc.db.queryStreamMore.mutate({ ...dbConn(cid), batchSize: 100, defaultSchema: mysqlDefaultSchemaForConn(cid) });
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      // 失败经 tRPC reject 抛出，由下方 catch 统一处理；StreamBatch 无 error 字段
 
       // 追加行数据
       const newRows = data.rows || [];
@@ -639,7 +633,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     setExplainPlan(null);
     try {
       const res = await trpc.db.explain.mutate({ ...dbConn(cid), query: firstStmt, defaultSchema: mysqlDefaultSchemaForConn(cid) });
-      if (res.error) throw new Error(res.error);
+      // 失败经 tRPC reject 抛出，由下方 catch 统一处理；explain 返回无 error 字段
       setExplainPlan(
         normalizeExplainPlan(res.plan) as Array<{
           Plan: any;
@@ -660,11 +654,13 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     const cid = props.activeConnectionId?.();
     if (!cid) return;
     try {
-      const { success, message, error: err } = await trpc.db.cancelQuery.mutate(dbConn(cid));
-      if (success) {
-        console.log("查询取消:", message);
+      // 返回是 { success, error } | { success, cancelled, message } 联合；
+      // tRPC 把 success 放宽为 boolean 后失去判别力，用 in 窄化取分支字段
+      const res = await trpc.db.cancelQuery.mutate(dbConn(cid));
+      if (res.success) {
+        console.log("查询取消:", "message" in res ? res.message : undefined);
       } else {
-        console.warn("取消失败:", err || message);
+        console.warn("取消失败:", "error" in res ? res.error : undefined);
       }
     } catch (e: any) {
       console.error("取消请求失败:", e.message);
@@ -1099,8 +1095,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     try {
       for (const update of pendingUpdates()) {
         const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: update.sql });
-        if (!res.success && res.error) {
-          throw new Error(res.error || `执行失败: ${update.sql}`);
+        // 失败经 tRPC reject 抛出；此处仅保留防御性检查，saveChanges 无 error 字段
+        if (!res.success) {
+          throw new Error(`执行失败: ${update.sql}`);
         }
       }
       for (const update of pendingUpdates()) {
@@ -1112,8 +1109,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
       const sortedDeletes = [...pendingDeletes()].sort((a, b) => b.rowIndex - a.rowIndex);
       for (const del of sortedDeletes) {
         const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: del.sql });
-        if (!res.success && res.error) {
-          throw new Error(res.error || `执行失败: ${del.sql}`);
+        // 失败经 tRPC reject 抛出；此处仅保留防御性检查，saveChanges 无 error 字段
+        if (!res.success) {
+          throw new Error(`执行失败: ${del.sql}`);
         }
       }
       setResult(produce(prev => {
@@ -1129,8 +1127,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
         const sql = generateInsertSql(ins.rowIndex);
         if (!sql) continue;
         const res = await trpc.db.saveChanges.mutate({ ...dbConn(cid), sql: sql });
-        if (!res.success && res.error) {
-          throw new Error(res.error || `执行失败: ${sql}`);
+        // 失败经 tRPC reject 抛出；此处仅保留防御性检查，saveChanges 无 error 字段
+        if (!res.success) {
+          throw new Error(`执行失败: ${sql}`);
         }
       }
       for (const ins of pendingInserts()) {
@@ -1899,9 +1898,7 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     try {
       const statements = getStatementsFromText(querySql);
       const data = await trpc.db.queryStream.mutate({ ...dbConn(connectionId), statements: statements, batchSize: 1000, defaultSchema: mysqlDefaultSchemaForConn(connectionId) });
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      // 失败经 tRPC reject 抛出，由下方 catch 统一处理；StreamBatch 无 error 字段
 
       const newCols = data.columns || [];
       setColumns(newCols);

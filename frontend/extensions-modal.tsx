@@ -155,13 +155,13 @@ function th(): Record<string, string | number> {
     padding: "8px",
     "text-align": "left",
     background: vscode.sidebarBg,
-    borderBottom: `1px solid ${vscode.border}`,
+    "border-bottom": `1px solid ${vscode.border}`,
     "font-weight": 600,
   };
 }
 
 function td(): Record<string, string | number> {
-  return { padding: "8px", borderBottom: `1px solid ${vscode.border}`, color: vscode.foreground };
+  return { padding: "8px", "border-bottom": `1px solid ${vscode.border}`, color: vscode.foreground };
 }
 
 function tdMono(): Record<string, string | number> {

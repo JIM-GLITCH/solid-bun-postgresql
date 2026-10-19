@@ -40,8 +40,7 @@ solid-project/
 │   ├── api-core.ts             # API 核心：handleApiRequest、session
 │   ├── connect-postgres.ts     # PostgreSQL 会话
 │   ├── connect-mysql.ts        # MySQL 会话
-│   ├── api-handlers-http.ts    # HTTP 路由（Standalone 用）
-│   ├── api-handlers-vscode.ts  # Webview 消息处理（扩展用）
+│   ├── api-handlers-http.ts    # 仅保留 keepalive 断开端点（Standalone）
 │   └── ...
 ├── shared/src/                  # 前后端共享类型与 API 约定
 │   ├── types.ts                # PostgresLoginParams、ConnectPostgresRequest 等
@@ -128,26 +127,19 @@ bun run build-extension
 
 ## 🔧 API 接口（Standalone）
 
-业务请求统一走 **`/api/db/*`**（JSON body 中带会话与 **`dbType`** 等字段，与 `shared` 类型及 `api-core` 的 method 名一致）。完整路径表见 **`backend/api-handlers-http.ts`** 中的 `httpApiRoutes`。
+业务请求统一走 **tRPC**（`/api/trpc/*`）：前端 `trpc.db.*` / `trpc.connections.*` / `trpc.ai.*` 直达各 router。旧有的 `POST /api/db/${method}` HTTP RPC 分发与 `GET /api/events` SSE 已移除。
+
+唯一保留的裸 HTTP 端点是 **tRPC 无法表达**的场景——页面卸载时的 keepalive 断开（普通请求会在关页时被浏览器取消，只有 keepalive fetch 能活到发送完成）：
 
 | 方法 | 路径 | 说明 |
 | ---- | ---- | ---- |
-| POST | `/api/db/connect` | 建立数据库会话（载荷含 `dbType`：`postgres` \| `mysql`） |
-| POST | `/api/db/disconnect` | 断开会话 |
-| POST | `/api/db/query`、`/api/db/query-stream` | 执行 SQL / 流式查询 |
-| POST | `/api/db/capabilities` | 当前连接能力快照（前端能力开关） |
-| POST | `/api/db/schemas`、`/api/db/tables`、`/api/db/columns` | 元数据浏览 |
-| GET | `/api/events?connectionSessionId=xxx` | SSE 订阅**当前会话**（与 `db/*` 请求体里的 `connectionId` 同值；多标签页时可能为 `storedId-sessionId`） |
-| GET | `/api/hello` | 健康检查 |
+| POST | `/api/db/disconnect` | keepalive fetch 断开会话（见 `backend/api-handlers-http.ts`；响应无人消费，失败不重试） |
 
-已保存连接：`/api/connections/list|save|delete|get-params|…`。
+事件订阅改用 tRPC subscription **`db.onConnectionEvents`**（`/api/events` 的替代）：Web 端经 SSE 承载，VSCode / Electrobun 端经宿主 link 转发。
 
-**兼容旧路径（弃用，将移除）**：`/api/db/pg-stat-overview`、`/api/db/manage-backend` 等仍指向新的 `db/session-monitor`、`db/session-control`，请新客户端直接使用新 URL / RPC 名。  
-**SSE**：`/api/events` 推荐使用查询参数 **`connectionSessionId`**；仍接受 **`connectionId`**（与旧 README / 书签兼容）。
+VSCode 扩展下，webview 内经 `vscode-messenger` 桥接：**业务 procedure 直达服务端 `appRouter`**，宿主专属 path（`host.*` / `subscription.openLogin` 等）由扩展侧 override 实现。
 
-**扩展第三方言**：见 [docs/adding-a-database-dialect.md](docs/adding-a-database-dialect.md)（`DbKind`、`defaultDatabaseCapabilities`、`*-db-handlers.ts`、`api-core` 路由）。**能力字段与侧栏/API 对照**：[docs/database-capabilities-matrix.md](docs/database-capabilities-matrix.md)。
-
-VSCode 扩展下由 `api-handlers-vscode` 将 **同一套 RPC method**（如 `db/query`）转发到 `api-core`，与 HTTP 路径一一对应。
+**扩展第三方言**：连接层策略位于 `backend/db-handlers/strategies/*-strategy-effect.ts`（SQL 模板 / 连接器装配 / 监控诊断），设计背景见 [docs/db-connection-effect-refactor.md](docs/db-connection-effect-refactor.md)。**能力字段与侧栏/API 对照**：[docs/database-capabilities-matrix.md](docs/database-capabilities-matrix.md)。
 
 ## 📝 开发相关
 

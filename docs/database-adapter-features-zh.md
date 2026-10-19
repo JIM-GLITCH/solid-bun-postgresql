@@ -106,5 +106,5 @@
 ## 相关文档
 
 - `docs/database-capabilities-matrix.md` — 能力矩阵
-- `docs/adding-a-database-dialect.md` — 接入新方言指引
+- `docs/db-connection-effect-refactor.md` — 连接层重构设计（策略 / 连接器布局）
 

@@ -10,7 +10,7 @@ import { sqlserverStrategy } from "./strategies/sqlserver-strategy-effect";
 import { getSqlSegments } from "../../shared/src";
 import { getSession, sendSSEMessage, disconnectConnection, assertSessionDbType, capabilitiesForKind, sessionConnectorOf } from "../db/sessions";
 import type { SessionConnection } from "../session-connection";
-import type { DbConnector } from "../db/contract";
+import type { DbConnector, QuerySpec } from "../db/contract";
 import type { DbKind, SSEMessage, ConnectDbRequest } from "../../shared/src";
 import { connectSession } from "../db/sessions";
 import { CurrentConnectionId, CurrentDbType, type Strategy } from "./db-service-effect";
@@ -35,12 +35,17 @@ function getStatementsFromSql(sql: string): string[] {
 }
 
 /**
- * 当前连接：一次性解析「会话 + 连接器 + 方言策略」。
+ * 当前连接的请求级环境：一次性解析「会话 + 连接器 + 方言策略」，
+ * 并派生两个绑定能力（`query` / `notify`）。
  *
  * - `connectionId` / 客户端声明的 `dbType` 由 router 以 Context 提供
  *   （唯一 provide 点是 `trpc/router/db.ts` 的 `runDbHandler`）；
  * - 策略按**服务端真源** `session.dbKind` 选择，客户端声明的 dbType 仅做一致性校验；
- * - 连接不存在 → 类型化失败（`Effect.fail`），而非同步抛错变成 defect。
+ * - 连接不存在 → 类型化失败（`Effect.fail`），而非同步抛错变成 defect；
+ * - `query`：绑定的查询 Effect 构造器（自带 Error 映射，省去每处 tryPromise 包裹）；
+ * - `notify`：绑定的 SSE 通知器（闭包绑定 connectionId，handler 不再手递）。
+ *
+ * 解构按需取用：流式 / 事务 / 取消等能力仍走 `connector` 原对象。
  */
 export const currentConnection = Effect.gen(function* () {
   const connectionId = yield* CurrentConnectionId;
@@ -60,6 +65,14 @@ export const currentConnection = Effect.gen(function* () {
     connector,
     dbKind: session.dbKind,
     strategy: getStrategy(session.dbKind),
+    /** 绑定的查询 Effect 构造器：自带 Error 映射，错误通道即 `Error` */
+    query: <Row = any>(spec: string | QuerySpec, params?: readonly unknown[]) =>
+      Effect.tryPromise({
+        try: () => connector.query<Row>(spec, params),
+        catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+      }),
+    /** 绑定的 SSE 通知器：闭包绑定 connectionId */
+    notify: (msg: SSEMessage) => sendSSEMessage(connectionId, msg),
   };
 });
 
@@ -96,19 +109,15 @@ export const dbCapabilities = () =>
 
 export const dbSchemas = () =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() => connector.query(strategy.metadataQueries.schemas)).pipe(
-      Effect.catch((e) => Effect.fail(e as Error))
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.schemas);
     return { schemas: result.rows.map((r: any) => r.schema_name ?? r.SCHEMA_NAME ?? "") };
   });
 
 export const dbTables = (params: { schema: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.tables, [params.schema])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.tables, [params.schema]);
     const tableName = (r: any) => String(r.table_name ?? r.TABLE_NAME ?? "");
     const tableType = (r: any) => String(r.table_type ?? r.TABLE_TYPE ?? "");
     return {
@@ -120,10 +129,8 @@ export const dbTables = (params: { schema: string }) =>
 
 export const dbColumns = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.columns, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.columns, [params.schema, params.table]);
     return { columns: result.rows };
   });
 
@@ -177,16 +184,16 @@ export const dbQuery = (params: {
   defaultSchema?: string;
 }) =>
   Effect.gen(function* () {
-    const { connectionId, connector } = yield* currentConnection;
+    const { query, notify } = yield* currentConnection;
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "QUERY", message: `执行查询: ${params.query.slice(0, 100)}...`, timestamp: Date.now() })
+      notify({ type: "QUERY", message: `执行查询: ${params.query.slice(0, 100)}...`, timestamp: Date.now() })
     );
 
-    const result = yield* Effect.tryPromise(() => connector.query(params.query));
+    const result = yield* query(params.query);
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "INFO", message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`, timestamp: Date.now() })
+      notify({ type: "INFO", message: `${result.command || ""} 完成: ${result.rowCount ?? 0} 行`, timestamp: Date.now() })
     );
 
     return { result: result.rows, columns: [] }; // columns 需要根据数据库类型计算
@@ -204,12 +211,12 @@ export const dbCancelQuery = () =>
 
 export const dbSaveChanges = (params: { sql: string }) =>
   Effect.gen(function* () {
-    const { connectionId, connector } = yield* currentConnection;
+    const { query, notify } = yield* currentConnection;
 
-    const result = yield* Effect.tryPromise(() => connector.query(params.sql));
+    const result = yield* query(params.sql);
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, {
+      notify({
         type: "INFO",
         message: `保存成功: ${result.rowCount ?? 0} 行受影响`,
         timestamp: Date.now(),
@@ -221,18 +228,18 @@ export const dbSaveChanges = (params: { sql: string }) =>
 
 export const dbExplain = (params: { query: string; defaultSchema?: string }) =>
   Effect.gen(function* () {
-    const { connectionId, connector, strategy } = yield* currentConnection;
+    const { query, strategy, notify } = yield* currentConnection;
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "QUERY", message: "执行 EXPLAIN ANALYZE...", timestamp: Date.now() })
+      notify({ type: "QUERY", message: "执行 EXPLAIN ANALYZE...", timestamp: Date.now() })
     );
 
     const explainSql = `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${params.query.trim()}`;
-    const result = yield* Effect.tryPromise(() => connector.query(explainSql));
+    const result = yield* query(explainSql);
     const plan = yield* strategy.parseExplainResult(result);
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "INFO", message: "执行计划获取完成", timestamp: Date.now() })
+      notify({ type: "INFO", message: "执行计划获取完成", timestamp: Date.now() })
     );
 
     return { plan };
@@ -252,63 +259,51 @@ export const dbExplainText = (params: { query: string }) =>
 
 export const dbIndexes = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.indexes, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.indexes, [params.schema, params.table]);
     return { indexes: result.rows };
   });
 
 export const dbPrimaryKeys = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.primaryKeys, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.primaryKeys, [params.schema, params.table]);
     return { columns: result.rows.map((r: any) => r.column_name ?? r.COLUMN_NAME ?? "") };
   });
 
 export const dbUniqueConstraints = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.uniqueConstraints, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.uniqueConstraints, [params.schema, params.table]);
     return { constraints: result.rows };
   });
 
 export const dbForeignKeys = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.foreignKeys, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.foreignKeys, [params.schema, params.table]);
     return { outgoing: result.rows, incoming: [] }; // incoming 需要单独查询
   });
 
 export const dbDataTypes = () =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() => connector.query(strategy.metadataQueries.dataTypes));
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.dataTypes);
     const types = result.rows.map((r: any) => String(r.name ?? r.NAME ?? "")).filter(Boolean);
     return { types: [...new Set(types)].sort((a, b) => a.localeCompare(b)) };
   });
 
 export const dbTableComment = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.tableComment, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.tableComment, [params.schema, params.table]);
     return { comment: result.rows[0]?.comment ?? null };
   });
 
 export const dbCheckConstraints = (params: { schema: string; table: string }) =>
   Effect.gen(function* () {
-    const { connector, strategy } = yield* currentConnection;
-    const result = yield* Effect.tryPromise(() =>
-      connector.query(strategy.metadataQueries.checkConstraints, [params.schema, params.table])
-    );
+    const { query, strategy } = yield* currentConnection;
+    const result = yield* query(strategy.metadataQueries.checkConstraints, [params.schema, params.table]);
     return { constraints: result.rows };
   });
 
@@ -320,16 +315,16 @@ export const dbPartitionInfo = (params: { connectionId: string; schema: string; 
 
 export const dbExecuteDdl = (params: { sql: string }) =>
   Effect.gen(function* () {
-    const { connectionId, connector } = yield* currentConnection;
+    const { query, notify } = yield* currentConnection;
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "QUERY", message: `执行 DDL: ${params.sql.slice(0, 80)}...`, timestamp: Date.now() })
+      notify({ type: "QUERY", message: `执行 DDL: ${params.sql.slice(0, 80)}...`, timestamp: Date.now() })
     );
 
-    yield* Effect.tryPromise(() => connector.query(params.sql));
+    yield* query(params.sql);
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "INFO", message: "DDL 执行成功", timestamp: Date.now() })
+      notify({ type: "INFO", message: "DDL 执行成功", timestamp: Date.now() })
     );
 
     return { success: true };
@@ -369,7 +364,8 @@ export const dbImportRows = (params: {
   onError?: "rollback" | "discard";
 }) =>
   Effect.gen(function* () {
-    const { connectionId, connector, strategy } = yield* currentConnection;
+    // withPoolClient（事务路径）仍走 connector；逐行插入走绑定的 query
+    const { connector, query, strategy, notify } = yield* currentConnection;
 
     if (!params.columns?.length || !Array.isArray(params.rows)) {
       return yield* Effect.fail(new Error("缺少 columns 或 rows"));
@@ -409,7 +405,7 @@ export const dbImportRows = (params: {
             columns: params.columns,
             values: chunk.flat()
           });
-          const result = yield* Effect.tryPromise(() => connector.query(sql, values));
+          const result = yield* query(sql, values);
           total += result.rowCount ?? chunk.length;
         } catch {
           for (const row of chunk) {
@@ -419,7 +415,7 @@ export const dbImportRows = (params: {
                 columns: params.columns,
                 values: row
               });
-              const result = yield* Effect.tryPromise(() => connector.query(sql, values));
+              const result = yield* query(sql, values);
               total += result.rowCount ?? 1;
             } catch {
               // 丢弃该行
@@ -430,7 +426,7 @@ export const dbImportRows = (params: {
     }
 
     yield* Effect.sync(() =>
-      sendSSEMessage(connectionId, { type: "INFO", message: `导入成功: ${total} 行`, timestamp: Date.now() })
+      notify({ type: "INFO", message: `导入成功: ${total} 行`, timestamp: Date.now() })
     );
 
     return { success: true, rowCount: total };

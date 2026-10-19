@@ -1,4 +1,5 @@
 import { createMemo, createSignal, For, Show, onCleanup, onMount } from "solid-js";
+import type { JSX } from "solid-js";
 import { trpc } from "./trpc-client";
 import { dbConn } from "./api";
 import type { SessionMonitorResult } from "../backend/trpc/router/db";
@@ -453,15 +454,17 @@ function StatCard(props: { title: string; value: string }) {
 function TableWrap(props: { children: any }) {
   return <div style={{ overflow: "auto", border: `1px solid ${vscode.border}`, "border-radius": "6px" }}>{props.children}</div>;
 }
-function tableStyle() {
+// 返回类型必须显式标注：否则对象字面量被 widen，"collapse" 变成 string，
+// 不满足 csstype 中 BorderCollapse 的字面量联合，无法赋给 style
+function tableStyle(): JSX.CSSProperties {
   return { width: "100%", "border-collapse": "collapse", "font-size": "12px" };
 }
 function Th(props: { children: any }) {
-  return <th style={{ padding: "8px", "text-align": "left", background: vscode.sidebarBg, borderBottom: `1px solid ${vscode.border}` }}>{props.children}</th>;
+  return <th style={{ padding: "8px", "text-align": "left", background: vscode.sidebarBg, "border-bottom": `1px solid ${vscode.border}` }}>{props.children}</th>;
 }
 function Td(props: { children: any; mono?: boolean }) {
   return (
-    <td style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}`, "font-family": props.mono ? "Consolas, monospace" : undefined }}>
+    <td style={{ padding: "8px", "border-bottom": `1px solid ${vscode.border}`, "font-family": props.mono ? "Consolas, monospace" : undefined }}>
       {props.children}
     </td>
   );

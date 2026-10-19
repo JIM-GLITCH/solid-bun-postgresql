@@ -42,7 +42,7 @@ export default function ErDiagramPickerModal(props: ErDiagramPickerModalProps) {
     try {
       const schemasRes = await trpc.db.schemas.query(dbConn(connectionId));
       if (isCancelled()) return;
-      if (schemasRes.error) throw new Error(schemasRes.error);
+      // 失败经 tRPC reject 抛出，由外层 catch 处理；schemas 返回无 error 字段
 
       const schemaList = schemasRes.schemas || [];
       const withTables: SchemaWithTables[] = await Promise.all(

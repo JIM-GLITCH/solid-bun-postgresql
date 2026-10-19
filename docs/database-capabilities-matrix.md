@@ -1,6 +1,6 @@
 # 数据库能力矩阵
 
-本文档对照 `**DatabaseCapabilities**`（`shared/src/types.ts` + `defaultDatabaseCapabilities`）、**侧栏 / 查询页入口** 与 **后端 `db/`* 路由** 在各方言上的支持情况。实现随代码演进，以仓库内 `*-db-handlers.ts` 为准。
+本文档对照 `**DatabaseCapabilities**`（`shared/src/types.ts` + `defaultDatabaseCapabilities`）、**侧栏 / 查询页入口** 与 **后端 `db/`* 路由** 在各方言上的支持情况。实现随代码演进，以仓库内 `backend/db-handlers/strategies/*-strategy-effect.ts` 为准。
 
 ## 1. `DatabaseCapabilities` 字段（类型层开关）
 
@@ -73,6 +73,6 @@
 
 1. 在 `DbKind` 与 `ConnectDbRequest` 中增加分支。
 2. 在 `defaultDatabaseCapabilities` 中为该 `kind` 返回**完整** `DatabaseCapabilities`（未支持项务必为 `false`）。
-3. 实现 `*-db-handlers.ts` 内与本矩阵相关的 `db/`* case。
-4. 更新本表与（如适用）`docs/adding-a-database-dialect.md`。
+3. 在 `backend/db-handlers/strategies/*-strategy-effect.ts` 实现与该 `kind` 对应的策略与 handler。
+4. 更新本表与（如适用）`docs/db-connection-effect-refactor.md`。
 

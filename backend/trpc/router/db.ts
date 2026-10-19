@@ -63,8 +63,8 @@ function unwrapEffectError(e: unknown): unknown {
 /**
  * 统一运行 db handler——**请求级 Context 的唯一 provide 点**：
  * 1. 把 zod 校验后的 input 投影为 `CurrentConnectionId` / `CurrentDbType`；
- * 2. handler 经 `currentConnection` 按需解析「会话 + 连接器 + 方言策略」
- *    （策略按服务端真源 session.dbKind 选择，客户端声明的 dbType 仅做校验）；
+ * 2. handler 经 `currentConnection` 按需解析「会话 + 连接器 + 方言策略」，
+ *    并派生绑定的 `query` / `notify`（connectionId 已闭入，无需逐个手递）；
  * 3. provide 之后 R = never，才能交给 `Effect.runPromise`。
  *
  * ⚠️ 这两个 tag 只允许在这里 provide；handler 内只 yield，不得在别处提供。
@@ -116,12 +116,13 @@ export type SessionMonitorResult = {
     wait_event?: string | null;
   }>;
   slowQueries: Array<Record<string, unknown>>;
-  slowQuerySource:
-  | 'pg_stat_statements'
-  | 'pg_stat_activity'
-  | 'mysql_processlist'
-  | 'mysql_events_statements'
-  | 'mssql_requests';
+  /**
+   * 慢查询来源标识。各策略实现返回的字面量联合（pg_stat_statements /
+   * pg_stat_activity / mysql_processlist / mysql_events_statements /
+   * mssql_requests，兜底为 unknown）在 handler 推断时被 widen 为 string，
+   * 故声明宽化以对齐真实契约；消费方按 default 分支渲染。
+   */
+  slowQuerySource: string;
   collectedAt: number;
 };
 

@@ -44,7 +44,6 @@ export default function ImportModal(props: ImportModalProps) {
     setLoading(true);
     trpc.db.schemas.query(dbConn(cid))
       .then((r) => {
-        if (r.error) throw new Error(r.error);
         setSchemas(r.schemas || []);
         if (r.schemas?.length) setSchema(r.schemas[0]);
       })
@@ -63,7 +62,6 @@ export default function ImportModal(props: ImportModalProps) {
     setLoading(true);
     trpc.db.tables.query({ ...dbConn(cid), schema: s })
       .then((r) => {
-        if (r.error) throw new Error(r.error);
         const list = (r.tables || []).concat(r.views || []);
         setTables(list);
         setTable(list[0] || "");
@@ -83,7 +81,6 @@ export default function ImportModal(props: ImportModalProps) {
     }
     Promise.all([trpc.db.columns.query({ ...dbConn(cid), schema: s, table: t }), trpc.db.primaryKeys.query({ ...dbConn(cid), schema: s, table: t })])
       .then(([colRes, pkRes]) => {
-        if (colRes.error) throw new Error(colRes.error);
         const cols = (colRes.columns || []) as TableColumn[];
         setTableColumns(cols);
         setPrimaryKeys(pkRes.columns || []);
@@ -229,7 +226,6 @@ export default function ImportModal(props: ImportModalProps) {
         onConflict: conflictCols.length ? onConflict() : undefined,
         onError: onError(),
       }) });
-      if (res.error) throw new Error(res.error);
       props.onSuccess?.(`已导入 ${res.rowCount ?? rowsData.length} 行`);
       props.onClose();
     } catch (e: any) {

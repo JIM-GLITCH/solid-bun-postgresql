@@ -60,14 +60,14 @@ export function toJsonNode(value: unknown): JsonNode {
   return { type: "string", value: String(value) };
 }
 
-/** 将 JsonNode 还原为原始 JS 值 */
-export function fromJsonNode(node: JsonNode): JsonValue {
+/** 将 JsonNode 还原为原始 JS 值（供 JSON.stringify 序列化） */
+export function fromJsonNode(node: JsonNode): unknown {
   if (node.type === "object") {
-    const obj: Record<string, JsonValue> = {};
+    const obj: Record<string, unknown> = {};
     for (const entry of node.entries) {
       obj[entry.key] = fromJsonNode(entry.value);
     }
-    return obj as JsonValue;
+    return obj;
   }
   if (node.type === "array") {
     return node.items.map((item) => fromJsonNode(item));

@@ -162,7 +162,7 @@ export default function ErDiagramModal(props: ErDiagramModalProps) {
       for (const { schema, tables: tablesFilter } of schemaItems) {
         if (isCancelled()) return;
         const tablesRes = await trpc.db.tables.query({ ...dbConn(connectionId), schema: schema });
-        if (tablesRes.error) throw new Error(tablesRes.error);
+        // 失败经 tRPC reject 抛出，由外层 catch 处理；tables 返回无 error 字段
 
         let tableNames = tablesRes.tables || [];
         if (tablesFilter.length > 0) {
@@ -736,7 +736,7 @@ export default function ErDiagramModal(props: ErDiagramModalProps) {
                         gap: "8px",
                       }}
                     >
-                      <span style={{ fontSize: "14px" }}>📊</span>
+                      <span style={{ "font-size": "14px" }}>📊</span>
                       <span
                         style={{
                           "font-weight": "600",

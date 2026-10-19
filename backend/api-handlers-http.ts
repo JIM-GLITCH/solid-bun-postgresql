@@ -9,8 +9,7 @@
  * （需要同步发起普通 fetch，见前端 `disconnectPostgresOnPageUnload`）。
  */
 
-import type { ApiRequestPayload } from "../shared/src";
-import { handleApiRequest } from "./api-core";
+import { disconnectConnection } from "./api-core";
 
 export const DB_DISCONNECT_PATH = "/api/db/disconnect";
 
@@ -21,7 +20,9 @@ export async function handleDbDisconnectBeacon(req: Request): Promise<Response> 
     if (!payload?.connectionId) {
       return new Response("缺少 connectionId", { status: 400 });
     }
-    await handleApiRequest("db/disconnect", payload as ApiRequestPayload["db/disconnect"]);
+    // 旧实现经 api-core 的 handleApiRequest 分发；该函数已随 HTTP RPC 移除，
+    // 直接调用连接层断开入口（api-core 自 db/sessions 再导出）。
+    await disconnectConnection(payload.connectionId);
     return Response.json({ success: true });
   } catch (e: unknown) {
     const err = e instanceof Error ? e.message : String(e);

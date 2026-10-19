@@ -159,10 +159,10 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
               <table style={{ width: "100%", "border-collapse": "collapse", "font-size": "12px" }}>
                 <thead>
                   <tr style={{ "text-align": "left", background: vscode.sidebarBg }}>
-                    <th style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}` }}>
+                    <th style={{ padding: "8px", "border-bottom": `1px solid ${vscode.border}` }}>
                       {isMysqlFamily(getRegisteredDbType(props.connectionId)) ? "分区（库.分区名）" : "分区（schema.name）"}
                     </th>
-                    <th style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}` }}>边界 / 约束</th>
+                    <th style={{ padding: "8px", "border-bottom": `1px solid ${vscode.border}` }}>边界 / 约束</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -171,13 +171,13 @@ export default function PartitionTableModal(props: PartitionTableModalProps) {
                   >
                     {(p) => (
                       <tr>
-                        <td style={{ padding: "8px", borderBottom: `1px solid ${vscode.border}`, "font-family": "monospace" }}>
+                        <td style={{ padding: "8px", "border-bottom": `1px solid ${vscode.border}`, "font-family": "monospace" }}>
                           {p.qualified}
                         </td>
                         <td
                           style={{
                             padding: "8px",
-                            borderBottom: `1px solid ${vscode.border}`,
+                            "border-bottom": `1px solid ${vscode.border}`,
                             "font-family": "monospace",
                             color: vscode.foregroundDim,
                           }}

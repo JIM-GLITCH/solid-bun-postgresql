@@ -1,18 +1,42 @@
 /**
- * Electrobun 主进程：直接集成 api-core，通过 RPC 与渲染进程通信
+ * Electrobun 主进程：直接集成 tRPC `appRouter`，通过 RPC 与渲染进程通信
  * 无 Rust 依赖，前后端均为 TypeScript
+ *
+ * 分发方式与 VSCode 扩展的 `backend/vscode-messenger-bridge.ts` 一致：
+ * 前端经 `api_request` 传来的方法名（`shared/src/api-methods.ts` 的 ApiMethod，
+ * 形如 `"db/query"`）映射为 tRPC procedure path（`"db.query"`），
+ * 由 `appRouter.createCaller` 求值——业务实现的唯一真源就是 appRouter。
+ *
+ * `subscribe-events` / `unsubscribe-events` 是 electrobun 专属的 RPC 消息
+ * （按 sessionId 转发 SSE 事件），不是 tRPC procedure，保持原有实现。
  */
 import { BrowserWindow, BrowserView } from "electrobun/bun";
 import type { AppRPCType } from "../../../shared/src/electrobun-rpc";
-import { handleApiRequest, getSession, subscribeSessionEvents } from "../../../backend/api-core";
+import { appRouter } from "../../../backend/trpc";
+import { getSession, subscribeSessionEvents } from "../../../backend/api-core";
 import { assertSubscriptionLicensed } from "../../../backend/subscription-license";
-import type { ApiMethod } from "../../../shared/src";
 
 /** 当前主窗口的 webview，用于推送 backend_event */
 let mainWebview: { rpc: { send: { backend_event: (p: unknown) => void } } } | null = null;
 
 /** sessionId -> 取消订阅函数 */
 const eventUnsubscribes = new Map<string, () => void>();
+
+/** 所有 db/* 入参都自带 connectionId / dbType，context 无需额外信息（与 VSCode 侧 getContext: () => ({}) 一致） */
+const caller = appRouter.createCaller(() => ({}));
+
+/** ApiMethod（"db/query"）→ tRPC procedure path（"db.query"） */
+function toProcedurePath(method: string): string {
+  return method.replaceAll("/", ".");
+}
+
+/** 沿 caller 代理逐级取值（与 vscode-messenger-bridge 的 resolveProcedure 同构） */
+function resolveProcedure(path: string): (input: unknown) => Promise<unknown> {
+  let node: any = caller;
+  for (const segment of path.split(".")) node = node?.[segment];
+  if (typeof node !== "function") throw new Error(`未知 API 方法: ${path}`);
+  return node as (input: unknown) => Promise<unknown>;
+}
 
 const appRPC = BrowserView.defineRPC<AppRPCType>({
   maxRequestTime: 30000,
@@ -46,10 +70,7 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
           }
           return { ok: true };
         }
-        return handleApiRequest(
-          method as ApiMethod,
-          payload as Parameters<typeof handleApiRequest>[1]
-        );
+        return resolveProcedure(toProcedurePath(method))(payload);
       },
     },
     messages: {},

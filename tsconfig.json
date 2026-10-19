@@ -14,6 +14,10 @@
 
     // Type Checking & Safety
     "strict": true,
+    // 跳过对 .d.ts 的类型检查：第三方声明互相冲突（bun-types vs @types/node、
+    // jest-dom 引用缺失的 jest 类型、vite/vitest/tsup 内部 d.ts）非项目代码问题，
+    // 项目自身的 .ts/.tsx 仍全量检查。
+    "skipLibCheck": true,
     "types": ["vite/client", "@testing-library/jest-dom"],
   }
 }

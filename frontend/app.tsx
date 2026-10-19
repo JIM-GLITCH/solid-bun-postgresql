@@ -195,10 +195,11 @@ export default function App() {
     } catch (e) {
       console.warn("断开连接 API 调用失败:", e);
     }
-    const remainingTabs = tabs().filter((t) => t.connectionId !== connectionId);
+    // 仅查询/设计/DDL/函数类标签页带 connectionId；连接表单/编辑标签没有该字段，需 in 窄化
+    const remainingTabs = tabs().filter((t) => "connectionId" in t && t.connectionId !== connectionId);
     setTabs(remainingTabs);
     const currentTab = tabs().find((t) => t.id === activeTabId());
-    if (currentTab?.connectionId === connectionId) {
+    if (currentTab && "connectionId" in currentTab && currentTab.connectionId === connectionId) {
       setActiveTabId(remainingTabs[0]?.id ?? null);
     }
     setConnections(connections.filter((c) => c.id !== connectionId));
@@ -300,7 +301,7 @@ export default function App() {
   // 当前高亮的连接：有标签页时取当前标签的连接，否则为 null
   const activeConnectionIdForSidebar = () => {
     const tab = tabs().find((t) => t.id === activeTabId());
-    return tab?.connectionId ?? null;
+    return tab && "connectionId" in tab ? tab.connectionId : null;
   };
 
   const clearExternalQuery = () => {
@@ -628,7 +629,7 @@ export default function App() {
                         <div style={{ flex: 1, 'min-height': 0, 'overflow-y': 'auto', 'overflow-x': 'hidden' }}>
                         {tab.id === CONNECTION_FORM_DEFAULT_ID ? (
                           <div style={{ padding: '24px', 'background-color': vscode.editorBg }}>
-                              <div style={{ margin: '0 auto', maxWidth: '560px' }}>
+                              <div style={{ margin: '0 auto', 'max-width': '560px' }}>
                                 <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
                               </div>
                           </div>
@@ -645,13 +646,13 @@ export default function App() {
                           </div>
                         ) : tab.type === 'connection-form' ? (
                           <div style={{ padding: '24px', 'background-color': vscode.editorBg }}>
-                              <div style={{ margin: '0 auto', maxWidth: '560px' }}>
+                              <div style={{ margin: '0 auto', 'max-width': '560px' }}>
                                 <ConnectionForm onConnected={handleConnected} onSaved={handleSavedRefresh} />
                               </div>
                           </div>
                         ) : tab.type === 'connection-edit' ? (
                           <div style={{ padding: '24px', 'background-color': vscode.editorBg }}>
-                              <div style={{ margin: '0 auto', maxWidth: '560px' }}>
+                              <div style={{ margin: '0 auto', 'max-width': '560px' }}>
                                 <ConnectionForm
                                   editStored={tab.stored}
                                   onConnected={(connectionId, info) => {

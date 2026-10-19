@@ -109,8 +109,9 @@ export default function TableDesignerCreate(props: TableDesignerCreateProps) {
   const addFk = () => setFkConstraints((prev) => [...prev, { column: "", refSchema: props.schema, refTable: "", refColumn: "" }]);
   const removeFk = (i: number) => setFkConstraints((prev) => prev.filter((_, idx) => idx !== i));
 
-  const designerDialect = () =>
-    (isMysqlFamily(getRegisteredDbType(props.connectionId)) ? "mysql" : "postgres") as const;
+  // 返回字面量联合；as const 不能作用于条件表达式，用返回类型注解达成同样效果
+  const designerDialect = (): "mysql" | "postgres" =>
+    isMysqlFamily(getRegisteredDbType(props.connectionId)) ? "mysql" : "postgres";
 
   const getStmts = () =>
     buildCreateTableSql(

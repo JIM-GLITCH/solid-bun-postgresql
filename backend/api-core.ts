@@ -9,6 +9,8 @@
 import {
   type ConnectDbRequest,
   type DbKind,
+  isMysqlFamily,
+  isSqlServer,
   type StoredConnectionParams,
   type SSEMessage,
 } from "../shared/src";
@@ -30,6 +32,7 @@ import {
   getSessionInfo,
   installSessionDisposeOnExit,
   sendSSEMessage,
+  sessionConnectorOf,
   subscribeSessionEvents,
 } from "./db/sessions";
 

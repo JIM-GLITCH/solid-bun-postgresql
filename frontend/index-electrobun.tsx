@@ -14,6 +14,13 @@ import { render } from "solid-js/web";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
 
+declare global {
+  interface Window {
+    /** 主进程经 electrobun RPC 暴露的 api_request 入口（platform.ts 的 isElectrobun 检测它） */
+    __electrobunApiRequest?: (method: string, payload: unknown) => Promise<unknown>;
+  }
+}
+
 const rpc = Electroview.defineRPC<AppRPCType>({
   handlers: {
     messages: {

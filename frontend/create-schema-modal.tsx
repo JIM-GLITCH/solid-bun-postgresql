@@ -133,7 +133,7 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
       >
         <h2 style={{ "font-size": "16px", margin: "0 0 8px 0", color: vscode.foreground }}>{title()}</h2>
         <p style={{ "font-size": "12px", color: vscode.foregroundDim, margin: "0 0 16px 0" }}>{hint()}</p>
-        <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, marginBottom: "8px" }}>
+        <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, "margin-bottom": "8px" }}>
           名称
         </label>
         <input
@@ -144,7 +144,7 @@ export default function CreateSchemaModal(props: CreateSchemaModalProps) {
             setError(null);
           }}
           placeholder="例如 my_app"
-          autoFocus
+          autofocus
           style={{
             width: "100%",
             padding: "8px 12px",

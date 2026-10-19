@@ -1230,13 +1230,13 @@ function buildPostgresDdlStatements(
     const origTypeStr = buildColumnTypeSql(orig);
     const newTypeStr = buildColumnTypeSql(col);
     if (origTypeStr !== newTypeStr) {
-      sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} TYPE ${newTypeStr}`);
+      sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(orig.name)} TYPE ${newTypeStr}`);
     }
 
     // Nullable change
     if (orig.nullable !== col.nullable) {
       sqls.push(
-        `ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} ${col.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`
+        `ALTER TABLE ${qualified} ALTER COLUMN ${q(orig.name)} ${col.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`
       );
     }
 
@@ -1244,9 +1244,9 @@ function buildPostgresDdlStatements(
     if (orig.defaultValue !== col.defaultValue) {
       const d = col.defaultValue.trim();
       if (d) {
-        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} SET DEFAULT ${formatDefaultValue(d)}`);
+        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(orig.name)} SET DEFAULT ${formatDefaultValue(d)}`);
       } else {
-        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(physicalName)} DROP DEFAULT`);
+        sqls.push(`ALTER TABLE ${qualified} ALTER COLUMN ${q(orig.name)} DROP DEFAULT`);
       }
     }
   }

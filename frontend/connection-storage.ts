@@ -92,7 +92,8 @@ export async function connectFromSaved(
       void prefetchDbCapabilities(data.connectionId);
       return { success: true, connectionId: data.connectionId };
     }
-    return { success: false, error: data.error || "连接失败" };
+    // 失败经 tRPC reject 抛出走 catch；connections.connect 返回无 error 字段
+    return { success: false, error: "连接失败" };
   } catch (e) {
     if (e instanceof SubscriptionRequiredError) {
       return { success: false, error: e.message, subscriptionRequired: true };

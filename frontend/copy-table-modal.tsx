@@ -119,7 +119,7 @@ export default function CopyTableModal(props: CopyTableModalProps) {
             </div>
           </div>
           <div style={{ "margin-bottom": "16px" }}>
-            <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, "margin-bottom": "6px" }} htmlFor="copy-new-name">
+            <label style={{ display: "block", "font-size": "13px", color: vscode.foreground, "margin-bottom": "6px" }} for="copy-new-name">
               新表名
             </label>
             <input
@@ -151,7 +151,7 @@ export default function CopyTableModal(props: CopyTableModalProps) {
               checked={copyData()}
               onInput={(e) => setCopyData(e.currentTarget.checked)}
             />
-            <label htmlFor="copy-data" style={{ "font-size": "13px", color: vscode.foreground, cursor: "pointer" }}>
+            <label for="copy-data" style={{ "font-size": "13px", color: vscode.foreground, cursor: "pointer" }}>
               同时复制数据
             </label>
           </div>

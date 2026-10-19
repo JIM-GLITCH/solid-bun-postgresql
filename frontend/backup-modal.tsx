@@ -41,7 +41,7 @@ export default function BackupModal(props: BackupModalProps) {
     const fn = schema ? () => trpc.db.schemaDump.query({ ...dbConn(connectionId), schema: schema, includeData: withData }) : () => trpc.db.databaseDump.query({ ...dbConn(connectionId), includeData: withData });
     fn()
       .then((res) => {
-        if (res.error) throw new Error(res.error);
+        // 失败经 tRPC reject 抛出，由下方 catch 处理；dump 返回无 error 字段
         setDump(res.dump ?? "");
       })
       .catch((e) => setError(e.message || "导出失败"))
@@ -108,14 +108,14 @@ export default function BackupModal(props: BackupModalProps) {
           <p style={{ margin: "8px 0 0 0", "font-size": "13px", color: vscode.foregroundDim }}>
             导出表、视图、函数等结构
           </p>
-          <div style={{ marginTop: "12px", display: "flex", gap: "16px", "align-items": "center" }}>
+          <div style={{ "margin-top": "12px", display: "flex", gap: "16px", "align-items": "center" }}>
             <label style={{ display: "flex", "align-items": "center", gap: "6px", cursor: "pointer", "font-size": "13px", color: vscode.foreground }}>
               <input
                 type="radio"
                 name="backup-mode"
                 checked={!includeData()}
                 onChange={() => setIncludeData(false)}
-                style={{ accentColor: vscode.accent }}
+                style={{ "accent-color": vscode.accent }}
               />
               仅结构
             </label>
@@ -125,7 +125,7 @@ export default function BackupModal(props: BackupModalProps) {
                 name="backup-mode"
                 checked={includeData()}
                 onChange={() => setIncludeData(true)}
-                style={{ accentColor: vscode.accent }}
+                style={{ "accent-color": vscode.accent }}
               />
               结构 + 数据
             </label>

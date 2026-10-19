@@ -193,16 +193,33 @@ function recordsetsFromMssqlResult(result: { recordsets?: unknown; recordset?: u
  * 占住池里一条连接但不 `BEGIN TRAN`。显式事务下 SHOWPLAN 往往拿不到 XML，故不用 sql.Transaction。
  * SHOWPLAN_* 仍须：SET 单独一批、用户 SQL 单独一批、SET OFF 单独一批，且同一会话。
  */
+/**
+ * mssql 运行时 `ConnectionPool` 上存在、但 `@types/mssql` 未声明的成员：
+ * - `config`：解析后的连接配置；
+ * - `acquire(requester, cb)` / `release(connection)`：手动借还连接
+ *   （ tedious-pool 公共 API，见 `mssql/lib/base/connection-pool.js`）。
+ * SHOWPLAN 需要把 `SET … ON/OFF` 与目标查询钉在同一条连接上执行，依赖这两个方法。
+ */
+type PinnableConnectionPool = sql.ConnectionPool & {
+  readonly config: unknown;
+  acquire(
+    requester: sql.ConnectionPool,
+    callback: (err: Error | null | undefined, connection?: unknown, config?: unknown) => void
+  ): sql.ConnectionPool;
+  release(connection: unknown): void;
+};
+
 function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
   readonly parent: sql.ConnectionPool;
   dispose: () => void;
 } {
   let acquired: unknown = null;
   let activeRequest: unknown = null;
+  const pinnable = pool as PinnableConnectionPool;
 
   const parent = {
     get config() {
-      return pool.config;
+      return pinnable.config;
     },
     get connected() {
       return pool.connected;
@@ -212,11 +229,11 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
     },
     acquire(request: unknown, callback: (err: Error | null | undefined, connection?: unknown, config?: unknown) => void) {
       if (!acquired) {
-        pool.acquire(pool as sql.ConnectionPool, (err: Error | null | undefined, c?: unknown, cfg?: unknown) => {
+        pinnable.acquire(pool as sql.ConnectionPool, (err: Error | null | undefined, c?: unknown, cfg?: unknown) => {
           if (err) return callback(err);
           acquired = c;
           activeRequest = request;
-          callback(null, c, cfg ?? pool.config);
+          callback(null, c, cfg ?? pinnable.config);
         });
         return parent;
       }
@@ -227,7 +244,7 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
         return parent;
       }
       activeRequest = request;
-      setImmediate(() => callback(null, acquired, pool.config));
+      setImmediate(() => callback(null, acquired, pinnable.config));
       return parent;
     },
     release(connection: unknown) {
@@ -241,7 +258,7 @@ function sqlServerPinPoolConnection(pool: sql.ConnectionPool): {
     dispose() {
       if (acquired != null) {
         try {
-          pool.release(acquired as never);
+          pinnable.release(acquired as never);
         } catch {
           /* ignore */
         }
