@@ -8,7 +8,7 @@
  * 返回类型是「唯一真源」：handler 函数返回类型在此集中标注，
  * 前端即可直接 `trpc.db.xxx.query(...)` 获得类型推断，无需再包一层封装。
  */
-import { Effect } from 'effect';
+import { Cause, Effect } from 'effect';
 import { t } from '../init';
 import { z } from 'zod';
 import { observable } from '@trpc/server/observable';
@@ -44,6 +44,23 @@ const dbBase = {
 const schemaTable = { ...dbBase, schema: z.string(), table: z.string() };
 
 /**
+ * db router 的错误出口：把 Effect 的 `UnknownError` 还原成原始错误。
+ *
+ * handler 内裸 `Effect.tryPromise`（无 `catch` 选项）失败时，effect 会把未知错误
+ * 包成 `Cause.UnknownError`，其 `message` 固定为 "An error occurred in
+ * Effect.tryPromise"，驱动层的真实原因（如 Access denied / 认证失败）只存在于
+ * `Error.cause`。前端 `formatUnknownError` 只读 `message`，所以必须在这里拆包。
+ *
+ * 已带具体 message 的 Error 原样透传；非 Error 的 cause 包装成 Error。
+ */
+function unwrapEffectError(e: unknown): unknown {
+  if (Cause.isUnknownError(e) && e.cause != null) {
+    return e.cause instanceof Error ? e.cause : new Error(String(e.cause));
+  }
+  return e;
+}
+
+/**
  * 统一运行 db handler——**请求级 Context 的唯一 provide 点**：
  * 1. 把 zod 校验后的 input 投影为 `CurrentConnectionId` / `CurrentDbType`；
  * 2. handler 经 `currentConnection` 按需解析「会话 + 连接器 + 方言策略」
@@ -61,7 +78,9 @@ const runDbHandler = <P, A, E>(
         Effect.provideService(CurrentConnectionId, input.connectionId),
         Effect.provideService(CurrentDbType, input.dbType),
       )
-    );
+    ).catch((e) => {
+      throw unwrapEffectError(e);
+    });
 
 // ── 各 db/* 方法的返回类型（与 api-core 实现一致）────────────────────────
 /** 分区表元数据（非分区表为 role:none） */
@@ -188,7 +207,9 @@ export const dbRouter = t.router({
     .mutation(({ input }) =>
       // 真正的连接逻辑在 dbConnect（→ connectSession → sessionsRuntime.openSession）。
       // zod 的 dbKindSchema 已校验 dbType 为四者之一，此处收敛为 ConnectDbRequest 判别联合。
-      Effect.runPromise(dbConnect(input as ConnectDbRequest))
+      Effect.runPromise(dbConnect(input as ConnectDbRequest)).catch((e) => {
+        throw unwrapEffectError(e);
+      })
     ),
 
   /** 断开数据库连接 */
