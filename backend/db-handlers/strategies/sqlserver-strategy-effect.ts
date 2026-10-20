@@ -21,8 +21,96 @@ import {
   buildSqlServerSchemaContext,
 } from "../../sqlserver-support";
 import { createConnector, type ConnectorStrategy } from "../../db/connector";
-import type { DbConnector, QueryResult, QuerySpec, StreamBatch } from "../../db/contract";
-import type { Strategy } from "../db-service-effect";
+import type { BorrowedClient, DbConnector, QueryResult, QuerySpec, StreamBatch } from "../../db/contract";
+import { quoteQualifiedTable, type Strategy } from "../db-service-effect";
+
+/**
+ * 从 SQL 文本中按出现顺序提取命名参数名（跳过单引号字符串字面量内的 @）。
+ * 重复出现的同名参数只注册一次（tedious 的 request.input 同名即覆盖，语义一致）。
+ */
+export function extractNamedParams(text: string): string[] {
+  const names: string[] = [];
+  let inSingle = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inSingle) {
+      if (c === "'") {
+        if (text[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        inSingle = false;
+      }
+      continue;
+    }
+    if (c === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (c === "@") {
+      const m = /^@([A-Za-z_][A-Za-z0-9_]*)/.exec(text.slice(i));
+      if (m) {
+        if (!names.includes(m[1])) names.push(m[1]);
+        i += m[0].length - 1;
+      }
+    }
+  }
+  return names;
+}
+
+/** 按 JS 值推断 mssql 参数类型并注册；null 显式 NVarChar，避免 tedious 抛 "Invalid type" */
+function bindInput(request: sql.Request, name: string, value: unknown): void {
+  if (value === null || value === undefined) {
+    request.input(name, sql.NVarChar, null);
+  } else if (typeof value === "number") {
+    if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+      request.input(name, sql.Int, value);
+    } else if (Number.isInteger(value)) {
+      request.input(name, sql.BigInt, value);
+    } else {
+      request.input(name, sql.Float, value);
+    }
+  } else if (typeof value === "boolean") {
+    request.input(name, sql.Bit, value);
+  } else if (value instanceof Date) {
+    request.input(name, sql.DateTime, value);
+  } else if (Buffer.isBuffer(value)) {
+    request.input(name, sql.VarBinary, value);
+  } else if (typeof value === "object") {
+    request.input(name, sql.NVarChar, JSON.stringify(value));
+  } else {
+    request.input(name, value as string);
+  }
+}
+
+/**
+ * 把查询参数注册到 request：
+ * - SQL 含命名占位符（@sch/@tbl…）时按名绑定（与 sqlserver-support 的写法一致）；
+ * - 否则按位置映射为 @param0..@paramN（与 buildPlaceholder 约定一致）。
+ */
+function bindParams(request: sql.Request, text: string, values?: readonly unknown[]): void {
+  if (!values || values.length === 0) return;
+  const names = extractNamedParams(text);
+  if (names.length > 0) {
+    names.forEach((name, i) => {
+      if (i < values.length) bindInput(request, name, values[i]);
+    });
+  } else {
+    values.forEach((v, i) => bindInput(request, `param${i}`, v));
+  }
+}
+
+/** tedious 查询结果 → 方言无关 QueryResult */
+function toQueryResult<Row>(result: { recordset?: unknown; rowsAffected?: unknown }): QueryResult<Row> {
+  const rows = (result.recordset ?? []) as Row[];
+  return {
+    rows,
+    recordset: rows,
+    rowCount: Array.isArray(result.rowsAffected)
+      ? (result.rowsAffected as number[]).reduce((a, b) => a + b, 0)
+      : undefined,
+  };
+}
 
 export const sqlserverStrategy: Strategy = {
   dbType: 'sqlserver' as const,
@@ -116,10 +204,18 @@ export const sqlserverStrategy: Strategy = {
                    WHERE s.name = @sch AND t.name = @tbl`,
   },
   
-  buildInsertSQL: (params) => ({
-    sql: `INSERT INTO ${sqlserverStrategy.quoteIdentifier(params.table)} (${params.columns.map(c => sqlserverStrategy.quoteIdentifier(c)).join(', ')}) VALUES (${params.columns.map((_, i) => sqlserverStrategy.buildPlaceholder(i)).join(', ')})`,
-    values: params.values
-  }),
+  buildInsertSQL: (params) => {
+    const colCount = params.columns.length;
+    // 只接受列数完整的行；@paramN 占位符按「行优先」顺序编号，与扁平 values 一一对应
+    const rows = params.values.filter((r) => Array.isArray(r) && r.length === colCount);
+    const valueGroups = rows.map((_, r) =>
+      `(${params.columns.map((_, c) => sqlserverStrategy.buildPlaceholder(r * colCount + c)).join(', ')})`
+    );
+    return {
+      sql: `INSERT INTO ${quoteQualifiedTable(params.table, sqlserverStrategy.quoteIdentifier)} (${params.columns.map(c => sqlserverStrategy.quoteIdentifier(c)).join(', ')}) VALUES ${valueGroups.join(", ")}`,
+      values: rows.flat(),
+    };
+  },
   
   parseExplainResult: (result) => Effect.gen(function* () {
     // SQL Server EXPLAIN 解析 (SHOWPLAN_XML)
@@ -163,29 +259,72 @@ export function createMssqlConnector(
   session: SqlServerSessionConnection,
   deps: MssqlConnectorDeps
 ): DbConnector {
-  const textOf = (spec: string | QuerySpec): string => (typeof spec === "string" ? spec : spec.text);
-
   const strategy: ConnectorStrategy = {
     dbKind: "sqlserver",
 
-    async query<Row = any>(spec: string | QuerySpec, _params?: readonly unknown[]): Promise<QueryResult<Row>> {
-      const result = await session.backGroundPool.request().query(textOf(spec));
-      const rows = (result.recordset ?? []) as Row[];
-      return {
-        rows,
-        recordset: rows,
-        rowCount: Array.isArray(result.rowsAffected)
-          ? result.rowsAffected.reduce((a: number, b: number) => a + b, 0)
-          : undefined,
-      };
+    async query<Row = any>(spec: string | QuerySpec, params?: readonly unknown[]): Promise<QueryResult<Row>> {
+      const text = typeof spec === "string" ? spec : spec.text;
+      const values = typeof spec === "string" ? params : (spec.values ?? params);
+      const request = session.backGroundPool.request();
+      bindParams(request, text, values);
+      const result = await request.query(text);
+      return toQueryResult<Row>(result);
     },
 
     queryAsUser<Row = any>(spec: string | QuerySpec, params?: readonly unknown[]): Promise<QueryResult<Row>> {
       return strategy.query<Row>(spec, params);
     },
 
-    withPoolClient<T>(): Promise<T> {
-      throw new Error("SQL Server 不支持 withPoolClient；请使用 connector.nativePool() + sql.Transaction");
+    async withPoolClient<T>(fn: (client: BorrowedClient) => Promise<T>): Promise<T> {
+      const pool = session.backGroundPool;
+      // tedious 事务：begin 后所有 Request 都绑定到该 transaction，天然满足「同一连接多语句」
+      const transaction = new sql.Transaction(pool);
+      await transaction.begin();
+      let settled = false; // commit/rollback 已执行，防止重复结束事务
+      const borrowed: BorrowedClient = {
+        async query<Row = any>(spec: string | QuerySpec, params?: readonly unknown[]) {
+          const text = typeof spec === "string" ? spec : spec.text;
+          const values = typeof spec === "string" ? params : (spec.values ?? params);
+          const request = new sql.Request(transaction);
+          bindParams(request, text, values);
+          const result = await request.query(text);
+          return toQueryResult<Row>(result);
+        },
+        exec: async (sqlText: string) => {
+          await new sql.Request(transaction).query(sqlText);
+        },
+        beginTransaction: async () => {
+          // 事务已在进入 withPoolClient 时开启，此处为空操作保持契约一致
+        },
+        commit: async () => {
+          if (settled) return;
+          settled = true;
+          await transaction.commit();
+        },
+        rollback: async () => {
+          if (settled) return;
+          settled = true;
+          await transaction.rollback();
+        },
+      };
+      try {
+        const result = await fn(borrowed);
+        if (!settled) {
+          settled = true;
+          await transaction.commit();
+        }
+        return result;
+      } catch (e) {
+        if (!settled) {
+          settled = true;
+          try {
+            await transaction.rollback();
+          } catch {
+            // 回滚失败不掩盖原始错误
+          }
+        }
+        throw e;
+      }
     },
 
     async startStream(plan, statements, batchSize): Promise<StreamBatch> {

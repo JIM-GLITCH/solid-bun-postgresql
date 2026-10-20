@@ -11,7 +11,7 @@ import type { PostgresSessionConnection } from "../../session-connection";
 import { createConnector, withDeadRetry, type ConnectorStrategy } from "../../db/connector";
 import type { BorrowedClient, DbConnector, QueryResult, QuerySpec, StreamBatch } from "../../db/contract";
 import { buildPostgresSchemaContext } from "../../db/schema-context";
-import type { Strategy } from "../db-service-effect";
+import { quoteQualifiedTable, type Strategy } from "../db-service-effect";
 
 export const postgresStrategy: Strategy = {
   dbType: 'postgres' as const,
@@ -103,10 +103,18 @@ export const postgresStrategy: Strategy = {
                    WHERE n.nspname = $1 AND c.relname = $2`,
   },
   
-  buildInsertSQL: (params) => ({
-    sql: `INSERT INTO ${postgresStrategy.quoteIdentifier(params.table)} (${params.columns.map(c => postgresStrategy.quoteIdentifier(c)).join(', ')}) VALUES (${params.columns.map((_, i) => postgresStrategy.buildPlaceholder(i + 1)).join(', ')})`,
-    values: params.values
-  }),
+  buildInsertSQL: (params) => {
+    const colCount = params.columns.length;
+    // 只接受列数完整的行；驱动占位符按「行优先」顺序编号，与扁平 values 一一对应
+    const rows = params.values.filter((r) => Array.isArray(r) && r.length === colCount);
+    const valueGroups = rows.map((_, r) =>
+      `(${params.columns.map((_, c) => postgresStrategy.buildPlaceholder(r * colCount + c + 1)).join(", ")})`
+    );
+    return {
+      sql: `INSERT INTO ${quoteQualifiedTable(params.table, postgresStrategy.quoteIdentifier)} (${params.columns.map(c => postgresStrategy.quoteIdentifier(c)).join(', ')}) VALUES ${valueGroups.join(", ")}`,
+      values: rows.flat(),
+    };
+  },
   
   parseExplainResult: (result) => Effect.try(() => {
     const row = result.rows[0];

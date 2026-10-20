@@ -13,7 +13,7 @@ import type { MysqlSessionConnection } from "../../session-connection";
 import { createConnector, withDeadRetry, type ConnectorStrategy } from "../../db/connector";
 import type { BorrowedClient, DbConnector, QueryResult, QuerySpec, StreamBatch } from "../../db/contract";
 import { buildMysqlSchemaContext } from "../../db/schema-context";
-import type { Strategy } from "../db-service-effect";
+import { quoteQualifiedTable, type Strategy } from "../db-service-effect";
 
 // ── 会话监控 helper（原 mysql-db-handlers.ts 内部实现，按 DbConnector 契约移植） ──
 
@@ -256,10 +256,16 @@ export const mysqlStrategy: Strategy = {
                    WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?`,
   },
   
-  buildInsertSQL: (params) => ({
-    sql: `INSERT INTO ${mysqlStrategy.quoteIdentifier(params.table)} (${params.columns.map(c => mysqlStrategy.quoteIdentifier(c)).join(', ')}) VALUES (${params.columns.map(() => '?').join(', ')})`,
-    values: params.values
-  }),
+  buildInsertSQL: (params) => {
+    const colCount = params.columns.length;
+    // 只接受列数完整的行；? 占位符按「行优先」顺序展开，与扁平 values 一一对应
+    const rows = params.values.filter((r) => Array.isArray(r) && r.length === colCount);
+    const valueGroups = rows.map(() => `(${params.columns.map(() => '?').join(', ')})`);
+    return {
+      sql: `INSERT INTO ${quoteQualifiedTable(params.table, mysqlStrategy.quoteIdentifier)} (${params.columns.map(c => mysqlStrategy.quoteIdentifier(c)).join(', ')}) VALUES ${valueGroups.join(", ")}`,
+      values: rows.flat(),
+    };
+  },
   
   parseExplainResult: (result) => Effect.gen(function* () {
     // MySQL EXPLAIN 解析

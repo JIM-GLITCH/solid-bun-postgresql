@@ -175,7 +175,7 @@ type DbResults = {
   'db/function-ddl': { ddl: string; error?: string };
   'db/schema-dump': { dump: string; error?: string };
   'db/database-dump': { dump: string; error?: string };
-  'db/import-rows': { success: boolean; rowCount?: number; error?: string };
+  'db/import-rows': { success: boolean; rowCount?: number; failed?: Array<{ index: number; error: string }>; error?: string };
   'db/session-monitor': SessionMonitorResult;
   'db/session-control': { success: boolean; pid: number; action: 'cancel' | 'terminate' };
   'db/installed-extensions': InstalledExtensionsResult;
@@ -351,8 +351,8 @@ export const dbRouter = t.router({
     .input(
       z.object({
         ...schemaTable,
-        columns: z.array(z.string()),
-        rows: z.array(z.array(z.unknown())),
+        columns: z.array(z.string()).max(1000),
+        rows: z.array(z.array(z.unknown())).max(200000),
         conflictColumns: z.array(z.string()).optional(),
         onConflict: z.enum(['nothing', 'update']).optional(),
         onError: z.enum(['rollback', 'discard']).optional(),

@@ -5,14 +5,10 @@
  * 数据结构：Connection[] 扁平列表
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { StoredConnectionParams, DbKind } from "../shared/src";
-
-const ALG = "aes-256-gcm";
-const KEY_LEN = 32;
-const IV_LEN = 12;
+import { encrypt, decrypt, getCredentialStoreBaseDir, atomicWriteJson } from "./crypto-store";
 
 export interface StoredConnectionMeta {
   id: string;
@@ -34,48 +30,7 @@ interface StoredConnectionItem {
 export type ConnectionList = StoredConnectionItem[];
 
 function getStorePath(): string {
-  const base =
-    process.env.CONNECTIONS_STORE_DIR ||
-    (typeof process !== "undefined" && (process as any).platform === "win32"
-      ? join(process.env.APPDATA || process.env.LOCALAPPDATA || process.cwd(), "db-client")
-      : join(process.env.HOME || "/tmp", ".db-client"));
-  return join(base, "connections.json");
-}
-
-function getOrDeriveKey(): Buffer {
-  const envKey = process.env.CONNECTIONS_ENCRYPTION_KEY;
-  if (envKey && /^[0-9a-fA-F]{64}$/.test(envKey)) {
-    return Buffer.from(envKey, "hex");
-  }
-  const storePath = getStorePath();
-  const keyPath = join(dirname(storePath), ".key");
-  if (existsSync(keyPath)) {
-    return Buffer.from(readFileSync(keyPath, "utf8"), "hex");
-  }
-  const key = randomBytes(KEY_LEN);
-  mkdirSync(dirname(storePath), { recursive: true });
-  writeFileSync(keyPath, key.toString("hex"), { mode: 0o600 });
-  return key;
-}
-
-function encrypt(plaintext: string): string {
-  const key = getOrDeriveKey();
-  const iv = randomBytes(IV_LEN);
-  const cipher = createCipheriv(ALG, key, iv);
-  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, enc]).toString("base64");
-}
-
-function decrypt(encrypted: string): string {
-  const key = getOrDeriveKey();
-  const buf = Buffer.from(encrypted, "base64");
-  const iv = buf.subarray(0, IV_LEN);
-  const tag = buf.subarray(IV_LEN, IV_LEN + 16);
-  const data = buf.subarray(IV_LEN + 16);
-  const decipher = createDecipheriv(ALG, key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  return join(getCredentialStoreBaseDir(), "connections.json");
 }
 
 function makeLabel(params: StoredConnectionParams): string {
@@ -129,14 +84,19 @@ function loadRaw(): ConnectionList {
     }
     return result;
   } catch {
+    // 文件损坏：先备份，再返回空列表，避免 saveRaw 以空列表覆盖、静默清空所有已保存连接
+    try {
+      const p = getStorePath();
+      if (existsSync(p)) renameSync(p, `${p}.corrupt-${Date.now()}`);
+    } catch {
+      /* 备份失败也继续：返回空列表 */
+    }
     return [];
   }
 }
 
 function saveRaw(list: ConnectionList): void {
-  const path = getStorePath();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(list, null, 2), { mode: 0o600 });
+  atomicWriteJson(getStorePath(), list);
 }
 
 /** 获取已保存连接列表 */
@@ -181,8 +141,18 @@ export function updateConnectionMeta(id: string, meta: { name?: string }): void 
   if (idx === -1) return;
   const item = list[idx];
   if (meta.name !== undefined) {
-    item.label = meta.name.trim() || makeLabel(JSON.parse(decrypt(item.enc)) as StoredConnectionParams);
-    item.name = meta.name.trim() || undefined;
+    const newName = meta.name.trim() || undefined;
+    item.name = newName;
+    if (newName) {
+      item.label = newName;
+    } else {
+      // 仅在清空名称时尝试从密文还原 label；解密失败（密钥轮换/文件损坏）不应抛出，避免调用方 500
+      try {
+        item.label = makeLabel(JSON.parse(decrypt(item.enc)) as StoredConnectionParams);
+      } catch {
+        /* 保留现有 label */
+      }
+    }
   }
   saveRaw(list);
 }

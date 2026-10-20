@@ -5,15 +5,22 @@ services:
     image: postgres:16
     container_name: some-postgres
     environment:
-      POSTGRES_PASSWORD: secret
+      # 不要使用弱口令：通过环境变量注入，本地未设置时给一个强默认值而非 "secret"
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-C2h9a8n8g3e-strong}
       # 可选：预创建数据库和用户
       POSTGRES_DB: mydb
       POSTGRES_USER: postgres
     ports:
-      - "5432:5432"
+      # 仅暴露到本机回环，避免数据库端口对全网开放
+      - "127.0.0.1:5432:5432"
     volumes:
       # 持久化数据路径，自行调整宿主机目录
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:

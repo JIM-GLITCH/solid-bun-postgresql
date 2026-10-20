@@ -45,7 +45,8 @@ export async function getSqlServerDbConfig(params: PostgresLoginParams): Promise
     pool: { max: maxPool, min: 0, idleTimeoutMillis: 30_000 },
     options: {
       encrypt: true,
-      trustServerCertificate: true,
+      // 默认校验服务器证书；仅当用户在连接参数中显式勾选「信任自签名证书」时才关闭校验
+      trustServerCertificate: params.trustServerCertificate === true,
       enableArithAbort: true,
     },
   };

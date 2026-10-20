@@ -53,7 +53,8 @@ export interface Strategy {
   };
   
   // 特殊处理函数
-  readonly buildInsertSQL: (params: InsertParams) => { sql: string; values: any[] };
+  /** values 为「一行一组」的二维数组；返回的 values 为驱动所需的扁平数组 */
+  readonly buildInsertSQL: (params: InsertParams) => { sql: string; values: unknown[] };
   readonly parseExplainResult: (result: QueryResult) => Effect.Effect<ExplainPlan, Error>;
   
   // 数据库特有handler
@@ -71,7 +72,22 @@ export interface Strategy {
 export interface InsertParams {
   table: string;
   columns: string[];
-  values: any[];
+  /** 二维数组：每个元素是一行（长度应与 columns 一致，多余/不足的列将被忽略/置 NULL 由调用方保证） */
+  values: readonly unknown[][];
+}
+
+/**
+ * 按方言引号函数引用限定表名：`schema.table` → `"schema"."table"`。
+ * 不能对整个限定名加一层引号——`"public.users"` 在 PostgreSQL 中是名为 `public.users` 的单一标识符。
+ * 与前端 `qualifiedTableForDdl`（frontend/sql-ddl-quote.ts）行为一致。
+ */
+export function quoteQualifiedTable(qualified: string, quote: (id: string) => string): string {
+  return qualified
+    .split(".")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => quote(part))
+    .join(".");
 }
 
 export interface QueryResult {

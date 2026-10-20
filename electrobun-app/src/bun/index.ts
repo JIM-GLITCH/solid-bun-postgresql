@@ -43,7 +43,12 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
   handlers: {
     requests: {
       api_request: async ({ method, payload, licenseJwt }) => {
-        await assertSubscriptionLicensed(licenseJwt ?? null);
+        // 仅「订阅校验」这一高级特性入口需要 license（与服务端一致：只有 subscription.assert 调用
+        // assertSubscriptionLicensed）。其余 db/*、connections/* 等不应强制订阅，否则整个应用不可用。
+        // 注：前端 assertFeatureSubscription 在 electrobun 下为 no-op，订阅校验已收敛到此 RPC 层。
+        if (method === "subscription/assert") {
+          await assertSubscriptionLicensed(licenseJwt ?? null);
+        }
         if (method === "subscribe-events") {
           const sessionId = (payload as { sessionId?: string })?.sessionId;
           if (!sessionId) throw new Error("subscribe-events requires sessionId");

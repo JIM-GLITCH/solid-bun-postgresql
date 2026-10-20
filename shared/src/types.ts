@@ -80,6 +80,11 @@ export interface PostgresLoginParams {
   sshPrivateKey?: string;
   /** SSH/数据库连接超时（秒），默认 30 */
   connectionTimeoutSec?: number;
+  /**
+   * SQL Server：信任服务器证书（含自签名/过期）。默认 false——「加密但不验身份」
+   * 会使中间人可冒充数据库服务器。仅内网自签证书场景由用户显式开启。
+   */
+  trustServerCertificate?: boolean;
 }
 
 /** 连接请求：包含 connectionId 和连接参数 */

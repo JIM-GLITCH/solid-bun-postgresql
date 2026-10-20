@@ -13,9 +13,39 @@ import { disconnectConnection } from "./api-core";
 
 export const DB_DISCONNECT_PATH = "/api/db/disconnect";
 
+/**
+ * 同源校验：仅接受来自本服务自身的请求（页面卸载 keepalive 的场景 Origin/Host 一致）。
+ * connectionId 的 sessionId 段由客户端自选，无此校验时任意站点可冒充断开他人会话。
+ */
+function isSameOriginRequest(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  const referer = req.headers.get("referer");
+  // 两者都没有（如部分原生客户端）：放行
+  if (!origin && !referer) return true;
+  let ownHost: string;
+  try {
+    ownHost = new URL(req.url).host;
+  } catch {
+    return false;
+  }
+  const sameHost = (value: string): boolean => {
+    try {
+      return new URL(value).host === ownHost;
+    } catch {
+      return false;
+    }
+  };
+  if (origin && sameHost(origin)) return true;
+  if (referer && sameHost(referer)) return true;
+  return false;
+}
+
 /** `POST /api/db/disconnect`：页面卸载时的 keepalive 断开（响应无人消费，失败不重试）。 */
 export async function handleDbDisconnectBeacon(req: Request): Promise<Response> {
   try {
+    if (!isSameOriginRequest(req)) {
+      return new Response("Cross-origin request rejected", { status: 403 });
+    }
     const payload = (await req.json()) as { connectionId?: string; dbType?: string };
     if (!payload?.connectionId) {
       return new Response("缺少 connectionId", { status: 400 });

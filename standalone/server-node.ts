@@ -121,8 +121,11 @@ async function setupStatic() {
     }
   });
 
-  serve({ fetch: app.fetch, port: PORT });
-  console.log(`API server at http://localhost:${PORT} (Node)`);
+  // 默认仅监听回环：本服务的 tRPC 面无鉴权（含明文取密码的 connections.getParams），
+  // 绑定 0.0.0.0 会把数据库凭据暴露给整个局域网。确需局域网访问时显式设 HOST=0.0.0.0。
+  const HOST = process.env.HOST || "127.0.0.1";
+  serve({ fetch: app.fetch, port: PORT, hostname: HOST });
+  console.log(`API server at http://${HOST}:${PORT} (Node)`);
   if (isDev) console.log(`  → Vite proxies /api to this port`);
 }
 

@@ -171,7 +171,8 @@ export function isMysqlUserClientDeadError(e: unknown): boolean {
 
 export function isSqlServerPoolDeadError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e ?? "");
-  return /ECONNRESET|Connection lost|socket|timeout|closed|Failed to connect|broken/i.test(msg);
+  // 收窄：裸 `socket|timeout|closed|broken` 过于宽泛，普通 SQL 错误文案含这些词会被误判为断连而重建连接。
+  return /ECONNRESET|Connection lost|connection reset by peer|socket closed|broken pipe|Failed to connect|connection forcibly closed|communication link failure/i.test(msg);
 }
 
 // ── 查询专用连接的重建 ────────────────────────────────────────

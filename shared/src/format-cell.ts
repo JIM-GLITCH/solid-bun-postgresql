@@ -243,7 +243,6 @@ export function formatSqlValue(
       if (dialect === "sqlserver") return value ? "1" : "0";
       return value ? "TRUE" : "FALSE";
     }
-    if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
     if (value instanceof Date) {
       const s = value.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
       return `'${s.replace(/'/g, "''")}'`;
@@ -278,7 +277,6 @@ export function formatSqlValue(
     return `'${value.replace(/'/g, "''")}'`;
   }
 
-  if (typeof value === "string" && value.trim().toLowerCase() === "null") return "NULL";
   if (typeof value === "number") return String(value);
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
 

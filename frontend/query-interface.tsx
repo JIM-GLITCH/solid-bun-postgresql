@@ -101,6 +101,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
   const [modifiedCells, setModifiedCells] = createStore<boolean[][]>([]);  // 单元格修改状态
   const [queryDuration, setQueryDuration] = createSignal<number | null>(null);  // 查询耗时（毫秒）
   const [notices, setNotices] = createSignal<SSEMessage[]>([]);  // 数据库通知消息
+  /** 查询序号：每次发起新查询自增；响应返回后若已不是最新序号则丢弃，防止并发查询交错/覆盖结果 */
+  const [queryRequestSeq, setQueryRequestSeq] = createSignal(0);
   const [sseConnected, setSseConnected] = createSignal(false);  // SSE 连接状态
   const [messagesCollapsed, setMessagesCollapsed] = createSignal(true);  // 消息面板折叠状态，默认折叠
   const [hasMore, setHasMore] = createSignal(false);  // 是否还有更多数据
@@ -474,6 +476,11 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (!cid) return;
     const sqlToRun = overrideSql ?? sql();
     if (!sqlToRun.trim()) return;
+    // 并发守卫：Ctrl+Enter 快捷键绕过按钮 disabled，连发两次会导致两个请求交错写入结果集。
+    // loading 守卫阻止重入；序号守卫在并发响应乱序时丢弃过期响应。
+    if (loading()) return;
+    const mySeq = queryRequestSeq() + 1;
+    setQueryRequestSeq(mySeq);
     const statements = getStatementsFromText(sqlToRun);
     setLoading(true);
     setError(null);
@@ -492,6 +499,9 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     try {
       const data = await trpc.db.queryStream.mutate({ ...dbConn(cid), statements: statements, batchSize: 100, defaultSchema: mysqlDefaultSchemaForConn(cid) });
       // 失败经 tRPC reject 抛出，由下方 catch 统一处理；StreamBatch 无 error 字段
+
+      // 已有更新的查询发出，本响应过期，丢弃（避免结果集/列元数据被旧响应覆盖）
+      if (mySeq !== queryRequestSeq()) return;
 
       // 设置列信息；列数不变时保留已有列宽，避免 Set null/保存后突变
       const newCols = data.columns || [];
@@ -1088,6 +1098,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
     if (!dbCaps().resultCellEdit) return;
     const cid = props.activeConnectionId?.();
     if (!cid) return;
+    // 并发守卫：Ctrl+S 快捷键可绕过按钮状态连发两次，导致同一批 pending 被两个循环各执行一遍、同一条 UPDATE 落库两次。
+    if (saving()) return;
 
     setSaving(true);
     setError(null);

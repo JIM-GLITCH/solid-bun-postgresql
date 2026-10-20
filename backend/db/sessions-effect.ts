@@ -113,43 +113,55 @@ async function openSession(
 
   if (dbType === "sqlserver") {
     const db: GetSqlServerDbConfigResult = await getSqlServerDbConfig(loginParams);
-    const pool = await openSqlServerPool(db);
-    const session: SessionConnection = {
-      dbKind: "sqlserver",
-      userUsedClient: pool,
-      backGroundPool: pool,
-      dbForReconnect: db,
-      eventPushers: new Set(),
-      closeTunnel: db.closeTunnel,
-    };
-    const connector = createMssqlConnector(session, {
-      connectionId: cid,
-      capabilities: defaultDatabaseCapabilities("sqlserver"),
-    });
-    return { session, connector, dbType: "sqlserver" };
+    try {
+      const pool = await openSqlServerPool(db);
+      const session: SessionConnection = {
+        dbKind: "sqlserver",
+        userUsedClient: pool,
+        backGroundPool: pool,
+        dbForReconnect: db,
+        eventPushers: new Set(),
+        closeTunnel: db.closeTunnel,
+      };
+      const connector = createMssqlConnector(session, {
+        connectionId: cid,
+        capabilities: defaultDatabaseCapabilities("sqlserver"),
+      });
+      return { session, connector, dbType: "sqlserver" };
+    } catch (e) {
+      // getSqlServerDbConfig 内部可能已建立 SSH 隧道；建连失败时 acquireRelease 不会触发 release，
+      // 必须显式关闭隧道，否则 net.Server 持续 listen 127.0.0.1、ssh2 Client 不 end（重试累积泄漏）
+      await db.closeTunnel?.().catch(() => {});
+      throw e;
+    }
   }
 
   if (isMysqlFamily(dbType)) {
     const db: GetMysqlDbConfigResult = await getMysqlDbConfig(loginParams);
-    const pool = createMysqlPool(db);
-    const userConn = await pool.getConnection();
-    const initialDb = String(loginParams.database ?? "").trim();
-    const session: SessionConnection = {
-      dbKind: dbType,
-      userUsedClient: userConn,
-      backGroundPool: pool,
-      dbForReconnect: db,
-      eventPushers: new Set(),
-      closeTunnel: db.closeTunnel,
-      ...(initialDb ? { mysqlCurrentDatabase: initialDb } : {}),
-    };
-    const connector = createMysqlConnector(session, {
-      connectionId: cid,
-      capabilities: defaultDatabaseCapabilities(dbType),
-      isDeadError: (e) => isConnectionLost(e, "mysql"),
-      recreateUserClient: () => recreateUserClient(cid),
-    });
-    return { session, connector, dbType };
+    try {
+      const pool = createMysqlPool(db);
+      const userConn = await pool.getConnection();
+      const initialDb = String(loginParams.database ?? "").trim();
+      const session: SessionConnection = {
+        dbKind: dbType,
+        userUsedClient: userConn,
+        backGroundPool: pool,
+        dbForReconnect: db,
+        eventPushers: new Set(),
+        closeTunnel: db.closeTunnel,
+        ...(initialDb ? { mysqlCurrentDatabase: initialDb } : {}),
+      };
+      const connector = createMysqlConnector(session, {
+        connectionId: cid,
+        capabilities: defaultDatabaseCapabilities(dbType),
+        isDeadError: (e) => isConnectionLost(e, "mysql"),
+        recreateUserClient: () => recreateUserClient(cid),
+      });
+      return { session, connector, dbType };
+    } catch (e) {
+      await db.closeTunnel?.().catch(() => {});
+      throw e;
+    }
   }
 
   if (dbType !== "postgres") {
@@ -157,23 +169,28 @@ async function openSession(
   }
 
   const db: GetDbConfigResult = await getDbConfig(loginParams);
-  const client = await connectPostgres(db);
-  const adminPool = createPostgresPool(db);
-  const session: SessionConnection = {
-    dbKind: "postgres",
-    userUsedClient: client,
-    backGroundPool: adminPool,
-    dbForReconnect: db,
-    eventPushers: new Set(),
-    closeTunnel: db.closeTunnel,
-  };
-  const connector = createPgConnector(session, {
-    connectionId: cid,
-    capabilities: defaultDatabaseCapabilities("postgres"),
-    isDeadError: (e) => isConnectionLost(e, "postgres"),
-    recreateUserClient: () => recreateUserClient(cid),
-  });
-  return { session, connector, dbType: "postgres" };
+  try {
+    const client = await connectPostgres(db);
+    const adminPool = createPostgresPool(db);
+    const session: SessionConnection = {
+      dbKind: "postgres",
+      userUsedClient: client,
+      backGroundPool: adminPool,
+      dbForReconnect: db,
+      eventPushers: new Set(),
+      closeTunnel: db.closeTunnel,
+    };
+    const connector = createPgConnector(session, {
+      connectionId: cid,
+      capabilities: defaultDatabaseCapabilities("postgres"),
+      isDeadError: (e) => isConnectionLost(e, "postgres"),
+      recreateUserClient: () => recreateUserClient(cid),
+    });
+    return { session, connector, dbType: "postgres" };
+  } catch (e) {
+    await db.closeTunnel?.().catch(() => {});
+    throw e;
+  }
 }
 
 /**
@@ -193,6 +210,8 @@ function recreateUserClient(cid: ConnectionId): Promise<void> {
 /** 构造 DbSessions 服务（需要 Layer 提供的 scope 承载 keepalive fiber） */
 function makeSessions(): Effect.Effect<DbSessionsShape, Error, Scope.Scope> {
   return Effect.gen(function* () {
+  /** 本服务实例引用：connect 串行队列需要把 inner Effect 提供回本服务执行 */
+  let self: DbSessionsShape;
   const entries = yield* Ref.make(new Map<ConnectionId, Entry>());
   const keepalives = yield* FiberMap.make<ConnectionId, void, never>();
   // 服务级 scope：keepalive fiber 挂在这里，跨多次 runPromise 存活
@@ -280,7 +299,7 @@ function makeSessions(): Effect.Effect<DbSessionsShape, Error, Scope.Scope> {
       yield* Scope.close(entry.scope, Exit.void);
     });
 
-  const connect: DbSessionsShape["connect"] = (spec) =>
+  const connectInner = (spec: ConnectDbRequest): Effect.Effect<{ success: true; connectionId: string; dbType: DbKind }, Error> =>
     Effect.gen(function* () {
       const cid = spec.connectionId;
       // 同 id 已存在：先断开（幂等）
@@ -318,6 +337,34 @@ function makeSessions(): Effect.Effect<DbSessionsShape, Error, Scope.Scope> {
       yield* startKeepalive(entry);
 
       return { success: true as const, connectionId: cid, dbType: opened.dbType };
+    });
+
+  /**
+   * 同 cid 的 connect 串行化。
+   * 两个并发 connect 都会通过 `getEntry` 判定"不存在"，各自创建 Scope 并写入投影，
+   * 后写者覆盖前写者——被覆盖 entry 的 Scope 永不 close，其连接/池/隧道全部泄漏。
+   */
+  const connectQueues = new Map<ConnectionId, Promise<unknown>>();
+  const runConnect = (spec: ConnectDbRequest) =>
+    Effect.runPromise(connectInner(spec).pipe(Effect.provideService(DbSessions, self)));
+  const connect: DbSessionsShape["connect"] = (spec) =>
+    Effect.gen(function* () {
+      const cid = spec.connectionId;
+      const prev = connectQueues.get(cid) ?? Promise.resolve();
+      // 前一个 connect 失败不应阻断本次重试，因此 fulfilled/rejected 两条路径都继续
+      const result = prev.then(
+        () => runConnect(spec),
+        () => runConnect(spec)
+      );
+      const slot: Promise<unknown> = result.then(
+        () => undefined,
+        () => undefined
+      );
+      connectQueues.set(cid, slot);
+      void slot.then(() => {
+        if (connectQueues.get(cid) === slot) connectQueues.delete(cid);
+      });
+      return yield* Effect.promise(() => result);
     });
 
   const disconnect: DbSessionsShape["disconnect"] = (cid) =>
@@ -376,7 +423,8 @@ function makeSessions(): Effect.Effect<DbSessionsShape, Error, Scope.Scope> {
     });
   });
 
-  return { connect, disconnect, reconnect, emit, getConnector, count, disposeAll };
+  self = { connect, disconnect, reconnect, emit, getConnector, count, disposeAll };
+  return self;
   });
 }
 

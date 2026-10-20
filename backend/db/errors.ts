@@ -60,7 +60,9 @@ export function toDbError(kind: DbErrorKind, e: unknown, dbKind?: string): DbErr
 const FALLBACK = {
   postgres: /not queryable|connection error|Connection terminated/i,
   mysql: /Connection lost|ECONNRESET|PROTOCOL_CONNECTION_LOST|not connected/i,
-  sqlserver: /ECONNRESET|Connection lost|socket|timeout|closed|Failed to connect|broken/i,
+  // 注意：不能包含裸 `socket|timeout|closed|broken`——普通 SQL 错误文案若含这些词会被误判为断连，
+  // 进而触发重建、关掉正在使用的连接。仅匹配明确的连接层错误。
+  sqlserver: /ECONNRESET|Connection lost|connection reset by peer|socket closed|broken pipe|Failed to connect|connection forcibly closed|communication link failure/i,
 } as const;
 
 export type DialectKey = keyof typeof FALLBACK;

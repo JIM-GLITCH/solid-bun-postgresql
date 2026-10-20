@@ -426,8 +426,13 @@ async function openDbPlayerWebview(context: vscode.ExtensionContext, deps: Subsc
 
   const csp = [
     "default-src 'none'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
     // 使用 webview.cspSource 即可，不要把具体 script URI 塞进 script-src（会被判定为无效 source）
-    "script-src 'unsafe-inline' 'unsafe-eval' " + webview.cspSource,
+    // 移除 'unsafe-eval'（Vite/Solid 生产构建不依赖 eval，保留它基本抵消 script-src 防护）；
+    // 'unsafe-inline' 仅用于注入的桌面端启动脚本（hostScript），属必要项
+    "script-src 'unsafe-inline' " + webview.cspSource,
     "style-src 'unsafe-inline' " + webview.cspSource,
     "font-src " + webview.cspSource + " data:",
     "img-src " + webview.cspSource + " data:",

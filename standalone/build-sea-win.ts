@@ -12,18 +12,28 @@ const nodeCmd = "node";
 
 const outDir = join(import.meta.dir, "out");
 
+/** 构建并校验结果：Bun.build 失败仍会返回而非抛错，必须显式检查 success 避免产出静默损坏的产物 */
+async function buildOrFail(label: string, opts: Parameters<typeof Bun.build>[0]): Promise<void> {
+  const result = await Bun.build(opts);
+  if (!result.success) {
+    console.error(`❌ ${label} 失败：`);
+    for (const log of result.logs) console.error(log);
+    process.exit(1);
+  }
+  console.log(`✅ ${label}\n`);
+}
+
 console.log("📦 [1/4] Building frontend (bun build)...");
-await Bun.build({
+await buildOrFail("Frontend", {
   entrypoints: [join(import.meta.dir, "../index.html")],
   outdir: outDir,
   target: "browser",
   minify: true,
   plugins: [SolidPlugin()],
 });
-console.log("✅ Frontend built\n");
 
 console.log("📦 [2/4] Building backend (bun build)...");
-await Bun.build({
+await buildOrFail("Backend", {
   entrypoints: [join(import.meta.dir, "server-node.ts")],
   outdir: outDir,
   plugins: [SolidPlugin()],
@@ -32,7 +42,6 @@ await Bun.build({
   minify: true,
   external: ["cpu-features"],
 });
-console.log("✅ Backend built\n");
 
 console.log("📦 [3/4] Generating SEA config...");
 // cpu-features 为 ssh2 可选依赖，SEA 嵌入后无 node_modules，ssh2 会走纯 JS 路径

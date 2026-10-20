@@ -12,20 +12,30 @@ const outDir = join(import.meta.dir, "out");
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 
+/** 构建并校验结果：Bun.build 失败仍会返回而非抛错，必须显式检查 success 避免产出静默损坏的产物 */
+async function buildOrFail(label: string, opts: Parameters<typeof Bun.build>[0]): Promise<void> {
+  const result = await Bun.build(opts);
+  if (!result.success) {
+    console.error(`❌ ${label} 失败：`);
+    for (const log of result.logs) console.error(log);
+    process.exit(1);
+  }
+  console.log(`✅ ${label}\n`);
+}
+
 // ========== 1. 构建前端 ==========
 console.log("📦 [1/4] Building frontend...");
-await Bun.build({
+await buildOrFail("Frontend", {
   entrypoints: [join(import.meta.dir, "../index.html")],
   outdir: outDir,
   target: "browser",
   minify: true,
   plugins: [SolidPlugin()],
 });
-console.log("✅ Frontend built\n");
 
 // ========== 2. 构建后端 ==========
 console.log("📦 [2/4] Building backend...");
-await Bun.build({
+await buildOrFail("Backend", {
   entrypoints: [join(import.meta.dir, "server-node.ts")],
   outdir: outDir,
   plugins: [SolidPlugin()],

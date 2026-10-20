@@ -93,10 +93,15 @@ export async function connectPostgres(db: GetDbConfigResult) {
 }
 
 export function createPostgresPool(db: GetDbConfigResult) {
+  // 单条语句超时（毫秒）：防止一条挂死的查询永久占用唯一的 userUsedClient / 池连接。
+  // 默认 10 分钟，可通过 PG_STATEMENT_TIMEOUT_MS 调整；设为 0 关闭。
+  // 以 pg `options` 形式在每条新连接上执行 SET statement_timeout，对游标 FETCH（每批 100 行）无碍。
+  const stmtTimeout = process.env.PG_STATEMENT_TIMEOUT_MS ? Number(process.env.PG_STATEMENT_TIMEOUT_MS) : 600000;
   const pool = new Pool({
     ...db.config,
     max: db.sshEnabled ? 2 : 6,
     idleTimeoutMillis: 30000,
+    options: `-c statement_timeout=${Number.isFinite(stmtTimeout) ? stmtTimeout : 600000}`,
   });
 
   // 监听连接池错误，避免未捕获的异常导致进程崩溃

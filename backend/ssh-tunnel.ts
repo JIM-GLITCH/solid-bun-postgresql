@@ -44,6 +44,10 @@ export function createSshTunnel(params: PostgresLoginParams): Promise<SshTunnelR
   } else {
     return Promise.reject(new Error("SSH 认证需要 sshPassword 或 sshPrivateKey"));
   }
+  // 端口校验：Number("abc") 得 NaN，晚暴露不如早失败
+  if (!Number.isInteger(remotePort) || remotePort <= 0 || remotePort > 65535) {
+    return Promise.reject(new Error(`SSH 隧道的目标数据库端口无效: ${String(pgPort ?? "")}`));
+  }
 
   return new Promise((resolve, reject) => {
     const conn = new Client();
@@ -53,28 +57,63 @@ export function createSshTunnel(params: PostgresLoginParams): Promise<SshTunnelR
           sock.destroy();
           return;
         }
+        // 双向管道都必须处理 error：ssh2 channel 出错时未监听的 'error' 事件会直接崩溃进程
+        sock.on("error", () => sock.destroy());
+        stream.on("error", () => {
+          sock.destroy();
+          stream.destroy();
+        });
         sock.pipe(stream).pipe(sock);
         stream.on("close", () => sock.destroy());
         sock.on("close", () => stream.end());
       });
     });
 
+    /** 关闭隧道：先断开全部已建立的转发 socket 再停监听，并有超时兜底防止永久挂起 */
+    const close = (): Promise<void> =>
+      new Promise<void>((done) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          done();
+        };
+        // Node 18.2+：closeAllConnections 会销毁 keepalive 等空闲转发 socket，
+        // 否则 server.close 的回调可能永不触发 → closeTunnel 永久 pending → 会话无法释放
+        (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+        server.close(() => {
+          try {
+            conn.end();
+          } catch {
+            /* ignore */
+          }
+          finish();
+        });
+        // 兜底：5s 内未能优雅关闭也强制结束，避免调用方（releaseSession）永久挂起
+        setTimeout(() => {
+          try {
+            conn.end();
+          } catch {
+            /* ignore */
+          }
+          finish();
+        }, 5000).unref?.();
+      });
+
     server.on("listening", () => {
       const localPort = (server.address() as { port: number }).port;
       resolve({
         localPort,
-        close: () =>
-          new Promise<void>((done) => {
-            server.close(() => {
-              conn.end();
-              done();
-            });
-          }),
+        close,
       });
     });
 
     server.on("error", (err) => {
-      conn.end();
+      try {
+        conn.end();
+      } catch {
+        /* ignore */
+      }
       const msg = err?.message ?? String(err);
       if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|timeout/i.test(msg)) {
         reject(new Error(`SSH 隧道建立失败: ${msg}（请检查跳板机地址、端口及数据库 host）`));
@@ -89,12 +128,22 @@ export function createSshTunnel(params: PostgresLoginParams): Promise<SshTunnelR
 
     conn.on("error", (err) => {
       server.close();
+      try {
+        conn.end();
+      } catch {
+        /* ignore */
+      }
       const msg = err?.message ?? String(err);
       if (/ECONNREFUSED|ENOTFOUND|ETIMEDOUT|timeout/i.test(msg)) {
         reject(new Error(`SSH 隧道建立失败: ${msg}（请检查跳板机地址、端口及数据库 host）`));
       } else {
         reject(err);
       }
+    });
+
+    // ready 之后 SSH 连接意外关闭：停掉本地监听，避免隧道静默死亡后句柄泄漏
+    conn.on("close", () => {
+      server.close();
     });
 
     conn.connect(sshConfig);

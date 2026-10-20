@@ -6,6 +6,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { getCookie, setCookie } from "hono/cookie";
 import { pool, queryOne } from "./db";
 import { signJwt, verifyJwt } from "./auth";
 import { getCachedVerifyLicense, setCachedVerifyLicense } from "./verify-license-cache";
@@ -27,13 +28,16 @@ const OAUTH_STATE_MAX_JSON_LENGTH = (() => {
   return Number.isFinite(n) && n >= 500 ? n : 12000;
 })();
 
+/** OAuth state nonce 的 HttpOnly Cookie 名：回调时比对，防止登录 CSRF / 回调 URL 重放 */
+const OAUTH_NONCE_COOKIE = "dbp_oauth_nonce";
+
 /** state：UTF-8 JSON → base64（避免 btoa 在非 Latin1 下抛错导致整段 state 不可用） */
 function encodeGithubOAuthState(payload: { nonce: string; source?: string; redirect?: string }): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
 }
 
 /** 兼容新版 base64(utf8) 与旧版 btoa(JSON) */
-function decodeGithubOAuthState(stateParam: string | undefined): { source?: string; redirect?: string } {
+function decodeGithubOAuthState(stateParam: string | undefined): { nonce?: string; source?: string; redirect?: string } {
   if (!stateParam?.trim()) return {};
   let raw = stateParam.trim();
   try {
@@ -41,13 +45,14 @@ function decodeGithubOAuthState(stateParam: string | undefined): { source?: stri
   } catch {
     /* GitHub 可能已解码 */
   }
-  const normalize = (p: { source?: string; redirect?: string }) => ({
+  const normalize = (p: { nonce?: string; source?: string; redirect?: string }) => ({
+    nonce: typeof p.nonce === "string" ? p.nonce : undefined,
     source: typeof p.source === "string" ? p.source : undefined,
     redirect: typeof p.redirect === "string" ? p.redirect.trim() : undefined,
   });
   const tryParseJson = (json: string) => {
     try {
-      return normalize(JSON.parse(json) as { source?: string; redirect?: string });
+      return normalize(JSON.parse(json) as { nonce?: string; source?: string; redirect?: string });
     } catch {
       return null;
     }
@@ -55,13 +60,13 @@ function decodeGithubOAuthState(stateParam: string | undefined): { source?: stri
   try {
     const json = Buffer.from(raw, "base64").toString("utf8");
     const r = tryParseJson(json);
-    if (r && (r.source !== undefined || r.redirect !== undefined)) return r;
+    if (r && (r.nonce !== undefined || r.source !== undefined || r.redirect !== undefined)) return r;
   } catch {
     /* 继续尝试 atob */
   }
   try {
     const r = tryParseJson(atob(raw));
-    if (r && (r.source !== undefined || r.redirect !== undefined)) return r;
+    if (r && (r.nonce !== undefined || r.source !== undefined || r.redirect !== undefined)) return r;
   } catch {
     /* ignore */
   }
@@ -119,9 +124,9 @@ const CORS_ORIGIN_ALLOWLIST = new Set(
     .filter(Boolean)
 );
 
-/** 将异常转为可给前端展示的字段（便于调试；生产可设 API_DEBUG=0 去掉堆栈） */
+/** 将异常转为可给前端展示的字段（默认不含堆栈/pg 细节；本地调试可设 API_DEBUG=1 开启） */
 function publicError(e: unknown): { error: string; detail: string } {
-  const includeStack = process.env.API_DEBUG !== "0";
+  const includeStack = process.env.API_DEBUG === "1";
   if (e instanceof Error) {
     const pg = e as { code?: string; detail?: string; hint?: string };
     const bits = [e.message];
@@ -226,6 +231,14 @@ app.get("/api/auth/github", (c) => {
   const state = encodeGithubOAuthState(
     stateTruncated ? { nonce: statePayload.nonce, source: statePayload.source } : statePayload
   );
+  // nonce 绑定到发起登录的浏览器（HttpOnly Cookie），回调时校验，阻断登录 CSRF 与回调 URL 重放
+  setCookie(c, OAUTH_NONCE_COOKIE, statePayload.nonce, {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: API_BASE_URL.startsWith("https"),
+    path: "/",
+    maxAge: 600,
+  });
   const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email&state=${encodeURIComponent(state)}`;
   return c.redirect(url);
 });
@@ -244,6 +257,21 @@ app.get("/api/auth/github/callback", async (c) => {
   }
   if (!code) {
     return c.json({ success: false, error: "缺少 code" }, 400);
+  }
+
+  // 登录 CSRF / 回调 URL 重放防护：state 内的 nonce 必须与发起登录时种下的 HttpOnly Cookie 一致。
+  // 无论结果如何都一次性清除该 cookie。
+  const cookieNonce = getCookie(c, OAUTH_NONCE_COOKIE);
+  setCookie(c, OAUTH_NONCE_COOKIE, "", {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: API_BASE_URL.startsWith("https"),
+    path: "/",
+    maxAge: 0,
+  });
+  if (!decoded.nonce || !cookieNonce || cookieNonce !== decoded.nonce) {
+    console.warn("[github callback] OAuth state nonce 与 cookie 不匹配，疑似登录 CSRF 或回调 URL 重放，已拒绝");
+    return c.json({ success: false, error: "OAuth state 校验失败，请重新发起登录" }, 400);
   }
 
   try {
@@ -329,14 +357,15 @@ app.get("/api/auth/github/callback", async (c) => {
       email: email ?? (await queryOne<{ email: string }>("SELECT email FROM users WHERE id = $1", [userId]))?.email ?? null,
     });
 
-    /** http(s)：任意合法 URL 均允许回跳。自定义协议：仅校验 scheme 为常见 URI 形态且与 OAuth state 内 source 一致。 */
+    /** http(s)：仅允许白名单 Origin（FRONTEND_URL / CORS_ORIGINS / 本地回环），杜绝开放重定向导致 JWT 外泄；自定义协议：仅校验 scheme 为常见 URI 形态且与 OAuth state 内 source 一致。 */
     const isAllowedRedirect = (raw?: string, src?: string): raw is string => {
       if (!raw) return false;
       try {
         const u = new URL(raw);
         const protocol = u.protocol.toLowerCase();
         if (protocol === "http:" || protocol === "https:") {
-          return true;
+          const origin = u.origin.toLowerCase();
+          return CORS_ORIGIN_ALLOWLIST.has(origin) || origin === frontOrigin.toLowerCase();
         }
         const scheme = protocol.replace(/:$/, "").toLowerCase();
         // RFC 3986 scheme：ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )

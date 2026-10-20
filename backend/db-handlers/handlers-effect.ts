@@ -371,27 +371,40 @@ export const dbImportRows = (params: {
       return yield* Effect.fail(new Error("缺少 columns 或 rows"));
     }
 
-    const BATCH = 100;
+    // 单语句参数上限保护：pg 上限 65535，留余量后按列数动态缩小每批行数
+    const MAX_PARAMS_PER_STATEMENT = 60000;
+    const BATCH = Math.max(
+      1,
+      Math.min(100, Math.floor(MAX_PARAMS_PER_STATEMENT / Math.max(1, params.columns.length)))
+    );
     let total = 0;
+    const failed: Array<{ index: number; error: string }> = [];
 
     if (params.onError === "rollback") {
       yield* Effect.tryPromise(() =>
         connector.withPoolClient(async (client) => {
-          await client.query("BEGIN");
+          // 方言提供显式事务方法时优先使用（sqlserver 走 sql.Transaction，避免嵌套事务错误）；
+          // 否则回退到 BEGIN/COMMIT 语句（pg）
+          await (client.beginTransaction ? client.beginTransaction() : client.query("BEGIN"));
           try {
             for (let i = 0; i < params.rows.length; i += BATCH) {
               const chunk = params.rows.slice(i, i + BATCH);
               const { sql, values } = strategy.buildInsertSQL({
                 table: `${params.schema}.${params.table}`,
                 columns: params.columns,
-                values: chunk.flat()
+                values: chunk,
               });
+              if (!sql) continue;
               const result = await client.query(sql, values);
               total += result.rowCount ?? chunk.length;
             }
-            await client.query("COMMIT");
+            await (client.commit ? client.commit() : client.query("COMMIT"));
           } catch (e) {
-            await client.query("ROLLBACK");
+            try {
+              await (client.rollback ? client.rollback() : client.query("ROLLBACK"));
+            } catch {
+              // 回滚失败不掩盖原始导入错误
+            }
             throw e;
           }
         })
@@ -403,26 +416,43 @@ export const dbImportRows = (params: {
           const { sql, values } = strategy.buildInsertSQL({
             table: `${params.schema}.${params.table}`,
             columns: params.columns,
-            values: chunk.flat()
+            values: chunk,
           });
+          if (!sql) continue;
           const result = yield* query(sql, values);
           total += result.rowCount ?? chunk.length;
         } catch {
-          for (const row of chunk) {
+          // 整批失败 → 逐行降级，并记录失败行供前端展示
+          for (let r = 0; r < chunk.length; r++) {
             try {
               const { sql, values } = strategy.buildInsertSQL({
                 table: `${params.schema}.${params.table}`,
                 columns: params.columns,
-                values: row
+                values: [chunk[r]!],
               });
+              if (!sql) continue;
               const result = yield* query(sql, values);
               total += result.rowCount ?? 1;
-            } catch {
-              // 丢弃该行
+            } catch (e) {
+              failed.push({
+                index: i + r,
+                error: e instanceof Error ? e.message : String(e),
+              });
             }
           }
         }
       }
+    }
+
+    if (failed.length > 0) {
+      yield* Effect.sync(() =>
+        notify({
+          type: "WARNING",
+          message: `导入完成: ${total} 行成功, ${failed.length} 行失败`,
+          timestamp: Date.now(),
+        })
+      );
+      return { success: false, rowCount: total, failed };
     }
 
     yield* Effect.sync(() =>
