@@ -4,7 +4,7 @@
   "description": "",
   "scripts": {
     "deploy": "bun standalone/deploy.ts",
-    "dev": "cross-env SUBSCRIPTION_OFF=1 DBPLAYER_SUBSCRIPTION_OFF=1 concurrently -n api,vite \"tsx watch --include backend/**/*.ts --include shared/**/*.ts standalone/server-node.ts\" \"vp dev\"",
+    "dev": "concurrently -n api,vite \"tsx watch --include backend/**/*.ts --include shared/**/*.ts standalone/server-node.ts\" \"vp dev\"",
     "dev:standalone": "vp dev -c standalone/vite.config.standalone.ts",
     "build:linux": "bun run standalone/build-linux.ts",
     "build:win": "bun run standalone/build-win.ts",
@@ -17,12 +17,9 @@
     "build:electrobun:frontend": "bun run electrobun-app/build.ts",
     "electrobun:package:canary": "bun run build:electrobun:frontend && bunx electrobun build --env=canary",
     "electrobun:package:stable": "bun run build:electrobun:frontend && bunx electrobun build --env=stable",
-    "electrobun:portable": "bun run electrobun-app/package-portable.ts",
-    "subscription:backend:deploy": "bun run subscription/backend/deploy.ts",
-    "subscription:frontend:deploy": "bun run subscription/frontend/deploy.ts",
-    "subscription:deploy": "bun run subscription/deploy.ts"
+    "electrobun:portable": "bun run electrobun-app/package-portable.ts"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "pkg": {
     "assets": [
       "standalone/out/**"

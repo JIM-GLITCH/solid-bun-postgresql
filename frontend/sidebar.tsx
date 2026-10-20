@@ -4,7 +4,6 @@ import { createStore, produce } from "solid-js/store";
 import Resizable from "@corvu/resizable";
 import { trpc } from "./trpc-client";
 import { dbConn } from "./api";
-import { isVsCodeWebview } from "./platform";
 import CopyTableModal from "./copy-table-modal";
 import DeleteTableModal from "./delete-table-modal";
 import TruncateTableModal from "./truncate-table-modal";
@@ -26,7 +25,6 @@ import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
 import { getRegisteredDbType } from "./db-session-meta";
 import { isMysqlFamily, isSqlServer } from "../shared/src";
 import { mysqlBacktickIdent, pgQuoteIdent, sqlBracketIdent } from "./sql-ddl-quote";
-import { openSubscriptionPortalForCurrentEnvironment } from "./subscription/portal";
 
 /** 侧栏生成「查全表 / TOP / LIMIT」等与方言一致的 SELECT */
 function selectStarFromTableSql(connectionId: string, schema: string, table: string, topN?: number): string {
@@ -200,74 +198,6 @@ export default function Sidebar(props: SidebarProps) {
   const [createSchemaModalCid, setCreateSchemaModalCid] = createSignal<string | null>(null);
   const [deleteSchemaModal, setDeleteSchemaModal] = createSignal<{ connectionId: string; schema: string } | null>(null);
   const [dragOverZone, setDragOverZone] = createSignal<string | null>(null);
-  const [accountText, setAccountText] = createSignal("未登录");
-  const [loggedIn, setLoggedIn] = createSignal(false);
-  let accountRefreshTicket = 0;
-
-  function applyAccountFromHost(payload: {
-    loggedIn: boolean;
-    user?: { id?: number; email?: string | null };
-  }): void {
-    if (!payload.loggedIn) {
-      setLoggedIn(false);
-      setAccountText("未登录");
-      return;
-    }
-    if (!payload.user) {
-      setLoggedIn(true);
-      setAccountText("已登录");
-      return;
-    }
-    const email = payload.user.email?.trim() || "";
-    const uid = payload.user.id != null ? String(payload.user.id) : "";
-    setLoggedIn(true);
-    setAccountText(email || (uid ? `user:${uid}` : "已登录"));
-  }
-
-  async function refreshAccountState(): Promise<void> {
-    ++accountRefreshTicket;
-    const ticket = accountRefreshTicket;
-    try {
-      const data = await trpc.subscription.account.query();
-      if (ticket !== accountRefreshTicket) return;
-      applyAccountFromHost({ loggedIn: !!data.loggedIn, user: data.user });
-    } catch {
-      if (ticket !== accountRefreshTicket) return;
-      setLoggedIn(false);
-      setAccountText("未登录");
-    }
-  }
-
-  function handleLoginOrSwitch(): void {
-    openSubscriptionPortalForCurrentEnvironment();
-  }
-
-  async function handleLogout(): Promise<void> {
-    if (isVsCodeWebview()) {
-      // 宿主动作：清扩展侧凭据（服务端默认「不支持」，由扩展覆盖实现）
-      await trpc.subscription.logout.mutate();
-      return;
-    }
-    try {
-      await fetch(`${window.location.origin}/api/dbplayer/subscription-logout`, {
-        method: "POST",
-        credentials: "include",
-      });
-    } catch {
-      /* ignore */
-    }
-    await refreshAccountState();
-  }
-
-  // 登录态变更：宿主（VSCode 扩展）登录/退出后经 tRPC subscription 推送到 webview；
-  // Web/Standalone 无推送源，登录态由 subscription/account 查询获得。
-  createEffect(() => {
-    if (!isVsCodeWebview()) return;
-    const subscription = trpc.subscription.onAccountState.subscribe(undefined, {
-      onData: (account) => applyAccountFromHost(account),
-    });
-    onCleanup(() => subscription.unsubscribe());
-  });
 
   // 右键菜单打开时，点击文档任意处关闭。必须用 bubble(false)，否则 capture 会先于菜单项 onClick 执行并关闭菜单，导致新建查询/刷新/断开等无反应
   createEffect(() => {
@@ -279,23 +209,6 @@ export default function Sidebar(props: SidebarProps) {
       document.removeEventListener("click", handler, false);
       document.removeEventListener("contextmenu", handler, false);
     });
-  });
-
-  createEffect(() => {
-    const u = new URL(window.location.href);
-    const token = u.searchParams.get("token")?.trim();
-    if (token && typeof fetch !== "undefined") {
-      void fetch(`${window.location.origin}/api/dbplayer/subscription-token`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      }).catch(() => {});
-      u.searchParams.delete("token");
-      u.searchParams.delete("source");
-      window.history.replaceState({}, "", `${u.pathname}${u.search}${u.hash}`);
-    }
-    void refreshAccountState();
   });
 
   /** 从树节点 id 解析 connectionId（schema:/table:/connection: 等格式统一为第 2 段） */
@@ -1962,49 +1875,6 @@ export default function Sidebar(props: SidebarProps) {
         <div style={{ display: "flex", "justify-content": "space-between" }}>
           <span>Connections: {state.nodes.length}</span>
           <span>💡 双击表查询 · 双击函数查看源码</span>
-        </div>
-        <div style={{ display: "flex", "align-items": "center", gap: "8px" }}>
-          <span
-            title={accountText()}
-            style={{
-              flex: 1,
-              overflow: "hidden",
-              "text-overflow": "ellipsis",
-              "white-space": "nowrap",
-            }}
-          >
-            👤 {accountText()}
-          </span>
-          <button
-            onClick={handleLoginOrSwitch}
-            style={{
-              padding: "2px 8px",
-              border: `1px solid ${vscode.border}`,
-              "border-radius": "4px",
-              background: "transparent",
-              color: vscode.foreground,
-              cursor: "pointer",
-              "font-size": "11px",
-            }}
-          >
-            {loggedIn() ? "切换" : "登录"}
-          </button>
-          <button
-            onClick={handleLogout}
-            disabled={!loggedIn()}
-            style={{
-              padding: "2px 8px",
-              border: `1px solid ${vscode.border}`,
-              "border-radius": "4px",
-              background: "transparent",
-              color: loggedIn() ? vscode.foreground : vscode.foregroundDim,
-              cursor: loggedIn() ? "pointer" : "not-allowed",
-              "font-size": "11px",
-              opacity: loggedIn() ? 1 : 0.6,
-            }}
-          >
-            退出
-          </button>
         </div>
       </div>
       </div>

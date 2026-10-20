@@ -14,7 +14,6 @@ import { BrowserWindow, BrowserView } from "electrobun/bun";
 import type { AppRPCType } from "../../../shared/src/electrobun-rpc";
 import { appRouter } from "../../../backend/trpc";
 import { getSession, subscribeSessionEvents } from "../../../backend/api-core";
-import { assertSubscriptionLicensed } from "../../../backend/subscription-license";
 
 /** 当前主窗口的 webview，用于推送 backend_event */
 let mainWebview: { rpc: { send: { backend_event: (p: unknown) => void } } } | null = null;
@@ -42,13 +41,7 @@ const appRPC = BrowserView.defineRPC<AppRPCType>({
   maxRequestTime: 30000,
   handlers: {
     requests: {
-      api_request: async ({ method, payload, licenseJwt }) => {
-        // 仅「订阅校验」这一高级特性入口需要 license（与服务端一致：只有 subscription.assert 调用
-        // assertSubscriptionLicensed）。其余 db/*、connections/* 等不应强制订阅，否则整个应用不可用。
-        // 注：前端 assertFeatureSubscription 在 electrobun 下为 no-op，订阅校验已收敛到此 RPC 层。
-        if (method === "subscription/assert") {
-          await assertSubscriptionLicensed(licenseJwt ?? null);
-        }
+      api_request: async ({ method, payload }) => {
         if (method === "subscribe-events") {
           const sessionId = (payload as { sessionId?: string })?.sessionId;
           if (!sessionId) throw new Error("subscribe-events requires sessionId");

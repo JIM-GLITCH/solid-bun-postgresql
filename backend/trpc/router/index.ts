@@ -7,7 +7,6 @@ import { t } from '../init';
 import { connectionsRouter } from './connections';
 import { dbRouter } from './db';
 import { queryHistoryRouter } from './query-history';
-import { subscriptionRouter } from './subscription';
 import { aiRouter } from './ai';
 import { hostRouter } from './host';
 
@@ -21,7 +20,6 @@ export const appRouter = t.router({
   connections: connectionsRouter,
   db: dbRouter,
   queryHistory: queryHistoryRouter,
-  subscription: subscriptionRouter,
   ai: aiRouter,
   host: hostRouter,
 });

@@ -6,7 +6,7 @@ import QueryInterface from './query-interface';
 import TableDesigner from './table-designer';
 import DdlViewer from './ddl-viewer';
 import Sidebar from './sidebar';
-import { assertFeatureSubscription, disconnectPostgres, disconnectPostgresOnPageUnload, subscribeEvents } from './api';
+import { disconnectPostgres, disconnectPostgresOnPageUnload, subscribeEvents } from './api';
 import {
   loadStoredConnections,
   connectFromSaved,
@@ -15,7 +15,6 @@ import {
   type ConnectionList,
 } from './connection-storage';
 import { useDialog } from './dialog-context';
-import { SubscriptionRequiredError } from './subscription/subscription-error';
 import { vscode } from './theme';
 
 export interface ConnectionInfo {
@@ -93,11 +92,7 @@ export default function App() {
       const list = await loadStoredConnections();
       setSavedConnections(list);
     } catch (e) {
-      if (e instanceof SubscriptionRequiredError) {
-        /* tRPC 错误映射已弹出统一订阅窗 */
-        setSavedConnections([]);
-        return;
-      }
+      console.warn('加载已保存连接失败:', e);
       setSavedConnections([]);
     }
   };
@@ -154,17 +149,13 @@ export default function App() {
     }
     setConnectingSavedId(stored.id);
     try {
-      const { success, connectionId, error, subscriptionRequired } = await connectFromSaved(stored.id, sessionId());
+      const { success, connectionId, error } = await connectFromSaved(stored.id, sessionId());
       if (success && connectionId) {
         setConnections(connections.length, { id: connectionId, info: stored.label });
         setShowConnectionForm(false);
         return { success: true, connectionId };
       } else {
         const msg = error ?? '未知错误';
-        if (subscriptionRequired) {
-          /* connectFromSaved 返回前 transport 已触发统一订阅弹窗 */
-          return { success: false };
-        }
         showAlert(`连接失败: ${msg}`, '连接失败');
         return { success: false };
       }
@@ -181,11 +172,7 @@ export default function App() {
       await removeStoredConnection(id);
       void refreshSavedConnections();
     } catch (e) {
-      if (e instanceof SubscriptionRequiredError) {
-        /* transport 已弹出统一订阅窗 */
-      } else {
-        console.warn('删除失败:', e);
-      }
+      console.warn('删除失败:', e);
     }
   };
 
@@ -268,26 +255,12 @@ export default function App() {
     addOrFocusQueryTab(connectionId, "", sql);
   };
 
-  const handleNewTable = async (connectionId: string, connectionInfo: string, schema: string) => {
-    try {
-      await assertFeatureSubscription("table-designer");
-      addDesignTableTab(connectionId, connectionInfo, schema);
-    } catch (e) {
-      if (!(e instanceof SubscriptionRequiredError)) {
-        showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
-      }
-    }
+  const handleNewTable = (connectionId: string, connectionInfo: string, schema: string) => {
+    addDesignTableTab(connectionId, connectionInfo, schema);
   };
 
-  const handleEditTable = async (connectionId: string, connectionInfo: string, schema: string, table: string) => {
-    try {
-      await assertFeatureSubscription("table-designer");
-      addDesignTableTab(connectionId, connectionInfo, schema, table);
-    } catch (e) {
-      if (!(e instanceof SubscriptionRequiredError)) {
-        showAlert(e instanceof Error ? e.message : String(e), '需要订阅');
-      }
-    }
+  const handleEditTable = (connectionId: string, connectionInfo: string, schema: string, table: string) => {
+    addDesignTableTab(connectionId, connectionInfo, schema, table);
   };
 
   const handleViewDdl = (connectionId: string, connectionInfo: string, schema: string, table: string, ddl: string) => {

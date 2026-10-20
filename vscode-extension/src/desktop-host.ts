@@ -1,10 +1,10 @@
 /**
- * 识别当前编辑器宿主：OAuth source 用 uriScheme；订阅站 ?host= 仅用 vscode.env.appName。
+ * 识别当前编辑器宿主：OAuth source 用 uriScheme；displayName 用 vscode.env.appName。
  */
 
 import * as vscode from "vscode";
 
-const EXTENSION_AUTH_AUTHORITY = "lilr.db-player";
+
 
 export type DesktopOAuthContext = {
   /** 传给订阅站 ?source=，须与回跳 URL 协议一致（订阅 API 校验 source 与 scheme 匹配） */
@@ -32,20 +32,4 @@ export function getDesktopOAuthContext(): DesktopOAuthContext {
     displayName: displayNameFromApp(),
     uriScheme,
   };
-}
-
-/** 订阅站入口完整 URL（含 source、host） */
-export function buildSubscriptionPortalEntryUrl(frontendRoot: string): string {
-  const root = frontendRoot.trim().replace(/\/$/, "");
-  const ctx = getDesktopOAuthContext();
-  const href = /^https?:\/\//i.test(root) ? root : `https://${root}`;
-  const u = new URL(href);
-  u.searchParams.set("source", ctx.source);
-  u.searchParams.set("host", ctx.displayName);
-  return u.toString();
-}
-
-/** 深度链接回扩展 URI Handler：{scheme}://lilr.db-player/auth?token= */
-export function getExtensionAuthCallbackUrl(scheme: string): string {
-  return `${cleanScheme(scheme)}://${EXTENSION_AUTH_AUTHORITY}/auth`;
 }

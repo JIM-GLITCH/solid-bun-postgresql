@@ -56,7 +56,6 @@ const TRANSPORT_FILES = [
   "trpc/router/connections.ts",
   "trpc/router/ai.ts",
   "trpc/router/query-history.ts",
-  "trpc/router/subscription.ts",
   "trpc/router/host.ts",
   "trpc/index.ts",
   "trpc/init.ts",

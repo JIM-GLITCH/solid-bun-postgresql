@@ -7,10 +7,7 @@
  * messenger 只是传输层——请求/响应配对由库完成；本文件只做 params → procedure 的分派。
  *
  * 宿主差异全部通过 `procedureOverrides` 表达：
- * - `subscription.assert` / `subscription.account`：用扩展侧凭据 / SecretStorage
- * - `subscription.openLogin` / `subscription.logout`：宿主动作（打开外部登录页 / 清凭据）
  * - `host.*`：文件、剪贴板、AI Key 等真实 VS Code API
- * - `subscription.onAccountState`：宿主事件流（登录/退出后推送）
  */
 
 import type { Messenger } from "vscode-messenger";

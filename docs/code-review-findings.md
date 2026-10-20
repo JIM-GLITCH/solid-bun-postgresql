@@ -192,13 +192,13 @@
 - `docker-compose.yml:8-13`。
 - 修复：`127.0.0.1:5432:5432` + healthcheck + required 变量。
 
-### #35 [☐] 订阅门户无 CSP + JWT 存 localStorage + 第三方 CDN 脚本
-- （推迟：涉及支付/账户安全与第三方集成，需与订阅后端协同决策（如改用 httpOnly Cookie、移除 CDN），建议单独评审。）
+### #35 [✅] 订阅门户无 CSP + JWT 存 localStorage + 第三方 CDN 脚本
+- **✅ 已解决（2026-10-21）：随「移除订阅模块、完全开源免费」整体删除订阅门户（`subscription/` 工作区、前端 `frontend/subscription/`、license 校验、token 存储、支付宝回调、OAuth URI Handler 等），该攻击面整体消失。**
 - `subscription/frontend/src/index.html`、`app.ts:3,40,373-383`、`app.ts:326-328` innerHTML。
 - 修复：CSP + HttpOnly Cookie + 本地打包 qrcode + textContent。
 
-### #36 [☐] 支付宝回调验签不校验 app_id/金额，缺防重放
-- （推迟：支付安全，需谨慎处理并补充测试，建议单独评审；当前仅验 RSA 签名，应增加 app_id/金额一致性校验与回调幂等。）
+### #36 [✅] 支付宝回调验签不校验 app_id/金额，缺防重放
+- **✅ 已解决（2026-10-21）：随订阅模块整体移除，支付宝回调（`standalone/dbplayer-subscription-routes.ts` 等）已删除，不再存在支付验签路径。**
 - `subscription/backend/src/payment.ts:214-228`、`index.ts:515-529`。
 - 修复：追加 app_id/金额/out_trade_no 校验；notify_id 去重；请求体大小上限。
 

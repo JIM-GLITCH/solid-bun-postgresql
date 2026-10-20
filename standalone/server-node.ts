@@ -11,7 +11,6 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { registerDbPlayerSubscriptionRoutes } from "./dbplayer-subscription-routes";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { appRouter, createContext } from "../backend/trpc";
 import { sendSSEMessage } from "../backend/db/sessions";
@@ -20,7 +19,6 @@ import { projectionKeys } from "../backend/db/sessions-effect";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const app = new Hono();
-registerDbPlayerSubscriptionRoutes(app);
 
 // tRPC handler（业务 RPC 的唯一入口）
 app.all("/api/trpc/*", (c) => {

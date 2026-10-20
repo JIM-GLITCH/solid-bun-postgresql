@@ -3,7 +3,6 @@
  *
  * - 查询 / 变更：`httpBatchLink`（批量 HTTP）
  * - 订阅：`httpSubscriptionLink`（SSE，替代旧的 `/api/events`）
- * - 统一错误映射：把「需要订阅」映射为前端 `SubscriptionRequiredError`
  * - 可插拔传输：宿主（VSCode / Electrobun）可注入自定义 link（见 `setTrpcTransportLink`）
  */
 
@@ -17,20 +16,11 @@ import {
 } from '@trpc/client';
 import { observable } from '@trpc/server/observable';
 import type { AppRouter } from '../backend/trpc';
-import { getBrowserJwt } from './subscription/browser-token';
-import { SubscriptionRequiredError } from './subscription/subscription-error';
-import { raiseSubscriptionRequired } from './subscription/subscription-prompt';
 
 const API_BASE = (import.meta.env?.VITE_API_BASE as string | undefined) ?? '';
 
-/** 把 tRPC 错误映射为前端可识别的错误（订阅缺失 → SubscriptionRequiredError）。 */
+/** 把 tRPC 错误映射为前端 Error。 */
 export function mapTrpcError(err: unknown): Error {
-  const e = err as { message?: string; data?: { subscriptionRequired?: boolean } } | undefined;
-  if (e?.data?.subscriptionRequired) {
-    const mapped = new SubscriptionRequiredError(e.message || undefined);
-    raiseSubscriptionRequired(mapped.message);
-    return mapped;
-  }
   return err instanceof Error ? err : new Error(String(err));
 }
 
@@ -46,10 +36,7 @@ const errorMappingLink: TRPCLink<AppRouter> = () => (props) =>
   });
 
 function webHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { 'x-dbplayer-client': 'web' };
-  const token = getBrowserJwt();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
+  return { 'x-dbplayer-client': 'web' };
 }
 
 /** Web 默认传输 link：查询 / 变更走批量 HTTP，订阅走 SSE。 */

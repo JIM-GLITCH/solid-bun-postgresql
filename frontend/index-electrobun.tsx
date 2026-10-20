@@ -9,7 +9,6 @@
  */
 import { Electroview } from "electrobun/view";
 import type { AppRPCType } from "../shared/src/electrobun-rpc";
-import { getBrowserJwt } from "./subscription/browser-token";
 import { render } from "solid-js/web";
 import App from "./app";
 import { DialogProvider } from "./dialog-context";
@@ -32,7 +31,7 @@ const rpc = Electroview.defineRPC<AppRPCType>({
 const electroview = new Electroview({ rpc });
 
 window.__electrobunApiRequest = (method, payload) =>
-  electroview.rpc.request.api_request({ method, payload, licenseJwt: getBrowserJwt() });
+  electroview.rpc.request.api_request({ method, payload });
 
 const root = document.getElementById("root");
 if (root) {

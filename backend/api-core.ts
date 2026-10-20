@@ -17,8 +17,6 @@ import {
 import { listConnections, saveConnection, removeConnection, getConnectionParams, updateConnectionMeta, reorderConnections } from "./connections-store";
 import { addQuery as addQueryHistory, searchHistory, deleteEntry as deleteHistoryEntry, clearHistory as clearQueryHistory } from "./query-history-store";
 import { getAiKey as getAiKeyFromStore, setAiKey as setAiKeyToStore, deleteAiKey as deleteAiKeyFromStore } from "./ai-key-store";
-import { getStoredSubscriptionToken } from "./subscription-token-store";
-import { getSubscriptionApiBaseFromEnv } from "./subscription-license";
 import { runAiSqlTask, type AiApiMode } from "./ai-service";
 import type { SessionConnection } from "./session-connection";
 import type { DbConnector } from "./db/contract";
@@ -278,34 +276,6 @@ async function executeAiSqlEdit(params: {
     }
   );
   return { ...result, schemaInjected: promptMeta.schemaInjected };
-}
-
-// ── Subscription API 函数（供 tRPC 直接调用）────────────────────
-
-export async function subscriptionAssert(params: { feature?: string }): Promise<{ success: boolean }> {
-  const { feature } = params;
-  const allowed = new Set(["visual-query-builder", "table-designer"]);
-  if (!feature || !allowed.has(feature)) throw new Error("无效的功能标识");
-  return { success: true };
-}
-
-export async function subscriptionAccount(): Promise<{
-  loggedIn: boolean;
-  user?: { id?: number; email?: string | null };
-}> {
-  const token = getStoredSubscriptionToken();
-  if (!token) return { loggedIn: false };
-  try {
-    const apiBase = getSubscriptionApiBaseFromEnv();
-    const res = await fetch(`${apiBase}/api/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return { loggedIn: true };
-    const data = (await res.json()) as { user?: { id?: number; email?: string | null } };
-    return { loggedIn: true, user: data.user };
-  } catch {
-    return { loggedIn: true };
-  }
 }
 
 // ── Query History API 函数（供 tRPC 直接调用）────────────────────

@@ -6,7 +6,6 @@ import type { PostgresLoginParams, StoredConnectionParams, DbKind } from "../sha
 import { registerConnectionDbType } from "./db-session-meta";
 import { trpc } from "./trpc-client";
 import { formatUnknownError } from "./format-unknown-error";
-import { SubscriptionRequiredError } from "./subscription/subscription-error";
 import { prefetchDbCapabilities } from "./api";
 
 export interface StoredConnection {
@@ -36,7 +35,6 @@ export async function loadStoredConnections(): Promise<ConnectionList> {
     const arr = await trpc.connections.list.query();
     return Array.isArray(arr) ? (arr as ConnectionList) : [];
   } catch (e) {
-    if (e instanceof SubscriptionRequiredError) throw e;
     return [];
   }
 }
@@ -84,7 +82,7 @@ export async function removeStoredConnection(id: string): Promise<void> {
 export async function connectFromSaved(
   id: string,
   sessionId?: string
-): Promise<{ success: boolean; connectionId?: string; error?: string; subscriptionRequired?: boolean }> {
+): Promise<{ success: boolean; connectionId?: string; error?: string }> {
   try {
     const data = await trpc.connections.connect.mutate({ id, sessionId });
     if (data.success && data.connectionId) {
@@ -95,9 +93,6 @@ export async function connectFromSaved(
     // 失败经 tRPC reject 抛出走 catch；connections.connect 返回无 error 字段
     return { success: false, error: "连接失败" };
   } catch (e) {
-    if (e instanceof SubscriptionRequiredError) {
-      return { success: false, error: e.message, subscriptionRequired: true };
-    }
     return { success: false, error: formatUnknownError(e, "连接失败") };
   }
 }

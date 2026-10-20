@@ -5,23 +5,8 @@
 
 import { initTRPC } from '@trpc/server';
 import type { Context } from './context';
-import { SubscriptionRequiredError } from '../subscription-license';
 
-const t = initTRPC.context<Context>().create({
-  errorFormatter({ shape, error }) {
-    const subscriptionRequired =
-      error.cause instanceof SubscriptionRequiredError ||
-      (error.cause instanceof Error && error.cause.name === 'SubscriptionRequiredError');
-    return {
-      ...shape,
-      data: {
-        ...shape.data,
-        // 供前端 tRPC 错误映射转为 SubscriptionRequiredError
-        subscriptionRequired: subscriptionRequired || undefined,
-      },
-    };
-  },
-});
+const t = initTRPC.context<Context>().create({});
 
 /**
  * 可选：添加认证中间件

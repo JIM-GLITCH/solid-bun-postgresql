@@ -2,13 +2,12 @@
  * 前端「会话」模块。
  *
  * 说明：业务 RPC 已全部迁到 tRPC，组件直接调用 `trpc.db.xxx` / `trpc.ai.xxx`
- * （见 `./trpc-client`）；宿主能力同样走 tRPC（`trpc.host.*` / `trpc.subscription.*`），
+ * （见 `./trpc-client`）；宿主能力同样走 tRPC（`trpc.host.*`），
  * 由扩展宿主在 `backend/vscode-messenger-bridge` 里覆盖实现。
  *
  * 本文件只保留**带副作用的会话生命周期**：
  *   - 建连登记方言 / 预取能力缓存 / 断开清理
  *   - 数据库事件订阅（tRPC subscription）
- *   - 付费功能前的显式 assert
  *
  * `dbConn()` 是 db/* 请求的入参构造器（补 `dbType`），供各组件直接调用 tRPC 时复用。
  */
@@ -28,7 +27,7 @@ import {
 } from "./db-capabilities-cache";
 import { defaultDatabaseCapabilities } from "../shared/src";
 import { normalizeDbDataTypesList } from "./table-designer-shared";
-import { isElectrobun, isVsCodeWebview } from "./platform";
+import { isVsCodeWebview } from "./platform";
 
 /** 与当前会话一致：db/* 请求须带 dbType，与 connectionMap 中方言一致。 */
 export function dbConn(connectionId: string) {
@@ -133,15 +132,4 @@ export function subscribeEvents(connectionId: string, callback: (msg: SSEMessage
     }
   );
   return () => subscription.unsubscribe();
-}
-
-/**
- * 进入付费功能前做一次显式 assert：
- * - VS Code：由 extension host 覆盖实现（扩展侧凭据校验）
- * - 浏览器 / Standalone：由服务端 `subscription.assert` 校验
- * - Electrobun：由主进程侧处理，此处不重复请求
- */
-export async function assertFeatureSubscription(feature: "visual-query-builder" | "table-designer"): Promise<void> {
-  if (isElectrobun()) return;
-  await trpc.subscription.assert.mutate({ feature });
 }

@@ -137,7 +137,7 @@ bun run build-extension
 
 事件订阅改用 tRPC subscription **`db.onConnectionEvents`**（`/api/events` 的替代）：Web 端经 SSE 承载，VSCode / Electrobun 端经宿主 link 转发。
 
-VSCode 扩展下，webview 内经 `vscode-messenger` 桥接：**业务 procedure 直达服务端 `appRouter`**，宿主专属 path（`host.*` / `subscription.openLogin` 等）由扩展侧 override 实现。
+VSCode 扩展下，webview 内经 `vscode-messenger` 桥接：**业务 procedure 直达服务端 `appRouter`**，宿主专属 path（`host.*`）由扩展侧 override 实现。
 
 **扩展第三方言**：连接层策略位于 `backend/db-handlers/strategies/*-strategy-effect.ts`（SQL 模板 / 连接器装配 / 监控诊断），设计背景见 [docs/db-connection-effect-refactor.md](docs/db-connection-effect-refactor.md)。**能力字段与侧栏/API 对照**：[docs/database-capabilities-matrix.md](docs/database-capabilities-matrix.md)。
 

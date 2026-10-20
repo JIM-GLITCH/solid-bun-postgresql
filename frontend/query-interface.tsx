@@ -7,7 +7,7 @@ import SqlEditor from "./sql-editor-codemirror";
 import { isSqlServer, type ColumnEditableInfo, type SSEMessage } from "../shared/src";
 import { formatCellDisplay, formatCellToEditable, formatSqlValue as formatSqlValueShared, getAlignmentForGridColumn, getDataTypeName, getStatementsFromText, formatSql, PG_OID } from "../shared/src";
 import { trpc } from "./trpc-client";
-import { dbConn, subscribeEvents, assertFeatureSubscription } from "./api";
+import { dbConn, subscribeEvents } from "./api";
 import VisualQueryBuilder from "./visual-query-builder";
 import QueryHistoryPanel from "./query-history-panel";
 import { addQuery } from "./query-history";
@@ -15,7 +15,6 @@ import { vscode } from "./theme";
 import { writeClipboardText } from "./clipboard";
 import { exportAsCsv, exportAsJson, exportAsExcel } from "./export-result";
 import ImportModal from "./import-modal";
-import { SubscriptionRequiredError } from "./subscription/subscription-error";
 import ExplainPlanViewer from "./explain-plan-viewer";
 import { convertMysqlExplainJsonToPlanNode, isMysqlExplainJsonRoot } from "./mysql-explain-json";
 import { getEffectiveDbCapabilities } from "./db-capabilities-cache";
@@ -2063,20 +2062,8 @@ export default function QueryInterface(props: QueryInterfaceProps = {}) {
             </button>
             <Show when={dbCaps().visualQueryBuilder}>
               <button
-                onClick={async () => {
-                  if (showQueryBuilder()) {
-                    setShowQueryBuilder(false);
-                    return;
-                  }
-                  try {
-                    await assertFeatureSubscription("visual-query-builder");
-                    setShowQueryBuilder(true);
-                  } catch (e) {
-                    if (!(e instanceof SubscriptionRequiredError)) {
-                      const msg = e instanceof Error ? e.message : String(e);
-                      showAlert(msg || "该功能需要有效订阅", "需要订阅");
-                    }
-                  }
+                onClick={() => {
+                  setShowQueryBuilder(!showQueryBuilder());
                 }}
                 style={{
                   padding: "10px 24px",
